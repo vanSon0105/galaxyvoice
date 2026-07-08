@@ -1,0 +1,45 @@
+# Local agent tooling
+.agents/
+agents/
+
+# Generated app output
+result/
+results/
+exports/
+tools/galaxy_ai_voice_subtitle_studio/exports/
+tools/galaxy_ai_voice_subtitle_studio/smoke_exports/
+
+# Python cache and test artifacts
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+
+# Logs and temp files
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/

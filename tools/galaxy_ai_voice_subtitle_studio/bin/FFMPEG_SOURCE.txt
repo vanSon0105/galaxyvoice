@@ -1,0 +1,10 @@
+﻿Bundled FFmpeg
+===============
+
+Source: https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip
+Downloaded by: install_ffmpeg.ps1
+
+FFmpeg is a third-party project. Review its license before redistribution:
+https://ffmpeg.org/legal.html
+
+This tool uses ffmpeg.exe for local video/audio conversion only.

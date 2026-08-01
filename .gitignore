@@ -43,3 +43,6 @@ Thumbs.db
 desktop.ini
 .idea/
 .vscode/
+
+tools/galaxy_ai_voice_subtitle_studio/bin/ffmpeg.exe
+tools/galaxy_ai_voice_subtitle_studio/bin/ffprobe.exe

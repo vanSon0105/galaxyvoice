@@ -1,0 +1,35 @@
+from __future__ import annotations
+
+import re
+from datetime import datetime
+from pathlib import Path
+
+
+def unique_project_dir(output_dir: Path, project_name: str, fallback_prefix: str = "galaxy") -> Path:
+    output_dir = Path(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    if project_name.strip():
+        base_name = slugify(project_name)
+    else:
+        base_name = datetime.now().strftime(f"{fallback_prefix}_%Y%m%d_%H%M%S")
+
+    candidate = output_dir / base_name
+    if not candidate.exists():
+        candidate.mkdir(parents=True)
+        return candidate
+
+    for suffix in range(2, 10_000):
+        candidate = output_dir / f"{base_name}_{suffix:02}"
+        if not candidate.exists():
+            candidate.mkdir(parents=True)
+            return candidate
+
+    raise RuntimeError("Could not create a unique project directory.")
+
+
+def slugify(value: str) -> str:
+    lowered = value.strip().lower()
+    lowered = re.sub(r"[^a-z0-9._ -]+", "", lowered)
+    lowered = re.sub(r"[\s.]+", "-", lowered).strip("-_")
+    return lowered or datetime.now().strftime("galaxy_%Y%m%d_%H%M%S")

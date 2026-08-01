@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-import shutil
 import subprocess
 import wave
 from dataclasses import dataclass
 from pathlib import Path
+
+from .ffmpeg import find_ffmpeg
 
 
 @dataclass(frozen=True)
@@ -61,7 +62,7 @@ def concatenate_wavs(segment_paths: list[Path], output_path: Path, gap_ms: int =
 
 
 def try_convert_to_mp3(wav_path: Path, mp3_path: Path) -> tuple[bool, str]:
-    ffmpeg = shutil.which("ffmpeg")
+    ffmpeg = find_ffmpeg()
     if not ffmpeg:
         return False, "ffmpeg was not found; MP3 export was skipped."
 

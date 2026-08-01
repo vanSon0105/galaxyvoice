@@ -5,11 +5,15 @@ import sys
 from pathlib import Path
 
 from .engine import GenerationOptions, generate_package
+from .media import MediaExtractionOptions, extract_audio_from_video
+from .transcription import VideoSubtitleOptions, create_subtitles_from_video
+from .translator import default_translation_base_url, default_translation_model
 from .tts import PowerShellSapiTTS
 
 
 def main(argv: list[str] | None = None) -> int:
-    args = _build_parser().parse_args(argv)
+    parser = _build_parser()
+    args = parser.parse_args(argv)
 
     if args.gui or _should_open_gui(args):
         from .gui import run_app
@@ -21,6 +25,52 @@ def main(argv: list[str] | None = None) -> int:
     if args.list_voices:
         for voice in tts.list_voices():
             print(voice.label)
+        return 0
+
+    if args.video:
+        if args.text or args.text_file:
+            parser.error("--video cannot be combined with --text or --text-file.")
+        if args.transcribe:
+            result = create_subtitles_from_video(
+                VideoSubtitleOptions(
+                    video_path=Path(args.video),
+                    output_dir=Path(args.output_dir),
+                    project_name=args.name or "",
+                    source_language=args.source_language,
+                    target_language="none" if args.no_translate else args.target_language,
+                    whisper_model=args.whisper_model,
+                    ai_model=args.ai_model,
+                    ai_base_url=args.ai_base_url,
+                    ai_api_key=args.ai_api_key,
+                ),
+                progress=lambda message: print(message),
+            )
+            print(f"Audio: {result.audio_path}")
+            print(f"Original SRT: {result.source_srt_path}")
+            if result.translated_srt_path:
+                print(f"Translated SRT: {result.translated_srt_path}")
+            print(f"Manifest: {result.manifest_path}")
+            for warning in result.warnings:
+                print(f"Warning: {warning}", file=sys.stderr)
+            return 0
+
+        result = extract_audio_from_video(
+            MediaExtractionOptions(
+                video_path=Path(args.video),
+                output_dir=Path(args.output_dir),
+                project_name=args.name or "",
+                export_wav=not args.no_wav,
+                export_mp3=not args.no_mp3,
+            ),
+            progress=lambda message: print(message),
+        )
+        if result.wav_path:
+            print(f"WAV: {result.wav_path}")
+        if result.mp3_path:
+            print(f"MP3: {result.mp3_path}")
+        print(f"Manifest: {result.manifest_path}")
+        for warning in result.warnings:
+            print(f"Warning: {warning}", file=sys.stderr)
         return 0
 
     text = _read_text(args)
@@ -52,6 +102,8 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--list-voices", action="store_true", help="List Windows SAPI voices.")
     parser.add_argument("--text", help="Narration text to synthesize.")
     parser.add_argument("--text-file", help="UTF-8 text file to synthesize.")
+    parser.add_argument("--video", help="Video file to extract audio from.")
+    parser.add_argument("--transcribe", action="store_true", help="Create SRT subtitles from --video.")
     parser.add_argument("--output-dir", default="exports", help="Directory where exports are written.")
     parser.add_argument("--name", help="Project/export name.")
     parser.add_argument("--voice", help="Exact Windows SAPI voice name.")
@@ -59,13 +111,21 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--volume", type=int, default=100, choices=range(0, 101), metavar="0..100")
     parser.add_argument("--pause-ms", type=int, default=250)
     parser.add_argument("--max-chars", type=int, default=160)
+    parser.add_argument("--no-wav", action="store_true", help="Skip WAV export when extracting from video.")
     parser.add_argument("--no-mp3", action="store_true", help="Skip optional MP3 export.")
     parser.add_argument("--clean-segments", action="store_true", help="Delete per-cue segment WAV files.")
+    parser.add_argument("--source-language", default="auto", help="Video language code, or auto.")
+    parser.add_argument("--target-language", default="vi", help="Translation language code.")
+    parser.add_argument("--no-translate", action="store_true", help="Only create the original-language SRT.")
+    parser.add_argument("--whisper-model", default="base", help="faster-whisper model size.")
+    parser.add_argument("--ai-model", default=default_translation_model(), help="AI translation model.")
+    parser.add_argument("--ai-base-url", default=default_translation_base_url(), help="OpenAI-compatible API base URL.")
+    parser.add_argument("--ai-api-key", default="", help="AI translation API key; env vars are also supported.")
     return parser
 
 
 def _should_open_gui(args: argparse.Namespace) -> bool:
-    return not any([args.list_voices, args.text, args.text_file])
+    return not any([args.list_voices, args.text, args.text_file, args.video])
 
 
 def _read_text(args: argparse.Namespace) -> str:
@@ -73,4 +133,4 @@ def _read_text(args: argparse.Namespace) -> str:
         return Path(args.text_file).read_text(encoding="utf-8")
     if args.text:
         return args.text
-    raise SystemExit("Provide --text, --text-file, --list-voices, or --gui.")
+    raise SystemExit("Provide --text, --text-file, --video, --list-voices, or --gui.")

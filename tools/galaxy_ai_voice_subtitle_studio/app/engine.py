@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import json
-import re
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
 from .audio import concatenate_wavs, try_convert_to_mp3
+from .paths import unique_project_dir
 from .srt import SubtitleCue, render_srt
 from .text_splitter import split_text
 from .tts import PowerShellSapiTTS
@@ -55,7 +55,7 @@ def generate_package(
     if not tts_engine.available():
         raise RuntimeError("No PowerShell executable was found for Windows SAPI TTS.")
 
-    project_dir = _unique_project_dir(options.output_dir, options.project_name)
+    project_dir = unique_project_dir(options.output_dir, options.project_name)
     segments_dir = project_dir / "segments"
     segments_dir.mkdir(parents=True, exist_ok=True)
 
@@ -147,29 +147,3 @@ def generate_package(
         total_duration_ms=total_duration_ms,
         warnings=warnings,
     )
-
-
-def _unique_project_dir(output_dir: Path, project_name: str) -> Path:
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-
-    base_name = _slugify(project_name) if project_name.strip() else datetime.now().strftime("galaxy_%Y%m%d_%H%M%S")
-    candidate = output_dir / base_name
-    if not candidate.exists():
-        candidate.mkdir(parents=True)
-        return candidate
-
-    for suffix in range(2, 10_000):
-        candidate = output_dir / f"{base_name}_{suffix:02}"
-        if not candidate.exists():
-            candidate.mkdir(parents=True)
-            return candidate
-
-    raise RuntimeError("Could not create a unique project directory.")
-
-
-def _slugify(value: str) -> str:
-    lowered = value.strip().lower()
-    lowered = re.sub(r"[^a-z0-9._ -]+", "", lowered)
-    lowered = re.sub(r"[\s.]+", "-", lowered).strip("-_")
-    return lowered or datetime.now().strftime("galaxy_%Y%m%d_%H%M%S")

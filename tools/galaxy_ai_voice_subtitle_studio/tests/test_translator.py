@@ -50,6 +50,83 @@ class TranslatorTests(unittest.TestCase):
         self.assertEqual(translated[0].start_ms, 0)
         self.assertEqual(translated[1].end_ms, 2000)
 
+    def test_translate_cues_retries_a_batch_returned_in_english_instead_of_vietnamese(self) -> None:
+        cues = [
+            SubtitleCue(index=index, start_ms=index * 1000, end_ms=(index + 1) * 1000, text=f"这是第 {index} 行")
+            for index in range(1, 22)
+        ]
+        batch_sizes: list[int] = []
+        large_batch_calls = 0
+
+        def fake_client(messages, _options):
+            nonlocal large_batch_calls
+            self.assertIn("Target language: Vietnamese (vi)", messages[1]["content"])
+            batch_size = messages[1]["content"].count('"index"')
+            batch_sizes.append(batch_size)
+            if batch_size == 20:
+                large_batch_calls += 1
+                if large_batch_calls == 1:
+                    return json.dumps(
+                        {
+                            "translations": [
+                                f"This is an English translation for subtitle line {index}"
+                                for index in range(1, 21)
+                            ]
+                        }
+                    )
+                return json.dumps(
+                    {"translations": [f"Đây là bản dịch tiếng Việt {index}" for index in range(1, 21)]},
+                    ensure_ascii=False,
+                )
+            return json.dumps({"translations": ["Đây là bản dịch tiếng Việt 21"]}, ensure_ascii=False)
+
+        translated = translate_cues(
+            cues,
+            AITranslationOptions(
+                source_language="auto",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertTrue(all("English translation" not in cue.text for cue in translated))
+        self.assertEqual(batch_sizes, [20, 20, 1])
+
+    def test_translate_cues_rejects_a_persistently_wrong_output_language(self) -> None:
+        cues = [
+            SubtitleCue(index=index, start_ms=index * 1000, end_ms=(index + 1) * 1000, text=f"这是第 {index} 行")
+            for index in range(1, 21)
+        ]
+        call_count = 0
+
+        def fake_client(_messages, _options):
+            nonlocal call_count
+            call_count += 1
+            return json.dumps(
+                {
+                    "translations": [
+                        f"This is an English translation for subtitle line {index}"
+                        for index in range(1, 21)
+                    ]
+                }
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "English instead of Vietnamese"):
+            translate_cues(
+                cues,
+                AITranslationOptions(
+                    source_language="auto",
+                    target_language="vi",
+                    api_key="test-key",
+                    model="test-model",
+                ),
+                client=fake_client,
+            )
+
+        self.assertEqual(call_count, 2)
+
     def test_translate_cues_can_skip_translation(self) -> None:
         cues = [SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Original")]
 

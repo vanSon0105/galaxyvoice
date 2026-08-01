@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import re
+import unicodedata
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -69,6 +71,45 @@ class AITranslationOptions:
 
 
 ChatClient = Callable[[list[dict[str, str]], AITranslationOptions], str]
+
+_TRANSLATION_ATTEMPTS = 2
+_ENGLISH_WORDS = frozenset(
+    {
+        "a",
+        "an",
+        "and",
+        "are",
+        "as",
+        "at",
+        "be",
+        "but",
+        "by",
+        "can",
+        "do",
+        "for",
+        "from",
+        "have",
+        "i",
+        "in",
+        "is",
+        "it",
+        "my",
+        "not",
+        "of",
+        "on",
+        "only",
+        "or",
+        "that",
+        "the",
+        "this",
+        "to",
+        "was",
+        "we",
+        "with",
+        "you",
+    }
+)
+_VIETNAMESE_COMBINING_MARKS = frozenset("\u0300\u0301\u0303\u0309\u0323\u0306\u031b")
 
 
 def translation_provider_codes() -> list[str]:
@@ -202,31 +243,63 @@ def _translate_batch(texts: list[str], options: AITranslationOptions, client: Ch
     source = label_from_code(options.source_language, default=options.source_language or "Auto detect")
     target = label_from_code(options.target_language, default=options.target_language)
     payload = [{"index": index, "text": text} for index, text in enumerate(texts, start=1)]
-    user_prompt = (
-        f"Source language: {source}\n"
-        f"Target language: {target}\n"
-        "Translate these subtitle cues naturally for video viewers. Keep names, numbers, meaning, tone, and line order. "
-        "Keep each translation concise enough for subtitles.\n\n"
-        f"{json.dumps(payload, ensure_ascii=False)}"
-    )
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a professional subtitle translator. Return only valid JSON with this exact shape: "
-                "{\"translations\":[\"...\"]}. The translations array must have exactly the same length and order "
-                "as the input subtitle cues."
-            ),
-        },
-        {"role": "user", "content": user_prompt},
-    ]
-    raw = client(messages, options)
-    translations = _extract_translations(raw)
-    if len(translations) != len(texts):
-        raise RuntimeError(
-            f"AI translation returned {len(translations)} lines for a batch that expected {len(texts)} lines."
+    for attempt in range(_TRANSLATION_ATTEMPTS):
+        retry_instruction = (
+            "The previous response used the wrong output language. Correct that mistake.\n"
+            if attempt
+            else ""
         )
-    return translations
+        user_prompt = (
+            f"Source language: {source}\n"
+            f"Target language: {target} ({options.target_language})\n"
+            f"{retry_instruction}"
+            f"Translate every cue directly into {target}. Do not use English unless the target language is English. "
+            "Keep names, numbers, meaning, tone, and line order. Keep each translation concise enough for subtitles.\n\n"
+            f"{json.dumps(payload, ensure_ascii=False)}"
+        )
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    f"You are a professional subtitle translator. Every translated sentence must be written in "
+                    f"{target}. Never substitute another language. Return only valid JSON with this exact shape: "
+                    "{\"translations\":[\"...\"]}. The translations array must have exactly the same length and "
+                    "order as the input subtitle cues."
+                ),
+            },
+            {"role": "user", "content": user_prompt},
+        ]
+        raw = client(messages, options)
+        translations = _extract_translations(raw)
+        if len(translations) != len(texts):
+            raise RuntimeError(
+                f"AI translation returned {len(translations)} lines for a batch that expected {len(texts)} lines."
+            )
+        if not _looks_like_english_instead_of_vietnamese(translations, options.target_language):
+            return translations
+
+    raise RuntimeError(
+        "AI translation returned English instead of Vietnamese after retrying. "
+        "No mixed-language subtitle file was created."
+    )
+
+
+def _looks_like_english_instead_of_vietnamese(translations: list[str], target_language: str) -> bool:
+    if target_language.strip().lower() != "vi":
+        return False
+
+    combined = " ".join(translations)
+    words = re.findall(r"[a-z]+", combined.lower())
+    if len(words) < 12:
+        return False
+
+    normalized = unicodedata.normalize("NFD", combined)
+    vietnamese_marks = sum(
+        character in _VIETNAMESE_COMBINING_MARKS or character in {"đ", "Đ"}
+        for character in normalized
+    )
+    english_words = sum(word in _ENGLISH_WORDS for word in words)
+    return vietnamese_marks < 2 and english_words >= max(4, len(words) // 8)
 
 
 def _extract_translations(raw: str) -> list[str]:

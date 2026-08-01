@@ -46,3 +46,4 @@ desktop.ini
 
 tools/galaxy_ai_voice_subtitle_studio/bin/ffmpeg.exe
 tools/galaxy_ai_voice_subtitle_studio/bin/ffprobe.exe
+tools/galaxy_ai_voice_subtitle_studio/config.json*

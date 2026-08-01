@@ -8,10 +8,11 @@ from dataclasses import replace
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from .config import AppConfig, default_config_path, load_app_config, save_app_config
 from .engine import GenerationOptions, GenerationResult, generate_package
 from .languages import code_from_label, label_from_code, language_labels
 from .media import MediaExtractionOptions, MediaExtractionResult, extract_audio_from_video
-from .transcription import VideoSubtitleOptions, VideoSubtitleResult, create_subtitles_from_video
+from .transcription import WHISPER_MODELS, VideoSubtitleOptions, VideoSubtitleResult, create_subtitles_from_video
 from .translator import (
     AITranslationOptions,
     default_translation_api_key,
@@ -24,7 +25,6 @@ from .translator import (
     translation_provider_labels,
 )
 from .tts import (
-    EDGE_ENGINE_LABEL,
     EdgeTTS,
     TTSEngine,
     Voice,
@@ -35,40 +35,54 @@ from .tts import (
 
 
 class GalaxyStudioApp:
-    def __init__(self, root: tk.Tk) -> None:
+    def __init__(self, root: tk.Tk, config_path: Path | None = None) -> None:
         self.root = root
         self.root.title("Galaxy AI Voice & Subtitle Studio")
         self.root.geometry("1120x720")
         self.root.minsize(900, 600)
 
-        self.tts: TTSEngine = EdgeTTS()
+        self.config_path = config_path or default_config_path()
+        self._config_load_error: OSError | None = None
+        try:
+            saved_config = load_app_config(self.config_path)
+        except OSError as error:
+            saved_config = AppConfig()
+            self._config_load_error = error
+        self.tts: TTSEngine = create_tts_engine(saved_config.tts_engine)
         self.voices: list[Voice] = []
         self.worker: threading.Thread | None = None
         self.voice_worker: threading.Thread | None = None
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.last_result: GenerationResult | MediaExtractionResult | VideoSubtitleResult | None = None
         self._poll_after_id: str | None = None
+        self._voice_refresh_after_id: str | None = None
+        self._config_save_after_id: str | None = None
+        self._config_save_enabled = False
 
         self.project_name = tk.StringVar(value="galaxy_project")
-        self.output_dir = tk.StringVar(value=str(Path.cwd() / "exports"))
+        self.output_dir = tk.StringVar(value=saved_config.output_dir or str(Path.cwd() / "exports"))
         self.video_path = tk.StringVar()
-        self.tts_engine_name = tk.StringVar(value=EDGE_ENGINE_LABEL)
-        self.voice_name = tk.StringVar()
-        self.rate = tk.IntVar(value=0)
-        self.volume = tk.IntVar(value=100)
-        self.pause_ms = tk.IntVar(value=250)
-        self.max_chars = tk.IntVar(value=160)
-        self.export_mp3 = tk.BooleanVar(value=True)
-        self.keep_segments = tk.BooleanVar(value=True)
-        self.video_export_wav = tk.BooleanVar(value=True)
-        self.video_export_mp3 = tk.BooleanVar(value=True)
-        self.video_source_language = tk.StringVar(value=label_from_code("auto"))
-        self.video_target_language = tk.StringVar(value=label_from_code("vi"))
-        self.whisper_model = tk.StringVar(value="base")
-        provider = default_translation_provider()
+        self.tts_engine_name = tk.StringVar(value=self.tts.label)
+        self.voice_name = tk.StringVar(value=saved_config.voice_name)
+        self.rate = tk.IntVar(value=saved_config.rate)
+        self.volume = tk.IntVar(value=saved_config.volume)
+        self.pause_ms = tk.IntVar(value=saved_config.pause_ms)
+        self.max_chars = tk.IntVar(value=saved_config.max_chars)
+        self.export_mp3 = tk.BooleanVar(value=saved_config.export_mp3)
+        self.keep_segments = tk.BooleanVar(value=saved_config.keep_segments)
+        self.video_export_wav = tk.BooleanVar(value=saved_config.video_export_wav)
+        self.video_export_mp3 = tk.BooleanVar(value=saved_config.video_export_mp3)
+        self.video_source_language = tk.StringVar(
+            value=label_from_code(saved_config.video_source_language, default=label_from_code("auto"))
+        )
+        self.video_target_language = tk.StringVar(
+            value=label_from_code(saved_config.video_target_language, default=label_from_code("vi"))
+        )
+        self.whisper_model = tk.StringVar(value=saved_config.whisper_model)
+        provider = saved_config.ai_provider or default_translation_provider()
         self.ai_provider = tk.StringVar(value=translation_provider_label(provider))
-        self.ai_model = tk.StringVar(value=default_translation_model(provider))
-        self.ai_base_url = tk.StringVar(value=default_translation_base_url(provider))
+        self.ai_model = tk.StringVar(value=saved_config.ai_model or default_translation_model(provider))
+        self.ai_base_url = tk.StringVar(value=saved_config.ai_base_url or default_translation_base_url(provider))
         self.ai_api_key = tk.StringVar(value=default_translation_api_key(provider))
         self.script_language_code = ""
         self._setting_script_text = False
@@ -76,9 +90,24 @@ class GalaxyStudioApp:
 
         self._configure_style()
         self._build_layout()
+        if self._config_load_error is not None:
+            self._append_log(
+                "Could not read config; automatic config saving is disabled for this session: "
+                f"{self._config_load_error}"
+            )
         self.root.bind("<Destroy>", self._on_destroy, add="+")
+        self.root.protocol("WM_DELETE_WINDOW", self._close_app)
         self._poll_events()
-        self._apply_voices(self.tts.initial_voices())
+        initial_voices = self.tts.initial_voices()
+        saved_voice_needs_refresh = bool(
+            saved_config.voice_name
+            and all(voice.name != saved_config.voice_name for voice in initial_voices)
+        )
+        self._apply_voices(initial_voices, preserve_current=True)
+        if not initial_voices or saved_voice_needs_refresh:
+            self._voice_refresh_after_id = self.root.after_idle(self._refresh_initial_voices)
+        self._bind_config_traces()
+        self._config_save_enabled = self._config_load_error is None
 
     def _configure_style(self) -> None:
         style = ttk.Style()
@@ -300,7 +329,7 @@ class GalaxyStudioApp:
         ttk.Combobox(
             model_row,
             textvariable=self.whisper_model,
-            values=["tiny", "base", "small", "medium", "large-v3"],
+            values=WHISPER_MODELS,
             state="readonly",
         ).grid(row=1, column=0, sticky="ew", pady=(2, 0), padx=(0, 8))
         self.ai_provider_combo = ttk.Combobox(
@@ -373,6 +402,10 @@ class GalaxyStudioApp:
         self.voice_worker = threading.Thread(target=self._run_voice_refresh, args=(engine,), daemon=True)
         self.voice_worker.start()
 
+    def _refresh_initial_voices(self) -> None:
+        self._voice_refresh_after_id = None
+        self.refresh_voices()
+
     def _run_voice_refresh(self, engine: TTSEngine) -> None:
         try:
             voices = engine.list_voices()
@@ -380,12 +413,15 @@ class GalaxyStudioApp:
         except Exception as error:  # pragma: no cover - UI boundary
             self.events.put(("voices_error", (engine.code, error)))
 
-    def _apply_voices(self, voices: list[Voice]) -> None:
+    def _apply_voices(self, voices: list[Voice], preserve_current: bool = False) -> None:
+        current_name = self.voice_name.get()
+        if preserve_current and current_name and all(voice.name != current_name for voice in voices):
+            voices = [Voice(name=current_name, culture="", gender="", age=""), *voices]
         self.voices = voices
         names = [voice.name for voice in self.voices]
         self.voice_combo.configure(values=names)
         if not names:
-            self.voice_name.set("")
+            return
         elif self.voice_name.get() not in names:
             preferred = self.tts.preferred_voice_name("vi")
             default_voice = preferred if preferred in names else names[0]
@@ -549,6 +585,85 @@ class GalaxyStudioApp:
         self.ai_model.set(default_translation_model(provider))
         self.ai_base_url.set(default_translation_base_url(provider))
         self.ai_api_key.set(default_translation_api_key(provider))
+
+    def _bind_config_traces(self) -> None:
+        variables: tuple[tk.Variable, ...] = (
+            self.output_dir,
+            self.tts_engine_name,
+            self.voice_name,
+            self.rate,
+            self.volume,
+            self.pause_ms,
+            self.max_chars,
+            self.export_mp3,
+            self.keep_segments,
+            self.video_export_wav,
+            self.video_export_mp3,
+            self.video_source_language,
+            self.video_target_language,
+            self.whisper_model,
+            self.ai_provider,
+            self.ai_model,
+            self.ai_base_url,
+        )
+        for variable in variables:
+            variable.trace_add("write", self._schedule_config_save)
+
+    def _schedule_config_save(self, *_args: str) -> None:
+        if not self._config_save_enabled:
+            return
+        if self._config_save_after_id:
+            try:
+                self.root.after_cancel(self._config_save_after_id)
+            except tk.TclError:
+                pass
+        try:
+            self._config_save_after_id = self.root.after(300, self._save_config_now)
+        except tk.TclError:
+            self._config_save_after_id = None
+
+    def _save_config_now(self) -> None:
+        if self._config_save_after_id:
+            try:
+                self.root.after_cancel(self._config_save_after_id)
+            except tk.TclError:
+                pass
+            self._config_save_after_id = None
+
+        if self._config_load_error is not None:
+            return
+
+        config = AppConfig(
+            output_dir=self.output_dir.get().strip(),
+            tts_engine=tts_engine_code(self.tts_engine_name.get()),
+            voice_name=self.voice_name.get().strip(),
+            rate=self._config_int(self.rate, 0, -10, 10),
+            volume=self._config_int(self.volume, 100, 0, 100),
+            pause_ms=self._config_int(self.pause_ms, 250, 0, 1200),
+            max_chars=self._config_int(self.max_chars, 160, 60, 260),
+            export_mp3=bool(self.export_mp3.get()),
+            keep_segments=bool(self.keep_segments.get()),
+            video_export_wav=bool(self.video_export_wav.get()),
+            video_export_mp3=bool(self.video_export_mp3.get()),
+            video_source_language=code_from_label(self.video_source_language.get(), default="auto"),
+            video_target_language=code_from_label(self.video_target_language.get(), default="vi"),
+            whisper_model=self.whisper_model.get().strip(),
+            ai_provider=translation_provider_code(self.ai_provider.get()),
+            ai_model=self.ai_model.get().strip(),
+            ai_base_url=self.ai_base_url.get().strip(),
+        )
+        try:
+            save_app_config(config, self.config_path)
+        except OSError as error:
+            self._append_log(f"Could not save config: {error}")
+
+    @staticmethod
+    def _config_int(variable: tk.IntVar, default: int, minimum: int, maximum: int) -> int:
+        try:
+            value = int(variable.get())
+        except (tk.TclError, TypeError, ValueError):
+            value = default
+        return max(minimum, min(maximum, value))
 
     def _build_generation_translation_options(self) -> AITranslationOptions | None:
         source_language = self.script_language_code.strip().lower()
@@ -745,15 +860,34 @@ class GalaxyStudioApp:
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         return "break"
 
+    def _close_app(self) -> None:
+        self._save_config_now()
+        self.root.destroy()
+
     def _on_destroy(self, event: tk.Event) -> None:
-        if event.widget is not self.root or not self._poll_after_id:
+        if event.widget is not self.root:
             return
 
-        try:
-            self.root.after_cancel(self._poll_after_id)
-        except tk.TclError:
-            pass
-        self._poll_after_id = None
+        if self._config_save_after_id:
+            try:
+                self.root.after_cancel(self._config_save_after_id)
+            except tk.TclError:
+                pass
+            self._config_save_after_id = None
+
+        if self._voice_refresh_after_id:
+            try:
+                self.root.after_cancel(self._voice_refresh_after_id)
+            except tk.TclError:
+                pass
+            self._voice_refresh_after_id = None
+
+        if self._poll_after_id:
+            try:
+                self.root.after_cancel(self._poll_after_id)
+            except tk.TclError:
+                pass
+            self._poll_after_id = None
 
 
 def run_app() -> None:

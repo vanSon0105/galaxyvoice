@@ -22,6 +22,8 @@ from .translator import (
     validate_translation_options,
 )
 
+WHISPER_MODELS = ("tiny", "base", "small", "medium", "large-v3")
+
 ProgressCallback = Callable[[str], None]
 Transcriber = Callable[[Path, str | None, str, ProgressCallback], list[SubtitleCue]]
 CueTranslator = Callable[[list[SubtitleCue], AITranslationOptions], list[SubtitleCue]]

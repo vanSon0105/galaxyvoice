@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import tkinter as tk
 import unittest
 from pathlib import Path
@@ -10,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.gui import GalaxyStudioApp  # noqa: E402
+from app.config import AppConfig, load_app_config, save_app_config  # noqa: E402
 from app.engine import GenerationOptions, GenerationResult  # noqa: E402
 from app.transcription import VideoSubtitleResult  # noqa: E402
 from app.translator import AITranslationOptions  # noqa: E402
@@ -17,6 +19,58 @@ from app.tts import EDGE_ENGINE_LABEL, EdgeTTS, Voice  # noqa: E402
 
 
 class GuiLayoutTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._config_temp_dir = tempfile.TemporaryDirectory()
+        self.config_path = Path(self._config_temp_dir.name) / "config.json"
+
+    def tearDown(self) -> None:
+        self._config_temp_dir.cleanup()
+
+    def test_app_loads_and_saves_user_config_without_api_key(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                config_path = Path(temp_dir) / "config.json"
+                save_app_config(
+                    AppConfig(
+                        output_dir=r"D:\Saved Output",
+                        voice_name="vi-VN-NamMinhNeural",
+                        rate=2,
+                        keep_segments=False,
+                        video_source_language="en",
+                        video_target_language="vi",
+                        ai_provider="deepseek",
+                        ai_model="deepseek-v4-flash",
+                        ai_base_url="https://api.deepseek.com",
+                    ),
+                    config_path,
+                )
+
+                app = GalaxyStudioApp(root, config_path=config_path)
+
+                self.assertEqual(app.output_dir.get(), r"D:\Saved Output")
+                self.assertEqual(app.voice_name.get(), "vi-VN-NamMinhNeural")
+                self.assertEqual(app.rate.get(), 2)
+                self.assertFalse(app.keep_segments.get())
+                self.assertEqual(app.video_source_language.get(), "English")
+                self.assertEqual(app.ai_provider.get(), "DeepSeek")
+
+                app.output_dir.set(r"D:\New Output")
+                app.ai_api_key.set("must-not-be-saved")
+                self.assertIsNotNone(app._config_save_after_id)
+                root.after(400, root.quit)
+                root.mainloop()
+                saved = load_app_config(config_path)
+
+                self.assertEqual(saved.output_dir, r"D:\New Output")
+                self.assertNotIn("must-not-be-saved", config_path.read_text(encoding="utf-8"))
+        finally:
+            root.destroy()
+
     def test_edge_tts_is_the_default_voice_engine(self) -> None:
         try:
             root = tk.Tk()
@@ -30,11 +84,50 @@ class GuiLayoutTests(unittest.TestCase):
 
         try:
             with patch("app.gui.EdgeTTS.initial_voices", return_value=voices):
-                app = GalaxyStudioApp(root)
+                app = GalaxyStudioApp(root, config_path=self.config_path)
 
             self.assertEqual(app.tts_engine_name.get(), EDGE_ENGINE_LABEL)
             self.assertIsInstance(app.tts, EdgeTTS)
             self.assertEqual(app.voice_name.get(), "vi-VN-HoaiMyNeural")
+        finally:
+            root.destroy()
+
+    def test_saved_edge_voice_outside_initial_list_is_restored(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                config_path = Path(temp_dir) / "config.json"
+                save_app_config(AppConfig(voice_name="en-US-AriaNeural"), config_path)
+                app = GalaxyStudioApp(root, config_path=config_path)
+
+                self.assertEqual(app.voice_name.get(), "en-US-AriaNeural")
+                self.assertIn("en-US-AriaNeural", app.voice_combo.cget("values"))
+                self.assertIsNotNone(app._voice_refresh_after_id)
+        finally:
+            root.destroy()
+
+    def test_config_read_error_disables_automatic_saving(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            with (
+                patch("app.gui.load_app_config", side_effect=PermissionError("locked")),
+                patch("app.gui.save_app_config") as save_config,
+            ):
+                app = GalaxyStudioApp(root, config_path=self.config_path)
+                app.output_dir.set(r"D:\Must Not Overwrite")
+                app._save_config_now()
+
+                self.assertFalse(app._config_save_enabled)
+                save_config.assert_not_called()
+                self.assertIn("automatic config saving is disabled", app.log_text.get("1.0", "end"))
         finally:
             root.destroy()
 
@@ -46,7 +139,7 @@ class GuiLayoutTests(unittest.TestCase):
 
         try:
             root.geometry("900x600")
-            GalaxyStudioApp(root)
+            GalaxyStudioApp(root, config_path=self.config_path)
             root.update_idletasks()
             root.update()
 
@@ -78,7 +171,7 @@ class GuiLayoutTests(unittest.TestCase):
 
         try:
             with patch("app.gui.EdgeTTS.initial_voices", return_value=voices):
-                app = GalaxyStudioApp(root)
+                app = GalaxyStudioApp(root, config_path=self.config_path)
                 result = VideoSubtitleResult(
                     project_dir=Path("exports") / "clip",
                     audio_path=Path("exports") / "clip" / "clip_speech.wav",
@@ -117,7 +210,7 @@ class GuiLayoutTests(unittest.TestCase):
 
         try:
             with patch("app.gui.EdgeTTS.initial_voices", return_value=[]):
-                app = GalaxyStudioApp(root)
+                app = GalaxyStudioApp(root, config_path=self.config_path)
                 options = GenerationOptions(text="Hello.", output_dir=Path("exports"), project_name="clip")
                 translation_options = AITranslationOptions(
                     source_language="en",
@@ -153,7 +246,7 @@ class GuiLayoutTests(unittest.TestCase):
 
         try:
             with patch("app.gui.EdgeTTS.initial_voices", return_value=voices):
-                app = GalaxyStudioApp(root)
+                app = GalaxyStudioApp(root, config_path=self.config_path)
                 app.script_text.insert("1.0", "Hello.")
                 app.script_language_code = "en"
                 app.voice_name.set("English Voice")
@@ -177,7 +270,7 @@ class GuiLayoutTests(unittest.TestCase):
             self.skipTest(f"Tk is unavailable: {error}")
 
         try:
-            app = GalaxyStudioApp(root)
+            app = GalaxyStudioApp(root, config_path=self.config_path)
             with patch("app.gui.threading.Thread") as thread:
                 app.refresh_voices()
 

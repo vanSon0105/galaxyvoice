@@ -39,6 +39,18 @@ Engine mặc định là `Edge TTS (Online)`. App ưu tiên hai giọng tiếng 
 
 Edge TTS cần Internet và dùng `ffmpeg` bundled để chuyển audio sang WAV cho bước ghép phụ đề. Chọn `Windows SAPI (Offline)` trong GUI khi cần chạy không có mạng.
 
+## Cấu hình tự động
+
+App tự đọc và lưu cấu hình người dùng tại:
+
+```text
+config.json
+```
+
+File nằm cạnh `run.py` và được cập nhật sau khi thay đổi output folder, engine/voice, speed, volume, pause, tùy chọn export, ngôn ngữ, Whisper hoặc AI provider/model/base URL. `config.json` được Git bỏ qua để mỗi máy giữ cấu hình riêng.
+
+API key, nội dung Script, project name và video đang chọn không được ghi vào file cấu hình. API key tiếp tục được đọc từ ô nhập hoặc biến môi trường.
+
 ## Tạo shortcut ngoài Desktop
 
 ```powershell

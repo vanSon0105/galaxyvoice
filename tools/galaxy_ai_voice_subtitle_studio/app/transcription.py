@@ -16,6 +16,8 @@ from .translator import (
     default_translation_api_key,
     default_translation_base_url,
     default_translation_model,
+    default_translation_provider,
+    normalize_translation_provider,
     translate_cues,
     validate_translation_options,
 )
@@ -33,6 +35,7 @@ class VideoSubtitleOptions:
     source_language: str = "auto"
     target_language: str = "vi"
     whisper_model: str = "base"
+    ai_provider: str = ""
     ai_model: str = ""
     ai_base_url: str = ""
     ai_api_key: str = ""
@@ -68,12 +71,14 @@ def create_subtitles_from_video(
 
     source_language = _normalize_language(options.source_language, auto_value="auto")
     target_language = _normalize_language(options.target_language, auto_value="none")
+    ai_provider = normalize_translation_provider(options.ai_provider or default_translation_provider())
     ai_options = AITranslationOptions(
         source_language=source_language,
         target_language=target_language,
-        api_key=options.ai_api_key or default_translation_api_key(),
-        model=options.ai_model or default_translation_model(),
-        base_url=options.ai_base_url or default_translation_base_url(),
+        provider=ai_provider,
+        api_key=options.ai_api_key or default_translation_api_key(ai_provider),
+        model=options.ai_model or default_translation_model(ai_provider),
+        base_url=options.ai_base_url or default_translation_base_url(ai_provider),
     )
     if target_language != "none":
         validate_translation_options(ai_options)
@@ -115,6 +120,7 @@ def create_subtitles_from_video(
         "source_language": source_language,
         "target_language": target_language,
         "whisper_model": options.whisper_model,
+        "ai_provider": ai_options.provider if translated_srt_path else None,
         "ai_model": ai_options.model if translated_srt_path else None,
         "ai_base_url": ai_options.base_url if translated_srt_path else None,
         "cue_count": len(cues),

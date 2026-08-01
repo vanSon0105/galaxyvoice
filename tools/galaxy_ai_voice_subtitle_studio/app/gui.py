@@ -11,7 +11,15 @@ from .engine import GenerationOptions, GenerationResult, generate_package
 from .languages import code_from_label, label_from_code, language_labels
 from .media import MediaExtractionOptions, MediaExtractionResult, extract_audio_from_video
 from .transcription import VideoSubtitleOptions, VideoSubtitleResult, create_subtitles_from_video
-from .translator import default_translation_base_url, default_translation_model
+from .translator import (
+    default_translation_api_key,
+    default_translation_base_url,
+    default_translation_model,
+    default_translation_provider,
+    translation_provider_code,
+    translation_provider_label,
+    translation_provider_labels,
+)
 from .tts import PowerShellSapiTTS, Voice
 
 
@@ -43,9 +51,11 @@ class GalaxyStudioApp:
         self.video_source_language = tk.StringVar(value=label_from_code("auto"))
         self.video_target_language = tk.StringVar(value=label_from_code("vi"))
         self.whisper_model = tk.StringVar(value="base")
-        self.ai_model = tk.StringVar(value=default_translation_model())
-        self.ai_base_url = tk.StringVar(value=default_translation_base_url())
-        self.ai_api_key = tk.StringVar()
+        provider = default_translation_provider()
+        self.ai_provider = tk.StringVar(value=translation_provider_label(provider))
+        self.ai_model = tk.StringVar(value=default_translation_model(provider))
+        self.ai_base_url = tk.StringVar(value=default_translation_base_url(provider))
+        self.ai_api_key = tk.StringVar(value=default_translation_api_key(provider))
         self.status = tk.StringVar(value="Ready")
 
         self._configure_style()
@@ -256,22 +266,31 @@ class GalaxyStudioApp:
         model_row.columnconfigure(0, weight=1)
         model_row.columnconfigure(1, weight=1)
         ttk.Label(model_row, text="Whisper", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(model_row, text="AI model", style="Panel.TLabel").grid(row=0, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(model_row, text="AI provider", style="Panel.TLabel").grid(row=0, column=1, sticky="w", padx=(8, 0))
         ttk.Combobox(
             model_row,
             textvariable=self.whisper_model,
             values=["tiny", "base", "small", "medium", "large-v3"],
             state="readonly",
         ).grid(row=1, column=0, sticky="ew", pady=(2, 0), padx=(0, 8))
-        ttk.Entry(model_row, textvariable=self.ai_model).grid(row=1, column=1, sticky="ew", pady=(2, 0), padx=(8, 0))
+        self.ai_provider_combo = ttk.Combobox(
+            model_row,
+            textvariable=self.ai_provider,
+            values=translation_provider_labels(),
+            state="readonly",
+        )
+        self.ai_provider_combo.grid(row=1, column=1, sticky="ew", pady=(2, 0), padx=(8, 0))
+        self.ai_provider_combo.bind("<<ComboboxSelected>>", self._on_ai_provider_changed)
 
-        ttk.Label(video, text="AI base URL", style="Panel.TLabel").grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 2))
-        ttk.Entry(video, textvariable=self.ai_base_url).grid(row=6, column=0, columnspan=2, sticky="ew")
-        ttk.Label(video, text="AI API key", style="Panel.TLabel").grid(row=7, column=0, columnspan=2, sticky="w", pady=(10, 2))
-        ttk.Entry(video, textvariable=self.ai_api_key, show="*").grid(row=8, column=0, columnspan=2, sticky="ew")
+        ttk.Label(video, text="AI model", style="Panel.TLabel").grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 2))
+        ttk.Entry(video, textvariable=self.ai_model).grid(row=6, column=0, columnspan=2, sticky="ew")
+        ttk.Label(video, text="AI base URL", style="Panel.TLabel").grid(row=7, column=0, columnspan=2, sticky="w", pady=(10, 2))
+        ttk.Entry(video, textvariable=self.ai_base_url).grid(row=8, column=0, columnspan=2, sticky="ew")
+        ttk.Label(video, text="AI API key", style="Panel.TLabel").grid(row=9, column=0, columnspan=2, sticky="w", pady=(10, 2))
+        ttk.Entry(video, textvariable=self.ai_api_key, show="*").grid(row=10, column=0, columnspan=2, sticky="ew")
 
         button_row = ttk.Frame(video, style="Surface.TFrame")
-        button_row.grid(row=9, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        button_row.grid(row=11, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         button_row.columnconfigure(0, weight=1)
         button_row.columnconfigure(1, weight=1)
         self.extract_button = ttk.Button(button_row, text="Extract Audio", command=self.start_extract_video)
@@ -416,6 +435,7 @@ class GalaxyStudioApp:
             source_language=code_from_label(self.video_source_language.get(), default="auto"),
             target_language=code_from_label(self.video_target_language.get(), default="vi"),
             whisper_model=self.whisper_model.get(),
+            ai_provider=translation_provider_code(self.ai_provider.get()),
             ai_model=self.ai_model.get(),
             ai_base_url=self.ai_base_url.get(),
             ai_api_key=self.ai_api_key.get(),
@@ -437,6 +457,12 @@ class GalaxyStudioApp:
             self.events.put(("done", result))
         except Exception as error:  # pragma: no cover - UI boundary
             self.events.put(("error", error))
+
+    def _on_ai_provider_changed(self, _event: tk.Event | None = None) -> None:
+        provider = translation_provider_code(self.ai_provider.get())
+        self.ai_model.set(default_translation_model(provider))
+        self.ai_base_url.set(default_translation_base_url(provider))
+        self.ai_api_key.set(default_translation_api_key(provider))
 
     def _poll_events(self) -> None:
         while True:

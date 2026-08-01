@@ -1,52 +1,139 @@
 from __future__ import annotations
 
 import json
-import os
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
 from typing import Callable
 
+from .env_config import first_env
 from .languages import label_from_code
 from .srt import SubtitleCue
 
+OPENAI_TRANSLATION_PROVIDER = "openai"
+DEEPSEEK_TRANSLATION_PROVIDER = "deepseek"
+DEFAULT_TRANSLATION_PROVIDER = OPENAI_TRANSLATION_PROVIDER
 DEFAULT_TRANSLATION_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_TRANSLATION_MODEL = "gpt-4o-mini"
+DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
+DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
+
+
+@dataclass(frozen=True)
+class TranslationProvider:
+    code: str
+    label: str
+    default_model: str
+    default_base_url: str
+    api_key_env_names: tuple[str, ...]
+    model_env_names: tuple[str, ...]
+    base_url_env_names: tuple[str, ...]
+
+
+TRANSLATION_PROVIDERS: dict[str, TranslationProvider] = {
+    OPENAI_TRANSLATION_PROVIDER: TranslationProvider(
+        code=OPENAI_TRANSLATION_PROVIDER,
+        label="ChatGPT / OpenAI",
+        default_model=DEFAULT_TRANSLATION_MODEL,
+        default_base_url=DEFAULT_TRANSLATION_BASE_URL,
+        api_key_env_names=(
+            "GALAXY_OPENAI_API_KEY",
+            "GALAXY_TRANSLATION_API_KEY",
+            "AI_TRANSLATION_API_KEY",
+            "OPENAI_API_KEY",
+        ),
+        model_env_names=("GALAXY_OPENAI_MODEL", "GALAXY_TRANSLATION_MODEL", "OPENAI_MODEL"),
+        base_url_env_names=("GALAXY_OPENAI_BASE_URL", "GALAXY_TRANSLATION_BASE_URL", "OPENAI_BASE_URL"),
+    ),
+    DEEPSEEK_TRANSLATION_PROVIDER: TranslationProvider(
+        code=DEEPSEEK_TRANSLATION_PROVIDER,
+        label="DeepSeek",
+        default_model=DEFAULT_DEEPSEEK_MODEL,
+        default_base_url=DEFAULT_DEEPSEEK_BASE_URL,
+        api_key_env_names=("GALAXY_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
+        model_env_names=("GALAXY_DEEPSEEK_MODEL", "DEEPSEEK_MODEL"),
+        base_url_env_names=("GALAXY_DEEPSEEK_BASE_URL", "DEEPSEEK_BASE_URL"),
+    ),
+}
 
 
 @dataclass(frozen=True)
 class AITranslationOptions:
     source_language: str
     target_language: str
+    provider: str = DEFAULT_TRANSLATION_PROVIDER
     api_key: str = ""
-    model: str = DEFAULT_TRANSLATION_MODEL
-    base_url: str = DEFAULT_TRANSLATION_BASE_URL
+    model: str = ""
+    base_url: str = ""
     batch_size: int = 20
 
 
 ChatClient = Callable[[list[dict[str, str]], AITranslationOptions], str]
 
 
-def default_translation_model() -> str:
-    return os.environ.get("GALAXY_TRANSLATION_MODEL") or os.environ.get("OPENAI_MODEL") or DEFAULT_TRANSLATION_MODEL
+def translation_provider_codes() -> list[str]:
+    return list(TRANSLATION_PROVIDERS)
 
 
-def default_translation_base_url() -> str:
-    return os.environ.get("GALAXY_TRANSLATION_BASE_URL") or os.environ.get("OPENAI_BASE_URL") or DEFAULT_TRANSLATION_BASE_URL
+def translation_provider_labels() -> list[str]:
+    return [provider.label for provider in TRANSLATION_PROVIDERS.values()]
 
 
-def default_translation_api_key() -> str:
-    return os.environ.get("GALAXY_TRANSLATION_API_KEY") or os.environ.get("AI_TRANSLATION_API_KEY") or os.environ.get(
-        "OPENAI_API_KEY", ""
+def translation_provider_label(provider: str) -> str:
+    return _provider_defaults(provider).label
+
+
+def translation_provider_code(label_or_code: str) -> str:
+    return normalize_translation_provider(label_or_code)
+
+
+def normalize_translation_provider(value: str | None) -> str:
+    normalized = (value or "").strip().lower()
+    if not normalized:
+        return DEFAULT_TRANSLATION_PROVIDER
+
+    for code, provider in TRANSLATION_PROVIDERS.items():
+        if normalized in {code, provider.label.lower()}:
+            return code
+
+    if "deepseek" in normalized:
+        return DEEPSEEK_TRANSLATION_PROVIDER
+    if "openai" in normalized or "chatgpt" in normalized or normalized == "chat":
+        return OPENAI_TRANSLATION_PROVIDER
+
+    return DEFAULT_TRANSLATION_PROVIDER
+
+
+def default_translation_provider() -> str:
+    return normalize_translation_provider(
+        first_env("GALAXY_TRANSLATION_PROVIDER", "AI_TRANSLATION_PROVIDER", default=DEFAULT_TRANSLATION_PROVIDER)
     )
 
 
+def default_translation_model(provider: str | None = None) -> str:
+    defaults = _provider_defaults(provider or default_translation_provider())
+    return first_env(*defaults.model_env_names, default=defaults.default_model)
+
+
+def default_translation_base_url(provider: str | None = None) -> str:
+    defaults = _provider_defaults(provider or default_translation_provider())
+    return first_env(*defaults.base_url_env_names, default=defaults.default_base_url)
+
+
+def default_translation_api_key(provider: str | None = None) -> str:
+    defaults = _provider_defaults(provider or default_translation_provider())
+    return first_env(*defaults.api_key_env_names)
+
+
 def validate_translation_options(options: AITranslationOptions) -> None:
+    options = resolve_translation_options(options)
     if not options.target_language or options.target_language == "none":
         return
     if _requires_api_key(options.base_url) and not options.api_key:
+        provider = _provider_defaults(options.provider)
+        env_hint = "/".join(provider.api_key_env_names)
         raise RuntimeError(
-            "AI translation needs an API key. Set OPENAI_API_KEY/GALAXY_TRANSLATION_API_KEY or enter it in the UI."
+            f"{provider.label} translation needs an API key. Set {env_hint} or enter it in the UI."
         )
 
 
@@ -57,6 +144,7 @@ def translate_cues(
 ) -> list[SubtitleCue]:
     if not cues:
         return []
+    options = resolve_translation_options(options)
     if options.target_language == "none":
         return cues
 
@@ -75,6 +163,7 @@ def translate_texts(
     options: AITranslationOptions,
     client: ChatClient,
 ) -> list[str]:
+    options = resolve_translation_options(options)
     batch_size = max(1, min(50, int(options.batch_size)))
     translated: list[str] = []
 
@@ -135,12 +224,16 @@ def _extract_translations(raw: str) -> list[str]:
 
 
 def _chat_completion(messages: list[dict[str, str]], options: AITranslationOptions) -> str:
+    options = resolve_translation_options(options)
     url = options.base_url.rstrip("/") + "/chat/completions"
     body = {
         "model": options.model,
         "messages": messages,
         "temperature": 0.2,
     }
+    if normalize_translation_provider(options.provider) == DEEPSEEK_TRANSLATION_PROVIDER:
+        body["thinking"] = {"type": "disabled"}
+
     request = urllib.request.Request(
         url,
         data=json.dumps(body).encode("utf-8"),
@@ -170,3 +263,20 @@ def _chat_completion(messages: list[dict[str, str]], options: AITranslationOptio
 def _requires_api_key(base_url: str) -> bool:
     lowered = base_url.lower()
     return not any(host in lowered for host in ["localhost", "127.0.0.1", "0.0.0.0"])
+
+
+def resolve_translation_options(options: AITranslationOptions) -> AITranslationOptions:
+    provider = normalize_translation_provider(options.provider)
+    return AITranslationOptions(
+        source_language=options.source_language,
+        target_language=options.target_language,
+        provider=provider,
+        api_key=options.api_key or default_translation_api_key(provider),
+        model=options.model or default_translation_model(provider),
+        base_url=options.base_url or default_translation_base_url(provider),
+        batch_size=options.batch_size,
+    )
+
+
+def _provider_defaults(provider: str | None) -> TranslationProvider:
+    return TRANSLATION_PROVIDERS[normalize_translation_provider(provider)]

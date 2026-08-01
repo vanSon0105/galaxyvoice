@@ -129,6 +129,23 @@ $env:GALAXY_TRANSLATION_MODEL="gpt-4o-mini"
 $env:GALAXY_TRANSLATION_BASE_URL="https://api.openai.com/v1"
 ```
 
+DeepSeek:
+
+```powershell
+$env:DEEPSEEK_API_KEY="sk-..."
+$env:GALAXY_TRANSLATION_PROVIDER="deepseek"
+$env:GALAXY_DEEPSEEK_MODEL="deepseek-v4-flash"
+$env:GALAXY_DEEPSEEK_BASE_URL="https://api.deepseek.com"
+```
+
+CLI cũng có thể chọn trực tiếp:
+
+```powershell
+python run.py --video .\video.mp4 --transcribe --source-language en --target-language vi --ai-provider deepseek
+```
+
+Trên Windows, app cũng đọc `OPENAI_API_KEY` và `DEEPSEEK_API_KEY` từ User/Machine Environment được tạo bằng `setx`, kể cả khi biến đó chưa có trong terminal hiện tại.
+
 `GALAXY_TRANSLATION_BASE_URL` dùng endpoint tương thích OpenAI `/v1/chat/completions`, nên có thể đổi sang provider khác nếu muốn. Nếu chọn `No translation`, app chỉ tạo SRT gốc từ video.
 
 ## Ghi chú về voice clone

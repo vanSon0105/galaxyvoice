@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+import os
 import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -30,26 +33,32 @@ class TranscriptionTests(unittest.TestCase):
                     SubtitleCue(index=2, start_ms=1200, end_ms=2400, text="World."),
                 ]
 
-            def translator(cues, _options):
+            def translator(cues, options):
+                self.assertEqual(options.provider, "deepseek")
+                self.assertEqual(options.model, "deepseek-v4-flash")
+                self.assertEqual(options.base_url, "https://api.deepseek.com")
                 return [
                     SubtitleCue(index=cue.index, start_ms=cue.start_ms, end_ms=cue.end_ms, text=f"VI {cue.text}")
                     for cue in cues
                 ]
 
-            result = create_subtitles_from_video(
-                VideoSubtitleOptions(
-                    video_path=video,
-                    output_dir=root / "exports",
-                    project_name="clip",
-                    source_language="en",
-                    target_language="vi",
-                    ai_api_key="test-key",
-                ),
-                ffmpeg_path="ffmpeg",
-                runner=runner,
-                transcriber=transcriber,
-                translator=translator,
-            )
+            with patch.dict(os.environ, {}, clear=True):
+                with patch("app.env_config._read_windows_environment", return_value=""):
+                    result = create_subtitles_from_video(
+                        VideoSubtitleOptions(
+                            video_path=video,
+                            output_dir=root / "exports",
+                            project_name="clip",
+                            source_language="en",
+                            target_language="vi",
+                            ai_api_key="test-key",
+                            ai_provider="deepseek",
+                        ),
+                        ffmpeg_path="ffmpeg",
+                        runner=runner,
+                        transcriber=transcriber,
+                        translator=translator,
+                    )
 
             self.assertTrue(result.audio_path.exists())
             self.assertTrue(result.source_srt_path.exists())
@@ -57,6 +66,8 @@ class TranscriptionTests(unittest.TestCase):
             self.assertIn("Hello.", result.source_srt_path.read_text(encoding="utf-8"))
             self.assertIn("VI Hello.", result.translated_srt_path.read_text(encoding="utf-8"))
             self.assertIn("subtitle_manifest.json", str(result.manifest_path))
+            manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["ai_provider"], "deepseek")
 
 
 if __name__ == "__main__":

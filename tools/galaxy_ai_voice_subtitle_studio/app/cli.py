@@ -7,7 +7,7 @@ from pathlib import Path
 from .engine import GenerationOptions, generate_package
 from .media import MediaExtractionOptions, extract_audio_from_video
 from .transcription import VideoSubtitleOptions, create_subtitles_from_video
-from .translator import default_translation_base_url, default_translation_model
+from .translator import default_translation_provider, translation_provider_codes
 from .tts import PowerShellSapiTTS
 
 
@@ -39,6 +39,7 @@ def main(argv: list[str] | None = None) -> int:
                     source_language=args.source_language,
                     target_language="none" if args.no_translate else args.target_language,
                     whisper_model=args.whisper_model,
+                    ai_provider=args.ai_provider,
                     ai_model=args.ai_model,
                     ai_base_url=args.ai_base_url,
                     ai_api_key=args.ai_api_key,
@@ -118,8 +119,18 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--target-language", default="vi", help="Translation language code.")
     parser.add_argument("--no-translate", action="store_true", help="Only create the original-language SRT.")
     parser.add_argument("--whisper-model", default="base", help="faster-whisper model size.")
-    parser.add_argument("--ai-model", default=default_translation_model(), help="AI translation model.")
-    parser.add_argument("--ai-base-url", default=default_translation_base_url(), help="OpenAI-compatible API base URL.")
+    parser.add_argument(
+        "--ai-provider",
+        default=default_translation_provider(),
+        choices=translation_provider_codes(),
+        help="AI translation provider.",
+    )
+    parser.add_argument("--ai-model", default="", help="AI translation model. Defaults to the selected provider.")
+    parser.add_argument(
+        "--ai-base-url",
+        default="",
+        help="OpenAI-compatible API base URL. Defaults to the selected provider.",
+    )
     parser.add_argument("--ai-api-key", default="", help="AI translation API key; env vars are also supported.")
     return parser
 

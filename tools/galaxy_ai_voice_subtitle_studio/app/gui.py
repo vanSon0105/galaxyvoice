@@ -12,7 +12,14 @@ from .config import AppConfig, default_config_path, load_app_config, save_app_co
 from .engine import GenerationOptions, GenerationResult, generate_package
 from .languages import code_from_label, label_from_code, language_labels
 from .media import MediaExtractionOptions, MediaExtractionResult, extract_audio_from_video
-from .transcription import WHISPER_MODELS, VideoSubtitleOptions, VideoSubtitleResult, create_subtitles_from_video
+from .transcription import (
+    WHISPER_MODELS,
+    VideoSubtitleDraft,
+    VideoSubtitleOptions,
+    VideoSubtitleResult,
+    export_subtitle_package,
+    prepare_subtitles_from_video,
+)
 from .translator import (
     AITranslationOptions,
     default_translation_api_key,
@@ -54,10 +61,15 @@ class GalaxyStudioApp:
         self.voice_worker: threading.Thread | None = None
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.last_result: GenerationResult | MediaExtractionResult | VideoSubtitleResult | None = None
+        self.subtitle_draft: VideoSubtitleDraft | None = None
         self._poll_after_id: str | None = None
         self._voice_refresh_after_id: str | None = None
         self._config_save_after_id: str | None = None
         self._config_save_enabled = False
+        self._closing = False
+        self._export_in_progress = False
+        self._subtitle_draft_lock = threading.Lock()
+        self._pending_subtitle_draft: VideoSubtitleDraft | None = None
 
         self.project_name = tk.StringVar(value="galaxy_project")
         self.output_dir = tk.StringVar(value=saved_config.output_dir or str(Path.cwd() / "exports"))
@@ -147,22 +159,27 @@ class GalaxyStudioApp:
         left = ttk.Frame(shell)
         left.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
         left.columnconfigure(0, weight=1)
-        left.rowconfigure(1, weight=1)
-        ttk.Label(left, text="Script").grid(row=0, column=0, sticky="w", pady=(0, 6))
-        self.script_text = tk.Text(
-            left,
+        left.rowconfigure(0, weight=1)
+        self.subtitle_notebook = ttk.Notebook(left)
+        self.subtitle_notebook.grid(row=0, column=0, sticky="nsew")
+        self.script_tab, self.script_text = self._build_text_tab(
+            self.subtitle_notebook,
+            "Script",
             wrap="word",
-            undo=True,
             font=("Segoe UI", 11),
-            padx=14,
-            pady=12,
-            bg="#fffdfa",
-            fg="#1f1f1f",
-            insertbackground="#1f1f1f",
-            relief="solid",
-            bd=1,
         )
-        self.script_text.grid(row=1, column=0, sticky="nsew")
+        self.source_subtitle_tab, self.source_subtitle_text = self._build_text_tab(
+            self.subtitle_notebook,
+            "Sub gốc",
+            wrap="word",
+            font=("Consolas", 10),
+        )
+        self.translated_subtitle_tab, self.translated_subtitle_text = self._build_text_tab(
+            self.subtitle_notebook,
+            "Sub dịch",
+            wrap="word",
+            font=("Consolas", 10),
+        )
         self.script_text.bind("<<Modified>>", self._on_script_modified)
 
         right = ttk.Frame(shell, style="Panel.TFrame", padding=14)
@@ -205,6 +222,36 @@ class GalaxyStudioApp:
         )
         self.log_text.grid(row=1, column=0, sticky="ew")
         self.log_text.configure(state="disabled")
+
+    def _build_text_tab(
+        self,
+        notebook: ttk.Notebook,
+        label: str,
+        wrap: str,
+        font: tuple[str, int],
+    ) -> tuple[ttk.Frame, tk.Text]:
+        tab = ttk.Frame(notebook, padding=1)
+        tab.columnconfigure(0, weight=1)
+        tab.rowconfigure(0, weight=1)
+        editor = tk.Text(
+            tab,
+            wrap=wrap,
+            undo=True,
+            font=font,
+            padx=14,
+            pady=12,
+            bg="#fffdfa",
+            fg="#1f1f1f",
+            insertbackground="#1f1f1f",
+            relief="solid",
+            bd=1,
+        )
+        scrollbar = ttk.Scrollbar(tab, orient="vertical", command=editor.yview)
+        editor.configure(yscrollcommand=scrollbar.set)
+        editor.grid(row=0, column=0, sticky="nsew")
+        scrollbar.grid(row=0, column=1, sticky="ns")
+        notebook.add(tab, text=label)
+        return tab, editor
 
     def _build_scrollable_controls(self, parent: ttk.Frame) -> ttk.Frame:
         canvas = tk.Canvas(parent, bg="#ffffff", highlightthickness=0, bd=0)
@@ -356,6 +403,13 @@ class GalaxyStudioApp:
         self.extract_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         self.subtitle_button = ttk.Button(button_row, text="Create Subtitles", command=self.start_create_video_subtitles)
         self.subtitle_button.grid(row=0, column=1, sticky="ew", padx=(8, 0))
+        self.subtitle_export_button = ttk.Button(
+            button_row,
+            text="Export Subtitles",
+            command=self.start_export_subtitles,
+            state="disabled",
+        )
+        self.subtitle_export_button.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
     def _add_slider(
         self,
@@ -575,10 +629,83 @@ class GalaxyStudioApp:
 
     def _run_video_subtitles(self, options: VideoSubtitleOptions) -> None:
         try:
-            result = create_subtitles_from_video(options, progress=lambda message: self.events.put(("log", message)))
+            draft = prepare_subtitles_from_video(
+                options,
+                progress=lambda message: self.events.put(("log", message)),
+            )
+            with self._subtitle_draft_lock:
+                if self._closing:
+                    should_cleanup = True
+                else:
+                    self._pending_subtitle_draft = draft
+                    self.events.put(("done", draft))
+                    should_cleanup = False
+            if should_cleanup:
+                draft.cleanup()
+        except Exception as error:  # pragma: no cover - UI boundary
+            self.events.put(("error", error))
+
+    def start_export_subtitles(self) -> None:
+        if self.worker and self.worker.is_alive():
+            return
+        if self.subtitle_draft is None:
+            messagebox.showwarning("Missing subtitles", "Create subtitles before exporting.")
+            return
+
+        source_srt_text = self.source_subtitle_text.get("1.0", "end-1c")
+        translated_srt_text = (
+            self.translated_subtitle_text.get("1.0", "end-1c")
+            if self.subtitle_draft.translated_cues is not None
+            else None
+        )
+        output_dir = Path(self.output_dir.get()).expanduser()
+        project_name = self.project_name.get()
+
+        self.last_result = None
+        self.open_button.configure(state="disabled")
+        self._set_busy(True)
+        self.progress.start(12)
+        self.status.set("Exporting")
+        self._append_log("Exporting subtitle files...")
+
+        self.worker = threading.Thread(
+            target=self._run_subtitle_export,
+            args=(
+                self.subtitle_draft,
+                output_dir,
+                project_name,
+                source_srt_text,
+                translated_srt_text,
+            ),
+            daemon=False,
+        )
+        self._export_in_progress = True
+        self.worker.start()
+
+    def _run_subtitle_export(
+        self,
+        draft: VideoSubtitleDraft,
+        output_dir: Path,
+        project_name: str,
+        source_srt_text: str,
+        translated_srt_text: str | None,
+    ) -> None:
+        try:
+            result = export_subtitle_package(
+                draft,
+                output_dir,
+                project_name,
+                source_srt_text=source_srt_text,
+                translated_srt_text=translated_srt_text,
+                progress=lambda message: self.events.put(("log", message)),
+            )
             self.events.put(("done", result))
         except Exception as error:  # pragma: no cover - UI boundary
             self.events.put(("error", error))
+        finally:
+            self._export_in_progress = False
+            if self._closing:
+                draft.cleanup()
 
     def _on_ai_provider_changed(self, _event: tk.Event | None = None) -> None:
         provider = translation_provider_code(self.ai_provider.get())
@@ -721,11 +848,25 @@ class GalaxyStudioApp:
     def _finish_success(self, result: object) -> None:
         self.progress.stop()
         self._set_busy(False)
-        self.open_button.configure(state="normal")
         self.status.set("Done")
         self.last_result = result if isinstance(result, (GenerationResult, MediaExtractionResult, VideoSubtitleResult)) else None
 
-        if isinstance(self.last_result, GenerationResult):
+        if isinstance(result, VideoSubtitleDraft):
+            with self._subtitle_draft_lock:
+                if self._pending_subtitle_draft is result:
+                    self._pending_subtitle_draft = None
+            self._replace_subtitle_draft(result)
+            self._load_subtitle_draft(result)
+            self.subtitle_export_button.configure(state="normal")
+            self.open_button.configure(state="disabled")
+            self.status.set("Ready to export")
+            self._append_log(
+                f"Created {result.cue_count} subtitle cues. Review Sub gốc/Sub dịch, then export when ready."
+            )
+            for warning in result.warnings:
+                self._append_log(f"Warning: {warning}")
+        elif isinstance(self.last_result, GenerationResult):
+            self.open_button.configure(state="normal")
             self._append_log(f"WAV: {self.last_result.wav_path}")
             self._append_log(f"SRT: {self.last_result.srt_path}")
             if self.last_result.mp3_path:
@@ -733,6 +874,7 @@ class GalaxyStudioApp:
             for warning in self.last_result.warnings:
                 self._append_log(f"Warning: {warning}")
         elif isinstance(self.last_result, MediaExtractionResult):
+            self.open_button.configure(state="normal")
             if self.last_result.wav_path:
                 self._append_log(f"WAV: {self.last_result.wav_path}")
             if self.last_result.mp3_path:
@@ -741,11 +883,11 @@ class GalaxyStudioApp:
             for warning in self.last_result.warnings:
                 self._append_log(f"Warning: {warning}")
         elif isinstance(self.last_result, VideoSubtitleResult):
+            self.open_button.configure(state="normal")
             self._append_log(f"Audio: {self.last_result.audio_path}")
             self._append_log(f"Original SRT: {self.last_result.source_srt_path}")
             if self.last_result.translated_srt_path:
                 self._append_log(f"Translated SRT: {self.last_result.translated_srt_path}")
-            self._load_subtitle_script(self.last_result)
             self._append_log(f"Manifest: {self.last_result.manifest_path}")
             for warning in self.last_result.warnings:
                 self._append_log(f"Warning: {warning}")
@@ -768,7 +910,7 @@ class GalaxyStudioApp:
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
-    def _load_subtitle_script(self, result: VideoSubtitleResult) -> None:
+    def _load_subtitle_script(self, result: VideoSubtitleDraft | VideoSubtitleResult) -> None:
         if not result.script_text.strip():
             return
 
@@ -781,6 +923,18 @@ class GalaxyStudioApp:
             self._append_log(f"Selected voice for {language}: {self.voice_name.get()}")
         elif result.script_language not in {"auto", "none"}:
             self._append_log(f"No {self.tts.label} voice found for {language}; choose a matching voice before Generate.")
+
+    def _load_subtitle_draft(self, draft: VideoSubtitleDraft) -> None:
+        self._set_editor_text(self.source_subtitle_text, draft.source_srt_text)
+        self._set_editor_text(self.translated_subtitle_text, draft.translated_srt_text)
+        self._load_subtitle_script(draft)
+        selected_tab = self.translated_subtitle_tab if draft.translated_cues is not None else self.source_subtitle_tab
+        self.subtitle_notebook.select(selected_tab)
+
+    def _replace_subtitle_draft(self, draft: VideoSubtitleDraft) -> None:
+        if self.subtitle_draft is not None and self.subtitle_draft is not draft:
+            self.subtitle_draft.cleanup()
+        self.subtitle_draft = draft
 
     def _select_voice_for_language(self, language_code: str) -> bool:
         normalized = language_code.strip().lower()
@@ -814,13 +968,17 @@ class GalaxyStudioApp:
     def _set_script_text(self, text: str) -> None:
         self._setting_script_text = True
         try:
-            self.script_text.edit_separator()
-            self.script_text.delete("1.0", "end")
-            self.script_text.insert("1.0", text)
-            self.script_text.edit_separator()
-            self.script_text.edit_modified(False)
+            self._set_editor_text(self.script_text, text)
         finally:
             self._setting_script_text = False
+
+    @staticmethod
+    def _set_editor_text(editor: tk.Text, text: str) -> None:
+        editor.edit_separator()
+        editor.delete("1.0", "end")
+        editor.insert("1.0", text)
+        editor.edit_separator()
+        editor.edit_modified(False)
 
     def _on_script_modified(self, event: tk.Event) -> None:
         widget = event.widget
@@ -835,6 +993,8 @@ class GalaxyStudioApp:
         self.generate_button.configure(state=state)
         self.extract_button.configure(state=state)
         self.subtitle_button.configure(state=state)
+        export_state = "normal" if not busy and self.subtitle_draft is not None else "disabled"
+        self.subtitle_export_button.configure(state=export_state)
         voice_refreshing = bool(self.voice_worker and self.voice_worker.is_alive())
         self.refresh_voices_button.configure(state="disabled" if busy or voice_refreshing else "normal")
         self.tts_engine_combo.configure(state="disabled" if busy else "readonly")
@@ -867,6 +1027,18 @@ class GalaxyStudioApp:
     def _on_destroy(self, event: tk.Event) -> None:
         if event.widget is not self.root:
             return
+
+        with self._subtitle_draft_lock:
+            self._closing = True
+            pending_draft = self._pending_subtitle_draft
+            self._pending_subtitle_draft = None
+        if pending_draft is not None:
+            pending_draft.cleanup()
+
+        if self.subtitle_draft is not None:
+            if not self._export_in_progress:
+                self.subtitle_draft.cleanup()
+            self.subtitle_draft = None
 
         if self._config_save_after_id:
             try:

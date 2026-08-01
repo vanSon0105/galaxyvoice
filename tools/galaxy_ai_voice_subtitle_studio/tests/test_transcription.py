@@ -13,10 +13,190 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.srt import SubtitleCue  # noqa: E402
-from app.transcription import VideoSubtitleOptions, create_subtitles_from_video  # noqa: E402
+from app.transcription import (  # noqa: E402
+    VideoSubtitleDraft,
+    VideoSubtitleOptions,
+    create_subtitles_from_video,
+    export_subtitle_package,
+    prepare_subtitles_from_video,
+)
+
+
+def _draft_for_export(audio_path: Path) -> VideoSubtitleDraft:
+    source_cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Hello.")
+    translated_cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Xin chao.")
+    return VideoSubtitleDraft(
+        source_video=Path("clip.mp4"),
+        project_name="clip",
+        audio_path=audio_path,
+        source_language="en",
+        target_language="vi",
+        whisper_model="base",
+        ai_provider="deepseek",
+        ai_model="deepseek-v4-flash",
+        ai_base_url="https://api.deepseek.com",
+        source_cues=(source_cue,),
+        translated_cues=(translated_cue,),
+        warnings=[],
+    )
 
 
 class TranscriptionTests(unittest.TestCase):
+    def test_prepare_subtitles_keeps_output_folder_empty_until_export(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "clip.mp4"
+            output_dir = root / "exports"
+            video.write_bytes(b"fake video")
+
+            def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                Path(command[-1]).write_bytes(b"fake audio")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            def transcriber(_audio_path, _language, _model, _progress):
+                return [SubtitleCue(index=1, start_ms=0, end_ms=1200, text="Hello.")]
+
+            def translator(cues, _options):
+                return [
+                    SubtitleCue(index=cue.index, start_ms=cue.start_ms, end_ms=cue.end_ms, text="Xin chao.")
+                    for cue in cues
+                ]
+
+            draft = prepare_subtitles_from_video(
+                VideoSubtitleOptions(
+                    video_path=video,
+                    output_dir=output_dir,
+                    project_name="clip",
+                    source_language="en",
+                    target_language="vi",
+                    ai_api_key="test-key",
+                ),
+                ffmpeg_path="ffmpeg",
+                runner=runner,
+                transcriber=transcriber,
+                translator=translator,
+            )
+            try:
+                self.assertFalse(output_dir.exists())
+                self.assertTrue(draft.audio_path.exists())
+                self.assertIn("Hello.", draft.source_srt_text)
+                self.assertIn("Xin chao.", draft.translated_srt_text)
+                self.assertEqual(draft.script_text, "Xin chao.")
+            finally:
+                draft.cleanup()
+
+    def test_export_subtitle_package_preserves_existing_file_names_and_format(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "clip.mp4"
+            video.write_bytes(b"fake video")
+
+            def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                Path(command[-1]).write_bytes(b"fake audio")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            def transcriber(_audio_path, _language, _model, _progress):
+                return [SubtitleCue(index=1, start_ms=0, end_ms=1200, text="Hello.")]
+
+            def translator(cues, _options):
+                return [
+                    SubtitleCue(index=cue.index, start_ms=cue.start_ms, end_ms=cue.end_ms, text="Xin chao.")
+                    for cue in cues
+                ]
+
+            draft = prepare_subtitles_from_video(
+                VideoSubtitleOptions(
+                    video_path=video,
+                    output_dir=root / "unused",
+                    project_name="clip",
+                    source_language="en",
+                    target_language="vi",
+                    ai_api_key="test-key",
+                ),
+                ffmpeg_path="ffmpeg",
+                runner=runner,
+                transcriber=transcriber,
+                translator=translator,
+            )
+            try:
+                result = export_subtitle_package(draft, root / "exports", "clip")
+
+                self.assertEqual(result.project_dir.name, "clip")
+                self.assertEqual(result.audio_path.name, "clip_speech.wav")
+                self.assertEqual(result.source_srt_path.name, "clip_original.srt")
+                self.assertEqual(result.translated_srt_path.name, "clip_vi.srt")
+                self.assertEqual(result.manifest_path.name, "subtitle_manifest.json")
+                self.assertEqual(
+                    result.source_srt_path.read_text(encoding="utf-8"),
+                    "1\n00:00:00,000 --> 00:00:01,200\nHello.\n",
+                )
+                self.assertEqual(
+                    result.translated_srt_path.read_text(encoding="utf-8"),
+                    "1\n00:00:00,000 --> 00:00:01,200\nXin chao.\n",
+                )
+                manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+                self.assertEqual(manifest["files"]["audio"], "clip_speech.wav")
+                self.assertEqual(manifest["files"]["source_srt"], "clip_original.srt")
+                self.assertEqual(manifest["files"]["translated_srt"], "clip_vi.srt")
+            finally:
+                draft.cleanup()
+
+    def test_export_uses_edited_srt_for_cue_count_and_script_text(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            audio = root / "speech.wav"
+            audio.write_bytes(b"fake audio")
+            draft = _draft_for_export(audio)
+            source_text = (
+                "1\n00:00:00,000 --> 00:00:01,000\nHello.\n\n"
+                "2\n00:00:01,000 --> 00:00:02,000\nWorld.\n"
+            )
+            translated_text = (
+                "1\n00:00:00,000 --> 00:00:01,000\nXin chao.\n\n"
+                "2\n00:00:01,000 --> 00:00:02,000\nThe gioi.\n"
+            )
+
+            result = export_subtitle_package(
+                draft,
+                root / "exports",
+                "clip",
+                source_srt_text=source_text,
+                translated_srt_text=translated_text,
+            )
+
+            self.assertEqual(result.cue_count, 2)
+            self.assertEqual(result.script_text, "Xin chao.\nThe gioi.")
+            manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["cue_count"], 2)
+
+    def test_failed_export_removes_the_incomplete_project_folder(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            audio = root / "speech.wav"
+            audio.write_bytes(b"fake audio")
+            draft = _draft_for_export(audio)
+            output_dir = root / "exports"
+
+            with patch("app.transcription.shutil.copy2", side_effect=OSError("copy failed")):
+                with self.assertRaisesRegex(OSError, "copy failed"):
+                    export_subtitle_package(draft, output_dir, "clip")
+
+            self.assertEqual(list(output_dir.iterdir()), [])
+
+    def test_failed_export_reports_when_incomplete_folder_cannot_be_removed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            audio = root / "speech.wav"
+            audio.write_bytes(b"fake audio")
+            draft = _draft_for_export(audio)
+
+            with (
+                patch("app.transcription.shutil.copy2", side_effect=OSError("copy failed")),
+                patch("app.transcription.shutil.rmtree", side_effect=PermissionError("folder locked")),
+            ):
+                with self.assertRaisesRegex(RuntimeError, "folder locked"):
+                    export_subtitle_package(draft, root / "exports", "clip")
+
     def test_create_subtitles_from_video_writes_original_and_translated_srt(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

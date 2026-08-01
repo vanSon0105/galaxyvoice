@@ -5,7 +5,7 @@ import tempfile
 import tkinter as tk
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -13,7 +13,8 @@ sys.path.insert(0, str(ROOT))
 from app.gui import GalaxyStudioApp  # noqa: E402
 from app.config import AppConfig, load_app_config, save_app_config  # noqa: E402
 from app.engine import GenerationOptions, GenerationResult  # noqa: E402
-from app.transcription import VideoSubtitleResult  # noqa: E402
+from app.srt import SubtitleCue  # noqa: E402
+from app.transcription import VideoSubtitleDraft, VideoSubtitleResult  # noqa: E402
 from app.translator import AITranslationOptions  # noqa: E402
 from app.tts import EDGE_ENGINE_LABEL, EdgeTTS, Voice  # noqa: E402
 
@@ -172,22 +173,152 @@ class GuiLayoutTests(unittest.TestCase):
         try:
             with patch("app.gui.EdgeTTS.initial_voices", return_value=voices):
                 app = GalaxyStudioApp(root, config_path=self.config_path)
-                result = VideoSubtitleResult(
-                    project_dir=Path("exports") / "clip",
-                    audio_path=Path("exports") / "clip" / "clip_speech.wav",
-                    source_srt_path=Path("exports") / "clip" / "clip_original.srt",
-                    translated_srt_path=Path("exports") / "clip" / "clip_vi.srt",
-                    manifest_path=Path("exports") / "clip" / "subtitle_manifest.json",
-                    cue_count=2,
-                    script_text="Xin chao.\nThe gioi.",
-                    script_language="vi",
+                source_cues = (
+                    SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Hello."),
+                    SubtitleCue(index=2, start_ms=1000, end_ms=2000, text="World."),
+                )
+                translated_cues = (
+                    SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Xin chao."),
+                    SubtitleCue(index=2, start_ms=1000, end_ms=2000, text="The gioi."),
+                )
+                result = VideoSubtitleDraft(
+                    source_video=Path("clip.mp4"),
+                    project_name="clip",
+                    audio_path=Path("temp") / "speech.wav",
+                    source_language="en",
+                    target_language="vi",
+                    whisper_model="base",
+                    ai_provider="deepseek",
+                    ai_model="deepseek-v4-flash",
+                    ai_base_url="https://api.deepseek.com",
+                    source_cues=source_cues,
+                    translated_cues=translated_cues,
                     warnings=[],
                 )
 
                 app._finish_success(result)
 
                 self.assertEqual(app.script_text.get("1.0", "end").strip(), "Xin chao.\nThe gioi.")
+                self.assertEqual(app.source_subtitle_text.get("1.0", "end").strip(), result.source_srt_text.strip())
+                self.assertEqual(
+                    app.translated_subtitle_text.get("1.0", "end").strip(),
+                    result.translated_srt_text.strip(),
+                )
+                tab_labels = [app.subtitle_notebook.tab(tab_id, "text") for tab_id in app.subtitle_notebook.tabs()]
+                self.assertEqual(tab_labels, ["Script", "Sub gốc", "Sub dịch"])
+                self.assertEqual(str(app.subtitle_export_button.cget("state")), "normal")
+                self.assertEqual(str(app.open_button.cget("state")), "disabled")
                 self.assertEqual(app.voice_name.get(), "Vietnamese Voice")
+        finally:
+            root.destroy()
+
+    def test_export_subtitles_uses_the_current_text_from_both_subtitle_tabs(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        draft = VideoSubtitleDraft(
+            source_video=Path("clip.mp4"),
+            project_name="clip",
+            audio_path=Path("temp") / "speech.wav",
+            source_language="en",
+            target_language="vi",
+            whisper_model="base",
+            ai_provider="deepseek",
+            ai_model="deepseek-v4-flash",
+            ai_base_url="https://api.deepseek.com",
+            source_cues=(SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Hello."),),
+            translated_cues=(SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Xin chao."),),
+            warnings=[],
+        )
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app._finish_success(draft)
+            app._set_editor_text(
+                app.source_subtitle_text,
+                "1\n00:00:00,000 --> 00:00:01,000\nEdited original.\n",
+            )
+            app._set_editor_text(
+                app.translated_subtitle_text,
+                "1\n00:00:00,000 --> 00:00:01,000\nBan dich da sua.\n",
+            )
+
+            with patch("app.gui.threading.Thread") as thread:
+                app.start_export_subtitles()
+
+            self.assertEqual(thread.call_args.kwargs["target"], app._run_subtitle_export)
+            export_args = thread.call_args.kwargs["args"]
+            self.assertIn("Edited original.", export_args[3])
+            self.assertIn("Ban dich da sua.", export_args[4])
+            thread.return_value.start.assert_called_once()
+            app.progress.stop()
+        finally:
+            root.destroy()
+
+    def test_closing_during_export_defers_subtitle_workspace_cleanup_to_worker(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        app = GalaxyStudioApp(root, config_path=self.config_path)
+        draft = Mock(spec=VideoSubtitleDraft)
+        app.subtitle_draft = draft
+        app._export_in_progress = True
+
+        root.destroy()
+
+        draft.cleanup.assert_not_called()
+
+    def test_export_worker_cleans_subtitle_workspace_after_app_closes(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            draft = Mock(spec=VideoSubtitleDraft)
+            app._closing = True
+            with patch("app.gui.export_subtitle_package", side_effect=OSError("closed")):
+                app._run_subtitle_export(draft, Path("exports"), "clip", "source", "translated")
+
+            draft.cleanup.assert_called_once()
+        finally:
+            root.destroy()
+
+    def test_closing_after_create_worker_finishes_cleans_pending_draft(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        app = GalaxyStudioApp(root, config_path=self.config_path)
+        draft = Mock(spec=VideoSubtitleDraft)
+        with patch("app.gui.prepare_subtitles_from_video", return_value=draft):
+            app._run_video_subtitles(Mock())
+
+        root.destroy()
+
+        draft.cleanup.assert_called_once()
+
+    def test_create_worker_cleans_draft_instead_of_enqueueing_after_app_closes(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app._closing = True
+            draft = Mock(spec=VideoSubtitleDraft)
+            with patch("app.gui.prepare_subtitles_from_video", return_value=draft):
+                app._run_video_subtitles(Mock())
+
+            draft.cleanup.assert_called_once()
+            self.assertTrue(app.events.empty())
         finally:
             root.destroy()
 

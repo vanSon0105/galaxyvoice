@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
-from dataclasses import dataclass
+import tempfile
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -10,7 +12,7 @@ from typing import Callable
 from .ffmpeg import ffmpeg_missing_message, find_ffmpeg
 from .media import Runner, _run_command, _run_ffmpeg, build_extract_wav_command
 from .paths import unique_project_dir
-from .srt import SubtitleCue, render_srt
+from .srt import SubtitleCue, parse_srt, render_srt
 from .translator import (
     AITranslationOptions,
     default_translation_api_key,
@@ -56,6 +58,47 @@ class VideoSubtitleResult:
     warnings: list[str]
 
 
+@dataclass(frozen=True)
+class VideoSubtitleDraft:
+    source_video: Path
+    project_name: str
+    audio_path: Path
+    source_language: str
+    target_language: str
+    whisper_model: str
+    ai_provider: str
+    ai_model: str
+    ai_base_url: str
+    source_cues: tuple[SubtitleCue, ...]
+    translated_cues: tuple[SubtitleCue, ...] | None
+    warnings: list[str]
+    _workspace: tempfile.TemporaryDirectory[str] | None = field(default=None, repr=False, compare=False)
+
+    @property
+    def cue_count(self) -> int:
+        return len(self.source_cues)
+
+    @property
+    def source_srt_text(self) -> str:
+        return render_srt(list(self.source_cues))
+
+    @property
+    def translated_srt_text(self) -> str:
+        return render_srt(list(self.translated_cues or ()))
+
+    @property
+    def script_text(self) -> str:
+        return cues_to_script(list(self.translated_cues or self.source_cues))
+
+    @property
+    def script_language(self) -> str:
+        return self.target_language if self.translated_cues is not None else self.source_language
+
+    def cleanup(self) -> None:
+        if self._workspace is not None:
+            self._workspace.cleanup()
+
+
 def create_subtitles_from_video(
     options: VideoSubtitleOptions,
     progress: ProgressCallback | None = None,
@@ -64,6 +107,33 @@ def create_subtitles_from_video(
     transcriber: Transcriber | None = None,
     translator: CueTranslator | None = None,
 ) -> VideoSubtitleResult:
+    draft = prepare_subtitles_from_video(
+        options,
+        progress=progress,
+        ffmpeg_path=ffmpeg_path,
+        runner=runner,
+        transcriber=transcriber,
+        translator=translator,
+    )
+    try:
+        return export_subtitle_package(
+            draft,
+            options.output_dir,
+            options.project_name,
+            progress=progress,
+        )
+    finally:
+        draft.cleanup()
+
+
+def prepare_subtitles_from_video(
+    options: VideoSubtitleOptions,
+    progress: ProgressCallback | None = None,
+    ffmpeg_path: str | None = None,
+    runner: Runner | None = None,
+    transcriber: Transcriber | None = None,
+    translator: CueTranslator | None = None,
+) -> VideoSubtitleDraft:
     report = progress or (lambda _message: None)
     video_path = Path(options.video_path).expanduser()
     if not video_path.exists():
@@ -87,60 +157,126 @@ def create_subtitles_from_video(
     if target_language != "none":
         validate_translation_options(ai_options)
 
-    project_name = options.project_name or video_path.stem
-    project_dir = unique_project_dir(options.output_dir, project_name, fallback_prefix="subtitles")
-    project_slug = project_dir.name
-    audio_path = project_dir / f"{project_slug}_speech.wav"
-    source_srt_path = project_dir / f"{project_slug}_original.srt"
-    translated_srt_path = project_dir / f"{project_slug}_{target_language}.srt" if target_language != "none" else None
-    manifest_path = project_dir / "subtitle_manifest.json"
     run = runner or _run_command
     transcribe = transcriber or transcribe_with_faster_whisper
     translate = translator or translate_cues
     warnings: list[str] = []
+    workspace = tempfile.TemporaryDirectory(prefix="galaxy_subtitles_")
+    audio_path = Path(workspace.name) / "speech.wav"
 
-    report("Extracting speech audio...")
-    _run_ffmpeg(build_extract_wav_command(ffmpeg, video_path, audio_path), run)
+    try:
+        report("Extracting speech audio...")
+        _run_ffmpeg(build_extract_wav_command(ffmpeg, video_path, audio_path), run)
 
-    report("Transcribing speech...")
-    whisper_language = None if source_language == "auto" else source_language
-    cues = transcribe(audio_path, whisper_language, options.whisper_model, report)
-    if not cues:
-        raise RuntimeError("No speech segments were detected in the video.")
+        report("Transcribing speech...")
+        whisper_language = None if source_language == "auto" else source_language
+        cues = transcribe(audio_path, whisper_language, options.whisper_model, report)
+        if not cues:
+            raise RuntimeError("No speech segments were detected in the video.")
 
-    source_srt_path.write_text(render_srt(cues), encoding="utf-8")
+        translated_cues: list[SubtitleCue] | None = None
+        if target_language != "none":
+            report("Translating subtitles with AI...")
+            translated_cues = translate(cues, ai_options)
 
+        report("Subtitles are ready for review.")
+        return VideoSubtitleDraft(
+            source_video=video_path,
+            project_name=options.project_name or video_path.stem,
+            audio_path=audio_path,
+            source_language=source_language,
+            target_language=target_language,
+            whisper_model=options.whisper_model,
+            ai_provider=ai_options.provider,
+            ai_model=ai_options.model,
+            ai_base_url=ai_options.base_url,
+            source_cues=tuple(cues),
+            translated_cues=tuple(translated_cues) if translated_cues is not None else None,
+            warnings=warnings,
+            _workspace=workspace,
+        )
+    except Exception:
+        workspace.cleanup()
+        raise
+
+
+def export_subtitle_package(
+    draft: VideoSubtitleDraft,
+    output_dir: Path,
+    project_name: str | None = None,
+    source_srt_text: str | None = None,
+    translated_srt_text: str | None = None,
+    progress: ProgressCallback | None = None,
+) -> VideoSubtitleResult:
+    report = progress or (lambda _message: None)
+    if not draft.audio_path.exists():
+        raise FileNotFoundError("Subtitle working audio is no longer available. Create subtitles again.")
+
+    source_text = _export_srt_text(source_srt_text if source_srt_text is not None else draft.source_srt_text)
+    source_cues = parse_srt(source_text)
+    translated_text = None
     translated_cues: list[SubtitleCue] | None = None
-    if translated_srt_path:
-        report("Translating subtitles with AI...")
-        translated_cues = translate(cues, ai_options)
-        translated_srt_path.write_text(render_srt(translated_cues), encoding="utf-8")
+    if draft.translated_cues is not None:
+        translated_text = _export_srt_text(
+            translated_srt_text if translated_srt_text is not None else draft.translated_srt_text
+        )
+        translated_cues = parse_srt(translated_text)
+        if len(translated_cues) != len(source_cues):
+            raise ValueError("Original and translated SRT must contain the same number of cues.")
 
-    script_cues = translated_cues or cues
-    script_language = target_language if translated_cues else source_language
+    export_name = project_name if project_name is not None else draft.project_name
+    project_dir = unique_project_dir(output_dir, export_name or draft.source_video.stem, fallback_prefix="subtitles")
+    project_slug = project_dir.name
+    audio_path = project_dir / f"{project_slug}_speech.wav"
+    source_srt_path = project_dir / f"{project_slug}_original.srt"
+    translated_srt_path = (
+        project_dir / f"{project_slug}_{draft.target_language}.srt"
+        if translated_text is not None
+        else None
+    )
+    manifest_path = project_dir / "subtitle_manifest.json"
+
+    script_cues = translated_cues if translated_cues is not None else source_cues
     script_text = cues_to_script(script_cues)
+    script_language = draft.target_language if translated_cues is not None else draft.source_language
 
-    manifest = {
-        "app": "Galaxy AI Voice & Subtitle Studio",
-        "version": "0.1.0",
-        "created_at": datetime.now().isoformat(timespec="seconds"),
-        "source_video": str(video_path),
-        "source_language": source_language,
-        "target_language": target_language,
-        "whisper_model": options.whisper_model,
-        "ai_provider": ai_options.provider if translated_srt_path else None,
-        "ai_model": ai_options.model if translated_srt_path else None,
-        "ai_base_url": ai_options.base_url if translated_srt_path else None,
-        "cue_count": len(cues),
-        "files": {
-            "audio": audio_path.name,
-            "source_srt": source_srt_path.name,
-            "translated_srt": translated_srt_path.name if translated_srt_path else None,
-        },
-        "warnings": warnings,
-    }
-    manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
-    report("Done.")
+    try:
+        report("Exporting subtitle package...")
+        shutil.copy2(draft.audio_path, audio_path)
+        source_srt_path.write_text(source_text, encoding="utf-8")
+        if translated_srt_path is not None and translated_text is not None:
+            translated_srt_path.write_text(translated_text, encoding="utf-8")
+
+        manifest = {
+            "app": "Galaxy AI Voice & Subtitle Studio",
+            "version": "0.1.0",
+            "created_at": datetime.now().isoformat(timespec="seconds"),
+            "source_video": str(draft.source_video),
+            "source_language": draft.source_language,
+            "target_language": draft.target_language,
+            "whisper_model": draft.whisper_model,
+            "ai_provider": draft.ai_provider if translated_srt_path else None,
+            "ai_model": draft.ai_model if translated_srt_path else None,
+            "ai_base_url": draft.ai_base_url if translated_srt_path else None,
+            "cue_count": len(source_cues),
+            "files": {
+                "audio": audio_path.name,
+                "source_srt": source_srt_path.name,
+                "translated_srt": translated_srt_path.name if translated_srt_path else None,
+            },
+            "warnings": draft.warnings,
+        }
+        manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+        report("Done.")
+    except Exception as export_error:
+        try:
+            shutil.rmtree(project_dir)
+        except Exception as cleanup_error:
+            raise RuntimeError(
+                f"Subtitle export failed ({export_error}) and the incomplete folder could not be removed "
+                f"({cleanup_error}): {project_dir}"
+            ) from export_error
+        raise
 
     return VideoSubtitleResult(
         project_dir=project_dir,
@@ -148,11 +284,17 @@ def create_subtitles_from_video(
         source_srt_path=source_srt_path,
         translated_srt_path=translated_srt_path,
         manifest_path=manifest_path,
-        cue_count=len(cues),
+        cue_count=len(source_cues),
         script_text=script_text,
         script_language=script_language,
-        warnings=warnings,
+        warnings=list(draft.warnings),
     )
+
+
+def _export_srt_text(text: str) -> str:
+    if not text.strip():
+        raise ValueError("Subtitle content is empty.")
+    return text.rstrip("\r\n") + "\n"
 
 
 def transcribe_with_faster_whisper(

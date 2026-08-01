@@ -7,7 +7,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.srt import SubtitleCue, format_timestamp, render_srt  # noqa: E402
+from app.srt import SubtitleCue, format_timestamp, parse_srt, render_srt  # noqa: E402
 
 
 class SrtTests(unittest.TestCase):
@@ -20,6 +20,20 @@ class SrtTests(unittest.TestCase):
         self.assertEqual(
             srt,
             "1\n00:00:00,000 --> 00:00:01,250\nHello\n",
+        )
+
+    def test_parse_srt_reads_timing_and_multiline_text(self) -> None:
+        cues = parse_srt(
+            "1\r\n00:00:00,000 --> 00:00:01,250\r\nHello\r\nworld\r\n\r\n"
+            "2\r\n00:00:01,250 --> 00:00:02,500\r\nNext cue\r\n"
+        )
+
+        self.assertEqual(
+            cues,
+            [
+                SubtitleCue(index=1, start_ms=0, end_ms=1250, text="Hello\nworld"),
+                SubtitleCue(index=2, start_ms=1250, end_ms=2500, text="Next cue"),
+            ],
         )
 
 

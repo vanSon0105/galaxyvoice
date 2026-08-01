@@ -18,6 +18,20 @@ def find_ffmpeg(project_root: Path | None = None) -> str | None:
     return shutil.which("ffmpeg")
 
 
+def find_ffprobe(project_root: Path | None = None) -> str | None:
+    root = project_root or Path(__file__).resolve().parents[1]
+    bundled = [
+        root / "bin" / "ffprobe.exe",
+        root / "bin" / "ffprobe",
+    ]
+
+    for candidate in bundled:
+        if candidate.exists():
+            return str(candidate)
+
+    return shutil.which("ffprobe")
+
+
 def ffmpeg_missing_message(task: str) -> str:
     return (
         f"ffmpeg was not found. Run install_ffmpeg.ps1 in the Galaxy Studio folder, "

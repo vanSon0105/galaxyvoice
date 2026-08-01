@@ -14,6 +14,7 @@ from app.gui import GalaxyStudioApp  # noqa: E402
 from app.config import AppConfig, load_app_config, save_app_config  # noqa: E402
 from app.engine import GenerationOptions, GenerationResult  # noqa: E402
 from app.srt import SubtitleCue  # noqa: E402
+from app.subtitle_removal import BLUR_MODE, SubtitleRemovalResult  # noqa: E402
 from app.transcription import VideoSubtitleDraft, VideoSubtitleResult  # noqa: E402
 from app.translator import AITranslationOptions  # noqa: E402
 from app.tts import EDGE_ENGINE_LABEL, EdgeTTS, Voice  # noqa: E402
@@ -47,6 +48,9 @@ class GuiLayoutTests(unittest.TestCase):
                         ai_provider="deepseek",
                         ai_model="deepseek-v4-flash",
                         ai_base_url="https://api.deepseek.com",
+                        subtitle_removal_mode="fill",
+                        subtitle_region_y=68,
+                        subtitle_blur_strength=26,
                     ),
                     config_path,
                 )
@@ -59,6 +63,9 @@ class GuiLayoutTests(unittest.TestCase):
                 self.assertFalse(app.keep_segments.get())
                 self.assertEqual(app.video_source_language.get(), "English")
                 self.assertEqual(app.ai_provider.get(), "DeepSeek")
+                self.assertEqual(app._removal_mode_code(), "fill")
+                self.assertEqual(app.subtitle_region_y.get(), 68)
+                self.assertEqual(app.subtitle_blur_strength.get(), 26)
 
                 app.output_dir.set(r"D:\New Output")
                 app.ai_api_key.set("must-not-be-saved")
@@ -68,6 +75,9 @@ class GuiLayoutTests(unittest.TestCase):
                 saved = load_app_config(config_path)
 
                 self.assertEqual(saved.output_dir, r"D:\New Output")
+                self.assertEqual(saved.subtitle_removal_mode, "fill")
+                self.assertEqual(saved.subtitle_region_y, 68)
+                self.assertEqual(saved.subtitle_blur_strength, 26)
                 self.assertNotIn("must-not-be-saved", config_path.read_text(encoding="utf-8"))
         finally:
             root.destroy()
@@ -139,13 +149,12 @@ class GuiLayoutTests(unittest.TestCase):
             self.skipTest(f"Tk is unavailable: {error}")
 
         try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
             root.geometry("900x600")
-            GalaxyStudioApp(root, config_path=self.config_path)
             root.update_idletasks()
             root.update()
 
-            shell = root.winfo_children()[0]
-            right_panel = _find_grid_child(shell, row=1, column=1)
+            right_panel = _find_grid_child(app.voice_tab, row=0, column=1)
             self.assertIsNotNone(right_panel)
 
             right_height = right_panel.winfo_height()
@@ -156,6 +165,99 @@ class GuiLayoutTests(unittest.TestCase):
             )
 
             self.assertLessEqual(content_bottom, right_height)
+        finally:
+            root.destroy()
+
+    def test_main_tabs_separate_voice_and_subtitle_removal(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+
+            labels = [app.main_notebook.tab(tab_id, "text") for tab_id in app.main_notebook.tabs()]
+            self.assertEqual(labels, ["Voice", "Xóa phụ đề"])
+            self.assertEqual(app.removal_preview_canvas.cget("width"), "480")
+            self.assertEqual(app._removal_mode_code(), BLUR_MODE)
+        finally:
+            root.destroy()
+
+    def test_subtitle_removal_tab_fits_at_minimum_window_size(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            root.geometry("900x600")
+            app.main_notebook.select(app.removal_tab)
+            root.update_idletasks()
+            root.update()
+
+            preview_holder = app.removal_preview_canvas.master
+            canvas_right = app.removal_preview_canvas.winfo_x() + app.removal_preview_canvas.winfo_width()
+            self.assertLessEqual(canvas_right, preview_holder.winfo_width())
+            controls_panel = _find_grid_child(app.removal_tab, row=0, column=1)
+            self.assertIsNotNone(controls_panel)
+            controls_right = controls_panel.winfo_x() + controls_panel.winfo_width()
+            self.assertLessEqual(controls_right, app.removal_tab.winfo_width())
+        finally:
+            root.destroy()
+
+    def test_start_subtitle_removal_builds_options_for_the_worker(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.removal_video_path.set("clip.mp4")
+            app.removal_project_name.set("clean-clip")
+            app.subtitle_region_y.set(72)
+            app.subtitle_blur_strength.set(22)
+
+            with (
+                patch("app.gui.threading.Thread") as thread,
+                patch.object(app.removal_progress, "start"),
+            ):
+                app.start_remove_subtitles()
+
+            self.assertEqual(thread.call_args.kwargs["target"], app._run_subtitle_removal)
+            options = thread.call_args.kwargs["args"][0]
+            self.assertEqual(options.video_path, Path("clip.mp4"))
+            self.assertEqual(options.project_name, "clean-clip")
+            self.assertEqual(options.mode, BLUR_MODE)
+            self.assertEqual(options.region_y, 72)
+            self.assertEqual(options.blur_strength, 22)
+            thread.return_value.start.assert_called_once()
+        finally:
+            root.destroy()
+
+    def test_subtitle_removal_success_enables_its_output_button(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        result = SubtitleRemovalResult(
+            project_dir=Path("exports") / "clean-clip",
+            video_path=Path("exports") / "clean-clip" / "clean-clip_no_subtitles.mp4",
+            manifest_path=Path("exports") / "clean-clip" / "subtitle_removal_manifest.json",
+            mode=BLUR_MODE,
+            warnings=[],
+        )
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app._finish_success(result)
+
+            self.assertEqual(str(app.removal_open_button.cget("state")), "normal")
+            self.assertEqual(str(app.open_button.cget("state")), "disabled")
+            self.assertIn("clean-clip_no_subtitles.mp4", app.log_text.get("1.0", "end"))
         finally:
             root.destroy()
 

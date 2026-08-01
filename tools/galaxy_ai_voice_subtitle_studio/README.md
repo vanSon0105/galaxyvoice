@@ -139,6 +139,16 @@ Whisper tự ưu tiên NVIDIA CUDA với `float16` khi CTranslate2 phát hiện 
 
 Bấm `Generate` sau đó sẽ tạo voice từ nội dung trong tab `Script`. Nếu script được tạo từ video và bạn đổi `Translate to` trước khi generate, app sẽ dịch script sang ngôn ngữ mới rồi mới tạo voice. Nếu máy có voice Windows/SAPI trùng ngôn ngữ đã chọn, app sẽ tự chọn voice đó; nếu không, hãy cài hoặc chọn voice phù hợp thủ công.
 
+## Xóa phụ đề khỏi video
+
+GUI có hai tab chính: `Voice` giữ nguyên toàn bộ workflow tạo voice/subtitle, còn `Xóa phụ đề` xử lý video đã có phụ đề. Chọn video, kéo khung vàng quanh vùng chữ trên preview rồi chọn một trong ba chế độ:
+
+- `Bỏ track phụ đề`: loại bỏ subtitle stream rời và copy các stream còn lại, không encode lại.
+- `Làm mờ vùng phụ đề`: làm mờ vùng đã chọn, phù hợp với nền chuyển động và cho kết quả ổn định.
+- `Xóa thông minh`: dùng `ffprobe` để đọc kích thước video và bộ lọc `delogo` của FFmpeg để nội suy vùng đã chọn từ các pixel xung quanh. Nền đơn giản thường đẹp hơn làm mờ, nhưng có thể để lại vệt trên mặt người hoặc cảnh chuyển động mạnh.
+
+Hai chế độ xử lý phụ đề dính vào hình xuất video MP4 H.264 và giữ nguyên stream audio. Mỗi lần xử lý tạo thư mục project riêng, video có hậu tố `_no_subtitles` và file `subtitle_removal_manifest.json` ghi lại chế độ cùng vùng đã chọn. Chế độ, vùng chọn và độ mờ được lưu vào `config.json`; video đang chọn và API key vẫn không được lưu.
+
 ## Output
 
 Mỗi lần generate tạo một thư mục riêng:

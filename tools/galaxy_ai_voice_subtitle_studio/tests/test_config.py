@@ -33,6 +33,12 @@ class ConfigTests(unittest.TestCase):
             ai_provider="deepseek",
             ai_model="deepseek-v4-flash",
             ai_base_url="https://api.deepseek.com",
+            subtitle_removal_mode="fill",
+            subtitle_region_x=8,
+            subtitle_region_y=70,
+            subtitle_region_width=84,
+            subtitle_region_height=22,
+            subtitle_blur_strength=24,
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -49,6 +55,12 @@ class ConfigTests(unittest.TestCase):
             "pause_ms": "bad",
             "max_chars": 9999,
             "export_mp3": "yes",
+            "subtitle_removal_mode": "unknown",
+            "subtitle_region_x": -20,
+            "subtitle_region_y": 200,
+            "subtitle_region_width": 0,
+            "subtitle_region_height": 500,
+            "subtitle_blur_strength": 999,
         }
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -62,6 +74,12 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.pause_ms, 250)
         self.assertEqual(config.max_chars, 260)
         self.assertTrue(config.export_mp3)
+        self.assertEqual(config.subtitle_removal_mode, "blur")
+        self.assertEqual(config.subtitle_region_x, 0)
+        self.assertEqual(config.subtitle_region_y, 99)
+        self.assertEqual(config.subtitle_region_width, 1)
+        self.assertEqual(config.subtitle_region_height, 1)
+        self.assertEqual(config.subtitle_blur_strength, 100)
 
     def test_broken_json_returns_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

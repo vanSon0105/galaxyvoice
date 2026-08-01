@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import queue
+import tempfile
 import threading
 import tkinter as tk
 from dataclasses import replace
@@ -12,6 +13,15 @@ from .config import AppConfig, default_config_path, load_app_config, save_app_co
 from .engine import GenerationOptions, GenerationResult, generate_package
 from .languages import code_from_label, label_from_code, language_labels
 from .media import MediaExtractionOptions, MediaExtractionResult, extract_audio_from_video
+from .subtitle_removal import (
+    BLUR_MODE,
+    FILL_MODE,
+    STRIP_MODE,
+    SubtitleRemovalOptions,
+    SubtitleRemovalResult,
+    create_video_preview,
+    remove_subtitles_from_video,
+)
 from .transcription import (
     WHISPER_MODELS,
     VideoSubtitleDraft,
@@ -41,6 +51,16 @@ from .tts import (
 )
 
 
+REMOVAL_MODE_LABELS = {
+    STRIP_MODE: "Bỏ track phụ đề",
+    BLUR_MODE: "Làm mờ vùng phụ đề",
+    FILL_MODE: "Xóa thông minh",
+}
+REMOVAL_MODE_CODES = {label: code for code, label in REMOVAL_MODE_LABELS.items()}
+PREVIEW_WIDTH = 480
+PREVIEW_HEIGHT = 270
+
+
 class GalaxyStudioApp:
     def __init__(self, root: tk.Tk, config_path: Path | None = None) -> None:
         self.root = root
@@ -60,7 +80,9 @@ class GalaxyStudioApp:
         self.worker: threading.Thread | None = None
         self.voice_worker: threading.Thread | None = None
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
-        self.last_result: GenerationResult | MediaExtractionResult | VideoSubtitleResult | None = None
+        self.last_result: (
+            GenerationResult | MediaExtractionResult | VideoSubtitleResult | SubtitleRemovalResult | None
+        ) = None
         self.subtitle_draft: VideoSubtitleDraft | None = None
         self._poll_after_id: str | None = None
         self._voice_refresh_after_id: str | None = None
@@ -70,6 +92,9 @@ class GalaxyStudioApp:
         self._export_in_progress = False
         self._subtitle_draft_lock = threading.Lock()
         self._pending_subtitle_draft: VideoSubtitleDraft | None = None
+        self._preview_temp_dir = tempfile.TemporaryDirectory(prefix="galaxy_video_preview_")
+        self._removal_drag_start: tuple[int, int] | None = None
+        self._removal_preview_image: tk.PhotoImage | None = None
 
         self.project_name = tk.StringVar(value="galaxy_project")
         self.output_dir = tk.StringVar(value=saved_config.output_dir or str(Path.cwd() / "exports"))
@@ -96,6 +121,16 @@ class GalaxyStudioApp:
         self.ai_model = tk.StringVar(value=saved_config.ai_model or default_translation_model(provider))
         self.ai_base_url = tk.StringVar(value=saved_config.ai_base_url or default_translation_base_url(provider))
         self.ai_api_key = tk.StringVar(value=default_translation_api_key(provider))
+        self.removal_video_path = tk.StringVar()
+        self.removal_project_name = tk.StringVar()
+        self.removal_mode = tk.StringVar(
+            value=REMOVAL_MODE_LABELS.get(saved_config.subtitle_removal_mode, REMOVAL_MODE_LABELS[BLUR_MODE])
+        )
+        self.subtitle_region_x = tk.IntVar(value=saved_config.subtitle_region_x)
+        self.subtitle_region_y = tk.IntVar(value=saved_config.subtitle_region_y)
+        self.subtitle_region_width = tk.IntVar(value=saved_config.subtitle_region_width)
+        self.subtitle_region_height = tk.IntVar(value=saved_config.subtitle_region_height)
+        self.subtitle_blur_strength = tk.IntVar(value=saved_config.subtitle_blur_strength)
         self.script_language_code = ""
         self._setting_script_text = False
         self.status = tk.StringVar(value="Ready")
@@ -133,6 +168,7 @@ class GalaxyStudioApp:
         style.configure("Panel.TLabel", background="#ffffff")
         style.configure("Header.TLabel", font=("Segoe UI Semibold", 15), background="#f4f1ea")
         style.configure("Section.TLabel", font=("Segoe UI Semibold", 10), background="#ffffff")
+        style.configure("PageSection.TLabel", font=("Segoe UI Semibold", 10), background="#f4f1ea")
         style.configure("TButton", padding=(10, 6))
         style.configure("Accent.TButton", background="#145c54", foreground="#ffffff")
         style.map("Accent.TButton", background=[("active", "#1d756c"), ("disabled", "#9fa9a7")])
@@ -145,19 +181,27 @@ class GalaxyStudioApp:
         shell = ttk.Frame(self.root, padding=16)
         shell.grid(row=0, column=0, sticky="nsew")
         shell.columnconfigure(0, weight=1)
-        shell.columnconfigure(1, minsize=340)
         shell.rowconfigure(1, weight=1)
 
         header = ttk.Frame(shell)
-        header.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 12))
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         header.columnconfigure(0, weight=1)
         ttk.Label(header, text="Galaxy AI Voice & Subtitle Studio", style="Header.TLabel").grid(
             row=0, column=0, sticky="w"
         )
         ttk.Label(header, textvariable=self.status).grid(row=0, column=1, sticky="e")
 
-        left = ttk.Frame(shell)
-        left.grid(row=1, column=0, sticky="nsew", padx=(0, 12))
+        self.main_notebook = ttk.Notebook(shell)
+        self.main_notebook.grid(row=1, column=0, sticky="nsew")
+
+        self.voice_tab = ttk.Frame(self.main_notebook, padding=(0, 10, 0, 0))
+        self.voice_tab.columnconfigure(0, weight=1)
+        self.voice_tab.columnconfigure(1, minsize=340)
+        self.voice_tab.rowconfigure(0, weight=1)
+        self.main_notebook.add(self.voice_tab, text="Voice")
+
+        left = ttk.Frame(self.voice_tab)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         left.columnconfigure(0, weight=1)
         left.rowconfigure(0, weight=1)
         self.subtitle_notebook = ttk.Notebook(left)
@@ -182,8 +226,8 @@ class GalaxyStudioApp:
         )
         self.script_text.bind("<<Modified>>", self._on_script_modified)
 
-        right = ttk.Frame(shell, style="Panel.TFrame", padding=14)
-        right.grid(row=1, column=1, sticky="nsew")
+        right = ttk.Frame(self.voice_tab, style="Panel.TFrame", padding=14)
+        right.grid(row=0, column=1, sticky="nsew")
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=1)
 
@@ -205,8 +249,10 @@ class GalaxyStudioApp:
         self.progress = ttk.Progressbar(right, mode="indeterminate")
         self.progress.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
 
+        self._build_removal_tab()
+
         log_frame = ttk.Frame(shell)
-        log_frame.grid(row=2, column=0, columnspan=2, sticky="nsew", pady=(12, 0))
+        log_frame.grid(row=2, column=0, sticky="nsew", pady=(12, 0))
         log_frame.columnconfigure(0, weight=1)
         ttk.Label(log_frame, text="Log").grid(row=0, column=0, sticky="w", pady=(0, 4))
         self.log_text = tk.Text(
@@ -222,6 +268,182 @@ class GalaxyStudioApp:
         )
         self.log_text.grid(row=1, column=0, sticky="ew")
         self.log_text.configure(state="disabled")
+
+    def _build_removal_tab(self) -> None:
+        self.removal_tab = ttk.Frame(self.main_notebook, padding=(0, 10, 0, 0))
+        self.removal_tab.columnconfigure(0, weight=1)
+        self.removal_tab.columnconfigure(1, minsize=340)
+        self.removal_tab.rowconfigure(0, weight=1)
+        self.main_notebook.add(self.removal_tab, text="Xóa phụ đề")
+
+        preview_panel = ttk.Frame(self.removal_tab)
+        preview_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        preview_panel.columnconfigure(0, weight=1)
+        preview_panel.rowconfigure(1, weight=1)
+        ttk.Label(preview_panel, text="Xem trước", style="PageSection.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 8)
+        )
+
+        preview_holder = ttk.Frame(preview_panel)
+        preview_holder.grid(row=1, column=0, sticky="nsew")
+        preview_holder.columnconfigure(0, weight=1)
+        preview_holder.rowconfigure(0, weight=1)
+        self.removal_preview_canvas = tk.Canvas(
+            preview_holder,
+            width=PREVIEW_WIDTH,
+            height=PREVIEW_HEIGHT,
+            bg="#161a18",
+            highlightthickness=1,
+            highlightbackground="#a8a59e",
+            cursor="crosshair",
+        )
+        self.removal_preview_canvas.grid(row=0, column=0, sticky="n")
+        self.removal_preview_canvas.create_text(
+            PREVIEW_WIDTH // 2,
+            PREVIEW_HEIGHT // 2,
+            text="Chọn video để xem trước",
+            fill="#d7ddd9",
+            font=("Segoe UI", 11),
+            tags=("preview-placeholder",),
+        )
+        self.removal_preview_canvas.bind("<ButtonPress-1>", self._start_removal_region_drag)
+        self.removal_preview_canvas.bind("<B1-Motion>", self._drag_removal_region)
+        self.removal_preview_canvas.bind("<ButtonRelease-1>", self._finish_removal_region_drag)
+        self.removal_region_rectangle = self.removal_preview_canvas.create_rectangle(
+            0,
+            0,
+            0,
+            0,
+            outline="#f1b847",
+            width=3,
+            fill="#f1b847",
+            stipple="gray50",
+        )
+        self._draw_removal_region()
+
+        controls_panel = ttk.Frame(self.removal_tab, style="Panel.TFrame", padding=14)
+        controls_panel.grid(row=0, column=1, sticky="nsew")
+        controls_panel.configure(width=360)
+        controls_panel.grid_propagate(False)
+        controls_panel.columnconfigure(0, weight=1)
+        controls_panel.rowconfigure(0, weight=1)
+        controls = self._build_scrollable_controls(controls_panel)
+
+        ttk.Label(controls, text="Video đầu vào", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        input_row = ttk.Frame(controls, style="Surface.TFrame")
+        input_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        input_row.columnconfigure(0, weight=1)
+        ttk.Entry(input_row, textvariable=self.removal_video_path).grid(
+            row=0, column=0, sticky="ew", padx=(0, 6)
+        )
+        ttk.Button(input_row, text="Browse", command=self.browse_removal_video).grid(row=0, column=1)
+
+        ttk.Label(controls, text="Tên project", style="Panel.TLabel").grid(
+            row=2, column=0, sticky="w", pady=(12, 2)
+        )
+        ttk.Entry(controls, textvariable=self.removal_project_name).grid(row=3, column=0, sticky="ew")
+
+        ttk.Label(controls, text="Output folder", style="Panel.TLabel").grid(
+            row=4, column=0, sticky="w", pady=(12, 2)
+        )
+        output_row = ttk.Frame(controls, style="Surface.TFrame")
+        output_row.grid(row=5, column=0, sticky="ew")
+        output_row.columnconfigure(0, weight=1)
+        ttk.Entry(output_row, textvariable=self.output_dir).grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        ttk.Button(output_row, text="Browse", command=self.browse_output).grid(row=0, column=1)
+
+        ttk.Label(controls, text="Chế độ", style="Panel.TLabel").grid(
+            row=6, column=0, sticky="w", pady=(12, 2)
+        )
+        self.removal_mode_combo = ttk.Combobox(
+            controls,
+            textvariable=self.removal_mode,
+            values=tuple(REMOVAL_MODE_LABELS.values()),
+            state="readonly",
+        )
+        self.removal_mode_combo.grid(row=7, column=0, sticky="ew")
+        self.removal_mode_combo.bind("<<ComboboxSelected>>", self._on_removal_mode_changed)
+
+        region = ttk.Frame(controls, style="Surface.TFrame")
+        region.grid(row=8, column=0, sticky="ew", pady=(14, 0))
+        region.columnconfigure(1, weight=1)
+        region.columnconfigure(3, weight=1)
+        ttk.Label(region, text="Vùng phụ đề (%)", style="Section.TLabel").grid(
+            row=0, column=0, columnspan=4, sticky="w", pady=(0, 8)
+        )
+        self.removal_region_widgets: list[tk.Widget] = []
+        region_fields = (
+            ("X", self.subtitle_region_x, 0, 99),
+            ("Y", self.subtitle_region_y, 0, 99),
+            ("Rộng", self.subtitle_region_width, 1, 100),
+            ("Cao", self.subtitle_region_height, 1, 100),
+        )
+        for index, (label, variable, minimum, maximum) in enumerate(region_fields):
+            row = 1 + index // 2
+            column = (index % 2) * 2
+            ttk.Label(region, text=label, style="Panel.TLabel").grid(
+                row=row, column=column, sticky="w", pady=3, padx=(0, 6)
+            )
+            spinbox = ttk.Spinbox(
+                region,
+                from_=minimum,
+                to=maximum,
+                increment=1,
+                textvariable=variable,
+                width=7,
+            )
+            spinbox.grid(row=row, column=column + 1, sticky="ew", pady=3, padx=(0, 10))
+            self.removal_region_widgets.append(spinbox)
+
+        blur_row = ttk.Frame(controls, style="Surface.TFrame")
+        blur_row.grid(row=9, column=0, sticky="ew", pady=(12, 0))
+        blur_row.columnconfigure(1, weight=1)
+        ttk.Label(blur_row, text="Độ mờ", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
+        self.removal_blur_scale = ttk.Scale(
+            blur_row,
+            from_=1,
+            to=50,
+            variable=self.subtitle_blur_strength,
+            orient="horizontal",
+        )
+        self.removal_blur_scale.grid(row=0, column=1, sticky="ew", padx=8)
+        self.removal_region_widgets.append(self.removal_blur_scale)
+        ttk.Label(
+            blur_row,
+            textvariable=self.subtitle_blur_strength,
+            style="Panel.TLabel",
+            width=4,
+            anchor="e",
+        ).grid(row=0, column=2, sticky="e")
+
+        action_row = ttk.Frame(controls, style="Surface.TFrame")
+        action_row.grid(row=10, column=0, sticky="ew", pady=(18, 0))
+        action_row.columnconfigure(0, weight=1)
+        action_row.columnconfigure(1, weight=1)
+        self.removal_preview_button = ttk.Button(
+            action_row,
+            text="Xem trước",
+            command=self.start_removal_preview,
+        )
+        self.removal_preview_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
+        self.removal_process_button = ttk.Button(
+            action_row,
+            text="Xử lý video",
+            style="Accent.TButton",
+            command=self.start_remove_subtitles,
+        )
+        self.removal_process_button.grid(row=0, column=1, sticky="ew", padx=(6, 0))
+
+        self.removal_open_button = ttk.Button(
+            controls,
+            text="Open Output",
+            command=self.open_output,
+            state="disabled",
+        )
+        self.removal_open_button.grid(row=11, column=0, sticky="ew", pady=(8, 0))
+        self.removal_progress = ttk.Progressbar(controls, mode="indeterminate")
+        self.removal_progress.grid(row=12, column=0, sticky="ew", pady=(12, 0))
+        self._on_removal_mode_changed()
 
     def _build_text_tab(
         self,
@@ -444,6 +666,192 @@ class GalaxyStudioApp:
             if self.project_name.get() == "galaxy_project":
                 self.project_name.set(Path(file_path).stem)
 
+    def browse_removal_video(self) -> None:
+        file_path = filedialog.askopenfilename(
+            filetypes=[
+                ("Video files", "*.mp4 *.mov *.mkv *.avi *.webm *.m4v"),
+                ("All files", "*.*"),
+            ]
+        )
+        if not file_path:
+            return
+
+        self.removal_video_path.set(file_path)
+        self.removal_project_name.set(f"{Path(file_path).stem}-clean")
+        self.start_removal_preview()
+
+    def _on_removal_mode_changed(self, _event: tk.Event | None = None) -> None:
+        mode = self._removal_mode_code()
+        region_state = "disabled" if mode == STRIP_MODE else "normal"
+        for widget in self.removal_region_widgets[:-1]:
+            widget.configure(state=region_state)
+        self.removal_blur_scale.configure(state="normal" if mode == BLUR_MODE else "disabled")
+        self._draw_removal_region()
+
+    def _removal_mode_code(self) -> str:
+        return REMOVAL_MODE_CODES.get(self.removal_mode.get(), BLUR_MODE)
+
+    def _draw_removal_region(self, *_args: str) -> None:
+        if not hasattr(self, "removal_preview_canvas"):
+            return
+        if self._removal_mode_code() == STRIP_MODE:
+            self.removal_preview_canvas.itemconfigure(self.removal_region_rectangle, state="hidden")
+            return
+
+        x = self._config_int(self.subtitle_region_x, 5, 0, 99)
+        y = self._config_int(self.subtitle_region_y, 75, 0, 99)
+        width = min(self._config_int(self.subtitle_region_width, 90, 1, 100), 100 - x)
+        height = min(self._config_int(self.subtitle_region_height, 20, 1, 100), 100 - y)
+        self.removal_preview_canvas.coords(
+            self.removal_region_rectangle,
+            x * PREVIEW_WIDTH / 100,
+            y * PREVIEW_HEIGHT / 100,
+            (x + width) * PREVIEW_WIDTH / 100,
+            (y + height) * PREVIEW_HEIGHT / 100,
+        )
+        self.removal_preview_canvas.itemconfigure(self.removal_region_rectangle, state="normal")
+        self.removal_preview_canvas.tag_raise(self.removal_region_rectangle)
+
+    def _start_removal_region_drag(self, event: tk.Event) -> None:
+        if self._removal_mode_code() == STRIP_MODE:
+            return
+        self._removal_drag_start = (
+            max(0, min(PREVIEW_WIDTH, int(event.x))),
+            max(0, min(PREVIEW_HEIGHT, int(event.y))),
+        )
+
+    def _drag_removal_region(self, event: tk.Event) -> None:
+        if self._removal_drag_start is None:
+            return
+        start_x, start_y = self._removal_drag_start
+        current_x = max(0, min(PREVIEW_WIDTH, int(event.x)))
+        current_y = max(0, min(PREVIEW_HEIGHT, int(event.y)))
+        self.removal_preview_canvas.coords(
+            self.removal_region_rectangle,
+            min(start_x, current_x),
+            min(start_y, current_y),
+            max(start_x, current_x),
+            max(start_y, current_y),
+        )
+
+    def _finish_removal_region_drag(self, event: tk.Event) -> None:
+        if self._removal_drag_start is None:
+            return
+        start_x, start_y = self._removal_drag_start
+        self._removal_drag_start = None
+        end_x = max(0, min(PREVIEW_WIDTH, int(event.x)))
+        end_y = max(0, min(PREVIEW_HEIGHT, int(event.y)))
+        left, right = sorted((start_x, end_x))
+        top, bottom = sorted((start_y, end_y))
+        if right - left < 4 or bottom - top < 4:
+            self._draw_removal_region()
+            return
+
+        region_x = min(99, round(left * 100 / PREVIEW_WIDTH))
+        region_y = min(99, round(top * 100 / PREVIEW_HEIGHT))
+        region_width = max(1, min(100 - region_x, round((right - left) * 100 / PREVIEW_WIDTH)))
+        region_height = max(1, min(100 - region_y, round((bottom - top) * 100 / PREVIEW_HEIGHT)))
+        self.subtitle_region_x.set(region_x)
+        self.subtitle_region_y.set(region_y)
+        self.subtitle_region_width.set(region_width)
+        self.subtitle_region_height.set(region_height)
+        self._draw_removal_region()
+
+    def start_removal_preview(self) -> None:
+        if self.worker and self.worker.is_alive():
+            return
+        video = self.removal_video_path.get().strip()
+        if not video:
+            messagebox.showwarning("Missing video", "Choose a video before loading a preview.")
+            return
+
+        preview_path = Path(self._preview_temp_dir.name) / "preview.png"
+        self._set_busy(True)
+        self.removal_progress.start(12)
+        self.status.set("Loading preview")
+        self._append_log("Loading video preview...")
+        self.worker = threading.Thread(
+            target=self._run_removal_preview,
+            args=(Path(video).expanduser(), preview_path),
+            daemon=True,
+        )
+        self.worker.start()
+
+    def _run_removal_preview(self, video_path: Path, preview_path: Path) -> None:
+        try:
+            result = create_video_preview(video_path, preview_path)
+            self.events.put(("removal_preview_ready", result))
+        except Exception as error:  # pragma: no cover - UI boundary
+            self.events.put(("error", error))
+
+    def _load_removal_preview(self, preview_path: Path) -> None:
+        self._removal_preview_image = tk.PhotoImage(file=str(preview_path))
+        self.removal_preview_canvas.delete("preview-image")
+        self.removal_preview_canvas.delete("preview-placeholder")
+        self.removal_preview_canvas.create_image(
+            0,
+            0,
+            image=self._removal_preview_image,
+            anchor="nw",
+            tags=("preview-image",),
+        )
+        self.removal_preview_canvas.tag_lower("preview-image")
+        self._draw_removal_region()
+
+    def start_remove_subtitles(self) -> None:
+        if self.worker and self.worker.is_alive():
+            return
+        video = self.removal_video_path.get().strip()
+        if not video:
+            messagebox.showwarning("Missing video", "Choose a video before processing.")
+            return
+
+        region_x = self._config_int(self.subtitle_region_x, 5, 0, 99)
+        region_y = self._config_int(self.subtitle_region_y, 75, 0, 99)
+        region_width = min(
+            self._config_int(self.subtitle_region_width, 90, 1, 100),
+            100 - region_x,
+        )
+        region_height = min(
+            self._config_int(self.subtitle_region_height, 20, 1, 100),
+            100 - region_y,
+        )
+        options = SubtitleRemovalOptions(
+            video_path=Path(video).expanduser(),
+            output_dir=Path(self.output_dir.get()).expanduser(),
+            project_name=self.removal_project_name.get(),
+            mode=self._removal_mode_code(),
+            region_x=region_x,
+            region_y=region_y,
+            region_width=region_width,
+            region_height=region_height,
+            blur_strength=self._config_int(self.subtitle_blur_strength, 18, 1, 100),
+        )
+
+        self.last_result = None
+        self.open_button.configure(state="disabled")
+        self.removal_open_button.configure(state="disabled")
+        self._set_busy(True)
+        self.removal_progress.start(12)
+        self.status.set("Removing subtitles")
+        self._append_log("Starting subtitle removal...")
+        self.worker = threading.Thread(
+            target=self._run_subtitle_removal,
+            args=(options,),
+            daemon=True,
+        )
+        self.worker.start()
+
+    def _run_subtitle_removal(self, options: SubtitleRemovalOptions) -> None:
+        try:
+            result = remove_subtitles_from_video(
+                options,
+                progress=lambda message: self.events.put(("log", message)),
+            )
+            self.events.put(("done", result))
+        except Exception as error:  # pragma: no cover - UI boundary
+            self.events.put(("error", error))
+
     def refresh_voices(self) -> None:
         if self.voice_worker and self.voice_worker.is_alive():
             return
@@ -514,6 +922,7 @@ class GalaxyStudioApp:
 
         self.last_result = None
         self.open_button.configure(state="disabled")
+        self.removal_open_button.configure(state="disabled")
         self._set_busy(True)
         self.progress.start(12)
         self.status.set("Generating")
@@ -580,6 +989,7 @@ class GalaxyStudioApp:
 
         self.last_result = None
         self.open_button.configure(state="disabled")
+        self.removal_open_button.configure(state="disabled")
         self._set_busy(True)
         self.progress.start(12)
         self.status.set("Extracting")
@@ -619,6 +1029,7 @@ class GalaxyStudioApp:
 
         self.last_result = None
         self.open_button.configure(state="disabled")
+        self.removal_open_button.configure(state="disabled")
         self._set_busy(True)
         self.progress.start(12)
         self.status.set("Subtitling")
@@ -666,6 +1077,7 @@ class GalaxyStudioApp:
 
         self.last_result = None
         self.open_button.configure(state="disabled")
+        self.removal_open_button.configure(state="disabled")
         self._set_busy(True)
         self.progress.start(12)
         self.status.set("Exporting")
@@ -735,9 +1147,22 @@ class GalaxyStudioApp:
             self.ai_provider,
             self.ai_model,
             self.ai_base_url,
+            self.removal_mode,
+            self.subtitle_region_x,
+            self.subtitle_region_y,
+            self.subtitle_region_width,
+            self.subtitle_region_height,
+            self.subtitle_blur_strength,
         )
         for variable in variables:
             variable.trace_add("write", self._schedule_config_save)
+        for variable in (
+            self.subtitle_region_x,
+            self.subtitle_region_y,
+            self.subtitle_region_width,
+            self.subtitle_region_height,
+        ):
+            variable.trace_add("write", self._draw_removal_region)
 
     def _schedule_config_save(self, *_args: str) -> None:
         if not self._config_save_enabled:
@@ -763,6 +1188,8 @@ class GalaxyStudioApp:
         if self._config_load_error is not None:
             return
 
+        region_x = self._config_int(self.subtitle_region_x, 5, 0, 99)
+        region_y = self._config_int(self.subtitle_region_y, 75, 0, 99)
         config = AppConfig(
             output_dir=self.output_dir.get().strip(),
             tts_engine=tts_engine_code(self.tts_engine_name.get()),
@@ -781,6 +1208,18 @@ class GalaxyStudioApp:
             ai_provider=translation_provider_code(self.ai_provider.get()),
             ai_model=self.ai_model.get().strip(),
             ai_base_url=self.ai_base_url.get().strip(),
+            subtitle_removal_mode=self._removal_mode_code(),
+            subtitle_region_x=region_x,
+            subtitle_region_y=region_y,
+            subtitle_region_width=min(
+                self._config_int(self.subtitle_region_width, 90, 1, 100),
+                100 - region_x,
+            ),
+            subtitle_region_height=min(
+                self._config_int(self.subtitle_region_height, 20, 1, 100),
+                100 - region_y,
+            ),
+            subtitle_blur_strength=self._config_int(self.subtitle_blur_strength, 18, 1, 100),
         )
         try:
             save_app_config(config, self.config_path)
@@ -852,6 +1291,13 @@ class GalaxyStudioApp:
                 self._set_script_text(str(text))
                 self.script_language_code = str(language_code)
                 self._select_voice_for_language(self.script_language_code)
+            elif event == "removal_preview_ready":
+                self.progress.stop()
+                self.removal_progress.stop()
+                self._set_busy(False)
+                self.status.set("Ready")
+                self._load_removal_preview(Path(payload))
+                self._append_log("Video preview loaded.")
             elif event == "done":
                 self._finish_success(payload)
             elif event == "error":
@@ -864,10 +1310,21 @@ class GalaxyStudioApp:
 
     def _finish_success(self, result: object) -> None:
         self.progress.stop()
+        self.removal_progress.stop()
         self.progress.configure(mode="indeterminate", maximum=100, value=0)
+        self.removal_progress.configure(mode="indeterminate", maximum=100, value=0)
         self._set_busy(False)
         self.status.set("Done")
-        self.last_result = result if isinstance(result, (GenerationResult, MediaExtractionResult, VideoSubtitleResult)) else None
+        self.open_button.configure(state="disabled")
+        self.removal_open_button.configure(state="disabled")
+        self.last_result = (
+            result
+            if isinstance(
+                result,
+                (GenerationResult, MediaExtractionResult, VideoSubtitleResult, SubtitleRemovalResult),
+            )
+            else None
+        )
 
         if isinstance(result, VideoSubtitleDraft):
             with self._subtitle_draft_lock:
@@ -909,12 +1366,23 @@ class GalaxyStudioApp:
             self._append_log(f"Manifest: {self.last_result.manifest_path}")
             for warning in self.last_result.warnings:
                 self._append_log(f"Warning: {warning}")
+        elif isinstance(self.last_result, SubtitleRemovalResult):
+            self.removal_open_button.configure(state="normal")
+            self._append_log(f"Video: {self.last_result.video_path}")
+            self._append_log(f"Manifest: {self.last_result.manifest_path}")
+            for warning in self.last_result.warnings:
+                self._append_log(f"Warning: {warning}")
 
     def _finish_error(self, error: object) -> None:
         self.progress.stop()
+        self.removal_progress.stop()
         self.progress.configure(mode="indeterminate", maximum=100, value=0)
+        self.removal_progress.configure(mode="indeterminate", maximum=100, value=0)
         self._set_busy(False)
         self.status.set("Error")
+        if self.last_result is None:
+            self.open_button.configure(state="disabled")
+            self.removal_open_button.configure(state="disabled")
         self._append_log(f"Error: {error}")
         messagebox.showerror("Task failed", str(error))
 
@@ -1018,6 +1486,14 @@ class GalaxyStudioApp:
         self.refresh_voices_button.configure(state="disabled" if busy or voice_refreshing else "normal")
         self.tts_engine_combo.configure(state="disabled" if busy else "readonly")
         self.voice_combo.configure(state="disabled" if busy else "readonly")
+        self.removal_preview_button.configure(state=state)
+        self.removal_process_button.configure(state=state)
+        self.removal_mode_combo.configure(state="disabled" if busy else "readonly")
+        if busy:
+            for widget in self.removal_region_widgets:
+                widget.configure(state="disabled")
+        else:
+            self._on_removal_mode_changed()
 
     def _finish_voice_refresh(self) -> None:
         self.voice_worker = None
@@ -1079,6 +1555,11 @@ class GalaxyStudioApp:
             except tk.TclError:
                 pass
             self._poll_after_id = None
+
+        try:
+            self._preview_temp_dir.cleanup()
+        except OSError:
+            pass
 
 
 def run_app() -> None:

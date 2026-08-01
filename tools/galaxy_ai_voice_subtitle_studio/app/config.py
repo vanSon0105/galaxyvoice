@@ -8,6 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .subtitle_removal import BLUR_MODE, SUBTITLE_REMOVAL_MODES
 from .transcription import WHISPER_MODELS
 from .translator import translation_provider_codes
 from .tts import tts_engine_codes
@@ -36,6 +37,12 @@ class AppConfig:
     ai_provider: str = ""
     ai_model: str = ""
     ai_base_url: str = ""
+    subtitle_removal_mode: str = BLUR_MODE
+    subtitle_region_x: int = 5
+    subtitle_region_y: int = 75
+    subtitle_region_width: int = 90
+    subtitle_region_height: int = 20
+    subtitle_blur_strength: int = 18
 
 
 def default_config_path() -> Path:
@@ -68,6 +75,27 @@ def load_app_config(path: Path | None = None) -> AppConfig:
     if provider and provider not in translation_provider_codes():
         provider = defaults.ai_provider
 
+    removal_mode = _string(
+        payload.get("subtitle_removal_mode"), defaults.subtitle_removal_mode
+    ).lower()
+    if removal_mode not in SUBTITLE_REMOVAL_MODES:
+        removal_mode = defaults.subtitle_removal_mode
+
+    subtitle_region_x = _integer(
+        payload.get("subtitle_region_x"), defaults.subtitle_region_x, 0, 99
+    )
+    subtitle_region_y = _integer(
+        payload.get("subtitle_region_y"), defaults.subtitle_region_y, 0, 99
+    )
+    subtitle_region_width = min(
+        _integer(payload.get("subtitle_region_width"), defaults.subtitle_region_width, 1, 100),
+        100 - subtitle_region_x,
+    )
+    subtitle_region_height = min(
+        _integer(payload.get("subtitle_region_height"), defaults.subtitle_region_height, 1, 100),
+        100 - subtitle_region_y,
+    )
+
     return AppConfig(
         output_dir=_string(payload.get("output_dir"), defaults.output_dir),
         tts_engine=engine,
@@ -90,6 +118,14 @@ def load_app_config(path: Path | None = None) -> AppConfig:
         ai_provider=provider,
         ai_model=_string(payload.get("ai_model"), defaults.ai_model),
         ai_base_url=_string(payload.get("ai_base_url"), defaults.ai_base_url),
+        subtitle_removal_mode=removal_mode,
+        subtitle_region_x=subtitle_region_x,
+        subtitle_region_y=subtitle_region_y,
+        subtitle_region_width=subtitle_region_width,
+        subtitle_region_height=subtitle_region_height,
+        subtitle_blur_strength=_integer(
+            payload.get("subtitle_blur_strength"), defaults.subtitle_blur_strength, 1, 100
+        ),
     )
 
 

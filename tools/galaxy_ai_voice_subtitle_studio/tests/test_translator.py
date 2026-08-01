@@ -60,6 +60,41 @@ class TranslatorTests(unittest.TestCase):
         self.assertEqual([cue.text for cue in translated], [f"\u0110\u00e3 d\u1ecbch Source {index}" for index in range(1, 5)])
         self.assertEqual([cue.index for cue in translated], [1, 2, 3, 4])
 
+    def test_translate_cues_splits_a_batch_when_ai_returns_too_few_lines(self) -> None:
+        cues = [
+            SubtitleCue(index=1, start_ms=0, end_ms=1000, text="\u7b2c\u4e00\u53e5"),
+            SubtitleCue(index=2, start_ms=1000, end_ms=2000, text="\u7b2c\u4e8c\u53e5"),
+        ]
+        requested_texts: list[list[str]] = []
+
+        def fake_client(messages, _options):
+            payload = json.loads(messages[1]["content"].rsplit("\n\n", 1)[-1])
+            texts = [item["text"] for item in payload]
+            requested_texts.append(texts)
+            if len(texts) == 2:
+                return json.dumps({"translations": ["Ch\u1ec9 c\u00f3 m\u1ed9t d\u00f2ng."]}, ensure_ascii=False)
+            translated_text = "C\u00e2u th\u1ee9 nh\u1ea5t." if texts[0] == "\u7b2c\u4e00\u53e5" else "C\u00e2u th\u1ee9 hai."
+            return json.dumps({"translations": [translated_text]}, ensure_ascii=False)
+
+        translated = translate_cues(
+            cues,
+            AITranslationOptions(
+                source_language="zh",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+                batch_size=2,
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(
+            requested_texts,
+            [["\u7b2c\u4e00\u53e5", "\u7b2c\u4e8c\u53e5"], ["\u7b2c\u4e00\u53e5"], ["\u7b2c\u4e8c\u53e5"]],
+        )
+        self.assertEqual([cue.text for cue in translated], ["C\u00e2u th\u1ee9 nh\u1ea5t.", "C\u00e2u th\u1ee9 hai."])
+        self.assertEqual([cue.start_ms for cue in translated], [0, 1000])
+
     def test_translate_cues_resumes_only_missing_batches_from_checkpoint(self) -> None:
         cues = [
             SubtitleCue(index=index, start_ms=index * 1000, end_ms=(index + 1) * 1000, text=f"Source {index}")

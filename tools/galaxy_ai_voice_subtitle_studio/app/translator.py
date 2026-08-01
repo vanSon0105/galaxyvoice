@@ -523,6 +523,9 @@ def _translate_batch(texts: list[str], options: AITranslationOptions, client: Ch
         raw = client(messages, options)
         translations = _extract_translations(raw)
         if len(translations) != len(texts):
+            if len(texts) > 1:
+                midpoint = len(texts) // 2
+                return _translate_split_batch(texts, midpoint, options, client)
             raise RuntimeError(
                 f"AI translation returned {len(translations)} lines for a batch that expected {len(texts)} lines."
             )

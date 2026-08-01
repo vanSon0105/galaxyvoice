@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from app.ffmpeg import find_ffmpeg, find_ffprobe  # noqa: E402
+from app.ffmpeg import find_ffmpeg, find_ffplay, find_ffprobe  # noqa: E402
 
 
 class FfmpegTests(unittest.TestCase):
@@ -29,6 +29,15 @@ class FfmpegTests(unittest.TestCase):
             bundled.write_bytes(b"fake")
 
             self.assertEqual(find_ffprobe(root), str(bundled))
+
+    def test_find_ffplay_prefers_bundled_binary(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bundled = root / "bin" / "ffplay.exe"
+            bundled.parent.mkdir()
+            bundled.write_bytes(b"fake")
+
+            self.assertEqual(find_ffplay(root), str(bundled))
 
 
 if __name__ == "__main__":

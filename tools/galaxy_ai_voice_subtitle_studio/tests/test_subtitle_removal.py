@@ -15,11 +15,14 @@ from app.subtitle_removal import (  # noqa: E402
     FILL_MODE,
     STRIP_MODE,
     SubtitleRemovalOptions,
+    build_audio_playback_command,
     build_blur_subtitles_command,
     build_fill_subtitles_command,
+    build_playback_command,
     build_preview_command,
     build_strip_subtitles_command,
     probe_video_size,
+    probe_video_duration,
     remove_subtitles_from_video,
 )
 
@@ -126,11 +129,47 @@ class SubtitleRemovalTests(unittest.TestCase):
         self.assertEqual(size, (720, 1280))
 
     def test_preview_command_creates_a_stable_canvas(self) -> None:
-        command = build_preview_command("ffmpeg", Path("source.mp4"), Path("preview.png"))
+        command = build_preview_command(
+            "ffmpeg",
+            Path("source.mp4"),
+            Path("preview.png"),
+            timestamp_seconds=12.5,
+        )
 
         self.assertIn("scale=480:270", command)
-        self.assertEqual(command[command.index("-ss") + 1], "0")
+        self.assertEqual(command[command.index("-ss") + 1], "12.500")
         self.assertEqual(command[-1], "preview.png")
+
+    def test_playback_command_streams_realtime_rgb_frames(self) -> None:
+        command = build_playback_command(
+            "ffmpeg",
+            Path("source.mp4"),
+            start_seconds=8.25,
+            width=480,
+            height=270,
+            fps=12,
+        )
+
+        self.assertEqual(command[command.index("-ss") + 1], "8.250")
+        self.assertIn("-re", command)
+        self.assertIn("scale=480:270,fps=12", command)
+        self.assertEqual(command[-3:], ["-pix_fmt", "rgb24", "pipe:1"])
+
+    def test_audio_playback_command_uses_ffplay_without_a_window(self) -> None:
+        command = build_audio_playback_command("ffplay", Path("source.mp4"), start_seconds=8.25)
+
+        self.assertIn("-nodisp", command)
+        self.assertIn("-autoexit", command)
+        self.assertEqual(command[command.index("-ss") + 1], "8.250")
+        self.assertEqual(command[-1], "source.mp4")
+
+    def test_probe_video_duration_reads_format_duration(self) -> None:
+        def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+            return subprocess.CompletedProcess(command, 0, "83.625\n", "")
+
+        duration = probe_video_duration(Path("source.mp4"), ffprobe_path="ffprobe", runner=runner)
+
+        self.assertEqual(duration, 83.625)
 
     def test_processing_creates_video_and_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

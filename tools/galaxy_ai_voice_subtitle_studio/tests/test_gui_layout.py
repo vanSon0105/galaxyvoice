@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import io
 import sys
 import tempfile
+import threading
 import tkinter as tk
 import unittest
 from pathlib import Path
@@ -200,12 +202,149 @@ class GuiLayoutTests(unittest.TestCase):
             preview_holder = app.removal_preview_canvas.master
             canvas_right = app.removal_preview_canvas.winfo_x() + app.removal_preview_canvas.winfo_width()
             self.assertLessEqual(canvas_right, preview_holder.winfo_width())
+            transport = app.removal_play_button.master
+            preview_panel = transport.master
+            transport_bottom = transport.winfo_y() + transport.winfo_height()
+            self.assertLessEqual(transport_bottom, preview_panel.winfo_height())
             controls_panel = _find_grid_child(app.removal_tab, row=0, column=1)
             self.assertIsNotNone(controls_panel)
             controls_right = controls_panel.winfo_x() + controls_panel.winfo_width()
             self.assertLessEqual(controls_right, app.removal_tab.winfo_width())
         finally:
             root.destroy()
+
+    def test_subtitle_removal_tab_has_video_playback_controls(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+
+            self.assertEqual(app.removal_play_button.cget("text"), "Phát")
+            self.assertEqual(str(app.removal_play_button.cget("state")), "disabled")
+            self.assertEqual(str(app.removal_timeline.cget("state")), "disabled")
+            self.assertEqual(app.removal_time_text.get(), "00:00 / 00:00")
+        finally:
+            root.destroy()
+
+    def test_start_video_playback_streams_from_current_timeline_position(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.removal_video_path.set("clip.mp4")
+            app.removal_duration_seconds = 20.0
+            app.removal_timeline_position.set(6.5)
+            process = Mock()
+            process.poll.return_value = None
+
+            with (
+                patch("app.gui.find_ffmpeg", return_value="ffmpeg"),
+                patch("app.gui.find_ffplay", return_value=None),
+                patch("app.gui.subprocess.Popen", return_value=process) as popen,
+                patch("app.gui.threading.Thread") as thread,
+            ):
+                app.toggle_removal_playback()
+
+            command = popen.call_args.args[0]
+            self.assertEqual(command[command.index("-ss") + 1], "6.500")
+            self.assertEqual(command[-1], "pipe:1")
+            self.assertEqual(app.removal_play_button.cget("text"), "Tạm dừng")
+            thread.return_value.start.assert_called_once()
+            app._playback_process = None
+        finally:
+            root.destroy()
+
+    def test_stale_video_preview_event_is_ignored_after_source_changes(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.removal_video_path.set("new.mp4")
+            app._removal_preview_session = 2
+            app.events.put(
+                (
+                    "removal_preview_ready",
+                    (1, "old.mp4", "old-preview.png", 12.0, 0.0),
+                )
+            )
+
+            with patch.object(app, "_load_removal_preview") as load_preview:
+                app._poll_events()
+
+            load_preview.assert_not_called()
+        finally:
+            root.destroy()
+
+    def test_playback_decoder_failure_is_reported_as_an_error_event(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.removal_duration_seconds = 10.0
+            process = Mock()
+            process.stdout = io.BytesIO()
+            process.stderr = io.BytesIO(b"decoder failed")
+            process.wait.return_value = 1
+
+            app._read_removal_playback_frames(
+                process,
+                threading.Event(),
+                session=3,
+                start_seconds=0.0,
+            )
+
+            self.assertEqual(
+                app.events.get_nowait(),
+                ("removal_playback_error", (3, "decoder failed")),
+            )
+        finally:
+            root.destroy()
+
+    def test_stopping_playback_reaps_processes_outside_the_tk_thread(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            video_process = Mock()
+            video_process.poll.return_value = None
+            audio_process = Mock()
+            audio_process.poll.return_value = None
+            app._playback_process = video_process
+            app._playback_audio_process = audio_process
+
+            with patch("app.gui.threading.Thread") as thread:
+                app._stop_removal_playback()
+
+            video_process.terminate.assert_called_once_with()
+            audio_process.terminate.assert_called_once_with()
+            video_process.wait.assert_not_called()
+            audio_process.wait.assert_not_called()
+            self.assertEqual(
+                thread.call_args.kwargs["target"],
+                app._reap_playback_processes,
+            )
+            thread.return_value.start.assert_called_once_with()
+        finally:
+            root.destroy()
+
+    def test_playback_time_formats_long_videos(self) -> None:
+        self.assertEqual(GalaxyStudioApp._format_playback_time(65.9), "01:05")
+        self.assertEqual(GalaxyStudioApp._format_playback_time(3661), "01:01:01")
 
     def test_start_subtitle_removal_builds_options_for_the_worker(self) -> None:
         try:

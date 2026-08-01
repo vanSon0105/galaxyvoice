@@ -155,6 +155,7 @@ def remove_subtitles_from_video(
 def create_video_preview(
     video_path: Path,
     output_path: Path,
+    timestamp_seconds: float = 0.0,
     ffmpeg_path: str | None = None,
     runner: Runner | None = None,
 ) -> Path:
@@ -167,7 +168,15 @@ def create_video_preview(
 
     preview_path = Path(output_path)
     preview_path.parent.mkdir(parents=True, exist_ok=True)
-    _run_ffmpeg(build_preview_command(ffmpeg, source_path, preview_path), runner or _run_command)
+    _run_ffmpeg(
+        build_preview_command(
+            ffmpeg,
+            source_path,
+            preview_path,
+            timestamp_seconds=timestamp_seconds,
+        ),
+        runner or _run_command,
+    )
     return preview_path
 
 
@@ -234,7 +243,12 @@ def build_fill_subtitles_command(
     )
 
 
-def build_preview_command(ffmpeg: str, video_path: Path, output_path: Path) -> list[str]:
+def build_preview_command(
+    ffmpeg: str,
+    video_path: Path,
+    output_path: Path,
+    timestamp_seconds: float = 0.0,
+) -> list[str]:
     return [
         ffmpeg,
         "-y",
@@ -242,7 +256,7 @@ def build_preview_command(ffmpeg: str, video_path: Path, output_path: Path) -> l
         "-loglevel",
         "error",
         "-ss",
-        "0",
+        _timestamp(timestamp_seconds),
         "-i",
         str(video_path),
         "-frames:v",
@@ -251,6 +265,53 @@ def build_preview_command(ffmpeg: str, video_path: Path, output_path: Path) -> l
         "scale=480:270",
         "-an",
         str(output_path),
+    ]
+
+
+def build_playback_command(
+    ffmpeg: str,
+    video_path: Path,
+    *,
+    start_seconds: float,
+    width: int,
+    height: int,
+    fps: int,
+) -> list[str]:
+    return [
+        ffmpeg,
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-nostdin",
+        "-re",
+        "-ss",
+        _timestamp(start_seconds),
+        "-i",
+        str(video_path),
+        "-map",
+        "0:v:0",
+        "-an",
+        "-vf",
+        f"scale={width}:{height},fps={fps}",
+        "-f",
+        "rawvideo",
+        "-pix_fmt",
+        "rgb24",
+        "pipe:1",
+    ]
+
+
+def build_audio_playback_command(ffplay: str, video_path: Path, *, start_seconds: float) -> list[str]:
+    return [
+        ffplay,
+        "-hide_banner",
+        "-loglevel",
+        "quiet",
+        "-nodisp",
+        "-autoexit",
+        "-ss",
+        _timestamp(start_seconds),
+        str(video_path),
     ]
 
 
@@ -293,6 +354,39 @@ def probe_video_size(
     if rotation % 180 == 90:
         width, height = height, width
     return width, height
+
+
+def probe_video_duration(
+    video_path: Path,
+    ffprobe_path: str | None = None,
+    runner: Runner | None = None,
+) -> float:
+    ffprobe = ffprobe_path or find_ffprobe()
+    if not ffprobe:
+        raise RuntimeError(
+            "ffprobe was not found. Run install_ffmpeg.ps1 or place ffprobe.exe in bin before loading video."
+        )
+    command = [
+        ffprobe,
+        "-v",
+        "error",
+        "-show_entries",
+        "format=duration",
+        "-of",
+        "default=noprint_wrappers=1:nokey=1",
+        str(video_path),
+    ]
+    completed = (runner or _run_command)(command)
+    if completed.returncode != 0:
+        message = completed.stderr.strip() or completed.stdout.strip() or "ffprobe could not inspect the video."
+        raise RuntimeError(message)
+    try:
+        duration = float(completed.stdout.strip())
+    except ValueError as error:
+        raise RuntimeError("ffprobe did not return a valid video duration.") from error
+    if duration <= 0:
+        raise RuntimeError("ffprobe returned an invalid video duration.")
+    return duration
 
 
 def _build_encoded_command(
@@ -343,6 +437,10 @@ def _validate_region(region: Region) -> None:
 
 def _ratio(percent: int) -> str:
     return f"{percent / 100:.6f}"
+
+
+def _timestamp(seconds: float) -> str:
+    return f"{max(0.0, float(seconds)):.3f}"
 
 
 def _pixel_region(region: Region, video_size: tuple[int, int]) -> Region:

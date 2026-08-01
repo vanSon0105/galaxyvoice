@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import queue
+import subprocess
 import tempfile
 import threading
 import tkinter as tk
@@ -11,6 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from .config import AppConfig, default_config_path, load_app_config, save_app_config
 from .engine import GenerationOptions, GenerationResult, generate_package
+from .ffmpeg import find_ffmpeg, find_ffplay
 from .languages import code_from_label, label_from_code, language_labels
 from .media import MediaExtractionOptions, MediaExtractionResult, extract_audio_from_video
 from .subtitle_removal import (
@@ -19,7 +21,10 @@ from .subtitle_removal import (
     STRIP_MODE,
     SubtitleRemovalOptions,
     SubtitleRemovalResult,
+    build_audio_playback_command,
+    build_playback_command,
     create_video_preview,
+    probe_video_duration,
     remove_subtitles_from_video,
 )
 from .transcription import (
@@ -59,6 +64,7 @@ REMOVAL_MODE_LABELS = {
 REMOVAL_MODE_CODES = {label: code for code, label in REMOVAL_MODE_LABELS.items()}
 PREVIEW_WIDTH = 480
 PREVIEW_HEIGHT = 270
+PREVIEW_FPS = 12
 
 
 class GalaxyStudioApp:
@@ -95,6 +101,17 @@ class GalaxyStudioApp:
         self._preview_temp_dir = tempfile.TemporaryDirectory(prefix="galaxy_video_preview_")
         self._removal_drag_start: tuple[int, int] | None = None
         self._removal_preview_image: tk.PhotoImage | None = None
+        self._playback_process: subprocess.Popen[bytes] | None = None
+        self._playback_audio_process: subprocess.Popen[bytes] | None = None
+        self._playback_worker: threading.Thread | None = None
+        self._playback_stop = threading.Event()
+        self._playback_frames: queue.Queue[tuple[int, bytes, float]] = queue.Queue(maxsize=2)
+        self._playback_session = 0
+        self._removal_preview_session = 0
+        self._removal_preview_worker: threading.Thread | None = None
+        self._timeline_dragging = False
+        self._resume_after_timeline_seek = False
+        self._ffplay_missing_logged = False
 
         self.project_name = tk.StringVar(value="galaxy_project")
         self.output_dir = tk.StringVar(value=saved_config.output_dir or str(Path.cwd() / "exports"))
@@ -131,6 +148,9 @@ class GalaxyStudioApp:
         self.subtitle_region_width = tk.IntVar(value=saved_config.subtitle_region_width)
         self.subtitle_region_height = tk.IntVar(value=saved_config.subtitle_region_height)
         self.subtitle_blur_strength = tk.IntVar(value=saved_config.subtitle_blur_strength)
+        self.removal_timeline_position = tk.DoubleVar(value=0.0)
+        self.removal_time_text = tk.StringVar(value="00:00 / 00:00")
+        self.removal_duration_seconds = 0.0
         self.script_language_code = ""
         self._setting_script_text = False
         self.status = tk.StringVar(value="Ready")
@@ -250,6 +270,7 @@ class GalaxyStudioApp:
         self.progress.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
 
         self._build_removal_tab()
+        self.main_notebook.bind("<<NotebookTabChanged>>", self._on_main_tab_changed)
 
         log_frame = ttk.Frame(shell)
         log_frame.grid(row=2, column=0, sticky="nsew", pady=(12, 0))
@@ -320,6 +341,36 @@ class GalaxyStudioApp:
             stipple="gray50",
         )
         self._draw_removal_region()
+
+        transport = ttk.Frame(preview_panel)
+        transport.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        transport.columnconfigure(1, weight=1)
+        self.removal_play_button = ttk.Button(
+            transport,
+            text="Phát",
+            command=self.toggle_removal_playback,
+            state="disabled",
+            width=10,
+        )
+        self.removal_play_button.grid(row=0, column=0, padx=(0, 8))
+        self.removal_timeline = ttk.Scale(
+            transport,
+            from_=0,
+            to=1,
+            variable=self.removal_timeline_position,
+            orient="horizontal",
+            state="disabled",
+            command=self._on_removal_timeline_changed,
+        )
+        self.removal_timeline.grid(row=0, column=1, sticky="ew")
+        self.removal_timeline.bind("<ButtonPress-1>", self._start_removal_timeline_seek)
+        self.removal_timeline.bind("<ButtonRelease-1>", self._finish_removal_timeline_seek)
+        ttk.Label(
+            transport,
+            textvariable=self.removal_time_text,
+            width=14,
+            anchor="e",
+        ).grid(row=0, column=2, padx=(8, 0))
 
         controls_panel = ttk.Frame(self.removal_tab, style="Panel.TFrame", padding=14)
         controls_panel.grid(row=0, column=1, sticky="nsew")
@@ -676,8 +727,14 @@ class GalaxyStudioApp:
         if not file_path:
             return
 
+        self._stop_removal_playback()
         self.removal_video_path.set(file_path)
         self.removal_project_name.set(f"{Path(file_path).stem}-clean")
+        self.removal_duration_seconds = 0.0
+        self.removal_timeline_position.set(0.0)
+        self.removal_time_text.set("00:00 / 00:00")
+        self.removal_play_button.configure(state="disabled")
+        self.removal_timeline.configure(state="disabled", to=1)
         self.start_removal_preview()
 
     def _on_removal_mode_changed(self, _event: tk.Event | None = None) -> None:
@@ -757,50 +814,364 @@ class GalaxyStudioApp:
         self.subtitle_region_height.set(region_height)
         self._draw_removal_region()
 
-    def start_removal_preview(self) -> None:
-        if self.worker and self.worker.is_alive():
+    def start_removal_preview(self, timestamp_seconds: float | None = None) -> None:
+        if (
+            self.worker
+            and self.worker.is_alive()
+            and self.worker is not self._removal_preview_worker
+        ):
             return
         video = self.removal_video_path.get().strip()
         if not video:
             messagebox.showwarning("Missing video", "Choose a video before loading a preview.")
             return
 
-        preview_path = Path(self._preview_temp_dir.name) / "preview.png"
+        self._stop_removal_playback()
+        self._removal_preview_session += 1
+        session = self._removal_preview_session
+        timestamp = max(0.0, float(timestamp_seconds or 0.0))
+        preview_path = Path(self._preview_temp_dir.name) / f"preview-{session}.png"
         self._set_busy(True)
         self.removal_progress.start(12)
         self.status.set("Loading preview")
         self._append_log("Loading video preview...")
-        self.worker = threading.Thread(
+        preview_worker = threading.Thread(
             target=self._run_removal_preview,
-            args=(Path(video).expanduser(), preview_path),
+            args=(session, Path(video).expanduser(), preview_path, timestamp),
             daemon=True,
         )
-        self.worker.start()
+        self._removal_preview_worker = preview_worker
+        self.worker = preview_worker
+        preview_worker.start()
 
-    def _run_removal_preview(self, video_path: Path, preview_path: Path) -> None:
+    def _run_removal_preview(
+        self,
+        session: int,
+        video_path: Path,
+        preview_path: Path,
+        timestamp_seconds: float,
+    ) -> None:
         try:
-            result = create_video_preview(video_path, preview_path)
-            self.events.put(("removal_preview_ready", result))
+            duration = probe_video_duration(video_path)
+            timestamp = min(timestamp_seconds, max(0.0, duration - 0.001))
+            result = create_video_preview(
+                video_path,
+                preview_path,
+                timestamp_seconds=timestamp,
+            )
+            self.events.put(
+                (
+                    "removal_preview_ready",
+                    (session, str(video_path), result, duration, timestamp),
+                )
+            )
         except Exception as error:  # pragma: no cover - UI boundary
-            self.events.put(("error", error))
+            self.events.put(("removal_preview_error", (session, str(video_path), error)))
 
-    def _load_removal_preview(self, preview_path: Path) -> None:
+    def _load_removal_preview(
+        self,
+        preview_path: Path,
+        duration_seconds: float,
+        position_seconds: float,
+    ) -> None:
         self._removal_preview_image = tk.PhotoImage(file=str(preview_path))
+        self._show_removal_preview_image(self._removal_preview_image)
+        self.removal_duration_seconds = duration_seconds
+        self.removal_timeline.configure(to=max(0.001, duration_seconds), state="normal")
+        self.removal_play_button.configure(state="normal")
+        self._set_removal_timeline_position(position_seconds)
+
+    def _show_removal_preview_image(self, preview_image: tk.PhotoImage) -> None:
         self.removal_preview_canvas.delete("preview-image")
         self.removal_preview_canvas.delete("preview-placeholder")
         self.removal_preview_canvas.create_image(
             0,
             0,
-            image=self._removal_preview_image,
+            image=preview_image,
             anchor="nw",
             tags=("preview-image",),
         )
         self.removal_preview_canvas.tag_lower("preview-image")
         self._draw_removal_region()
 
+    def toggle_removal_playback(self) -> None:
+        if self._is_removal_playing():
+            self._stop_removal_playback()
+            return
+        self._start_removal_playback()
+
+    def _start_removal_playback(self) -> None:
+        if self.worker and self.worker.is_alive():
+            return
+        video = self.removal_video_path.get().strip()
+        if not video:
+            messagebox.showwarning("Missing video", "Choose a video before playing the preview.")
+            return
+        if self.removal_duration_seconds <= 0:
+            self.start_removal_preview()
+            return
+
+        ffmpeg = find_ffmpeg()
+        if not ffmpeg:
+            messagebox.showerror("Playback unavailable", "ffmpeg was not found. Run install_ffmpeg.ps1 first.")
+            return
+
+        self._stop_removal_playback()
+        start_seconds = max(0.0, float(self.removal_timeline_position.get()))
+        if start_seconds >= self.removal_duration_seconds - 0.05:
+            start_seconds = 0.0
+            self._set_removal_timeline_position(0.0)
+
+        session = self._playback_session
+        stop_event = threading.Event()
+        self._playback_stop = stop_event
+        command = build_playback_command(
+            ffmpeg,
+            Path(video).expanduser(),
+            start_seconds=start_seconds,
+            width=PREVIEW_WIDTH,
+            height=PREVIEW_HEIGHT,
+            fps=PREVIEW_FPS,
+        )
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+        try:
+            process = subprocess.Popen(
+                command,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                creationflags=creationflags,
+            )
+        except OSError as error:
+            messagebox.showerror("Playback unavailable", str(error))
+            return
+
+        self._playback_process = process
+        self._start_removal_audio(Path(video).expanduser(), start_seconds, creationflags)
+        self.removal_play_button.configure(text="Tạm dừng")
+        self._playback_worker = threading.Thread(
+            target=self._read_removal_playback_frames,
+            args=(process, stop_event, session, start_seconds),
+            daemon=True,
+        )
+        self._playback_worker.start()
+
+    def _start_removal_audio(self, video_path: Path, start_seconds: float, creationflags: int) -> None:
+        ffplay = find_ffplay()
+        if not ffplay:
+            if not self._ffplay_missing_logged:
+                self._append_log("ffplay is not bundled yet; video preview will play without audio.")
+                self._ffplay_missing_logged = True
+            return
+        try:
+            self._playback_audio_process = subprocess.Popen(
+                build_audio_playback_command(ffplay, video_path, start_seconds=start_seconds),
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=creationflags,
+            )
+        except OSError as error:
+            self._append_log(f"Could not start preview audio: {error}")
+            self._playback_audio_process = None
+
+    def _read_removal_playback_frames(
+        self,
+        process: subprocess.Popen[bytes],
+        stop_event: threading.Event,
+        session: int,
+        start_seconds: float,
+    ) -> None:
+        frame_size = PREVIEW_WIDTH * PREVIEW_HEIGHT * 3
+        frame_index = 0
+        stdout = process.stdout
+        if stdout is None:
+            return
+
+        while not stop_event.is_set():
+            frame = self._read_exact(stdout, frame_size)
+            if len(frame) != frame_size:
+                break
+            position = min(
+                self.removal_duration_seconds,
+                start_seconds + frame_index / PREVIEW_FPS,
+            )
+            frame_index += 1
+            self._offer_playback_frame((session, frame, position))
+
+        if stop_event.is_set():
+            return
+
+        return_code = process.wait()
+        final_position = min(
+            self.removal_duration_seconds,
+            start_seconds + frame_index / PREVIEW_FPS,
+        )
+        if return_code:
+            stderr = process.stderr.read() if process.stderr is not None else b""
+            detail = stderr.decode("utf-8", errors="replace").strip()
+            message = detail or f"ffmpeg exited with code {return_code}."
+            self.events.put(("removal_playback_error", (session, message)))
+            return
+        self.events.put(("removal_playback_ended", (session, final_position)))
+
+    @staticmethod
+    def _read_exact(stream: object, size: int) -> bytes:
+        chunks: list[bytes] = []
+        remaining = size
+        while remaining > 0:
+            chunk = stream.read(remaining)  # type: ignore[attr-defined]
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def _offer_playback_frame(self, frame: tuple[int, bytes, float]) -> None:
+        try:
+            self._playback_frames.put_nowait(frame)
+        except queue.Full:
+            try:
+                self._playback_frames.get_nowait()
+            except queue.Empty:
+                pass
+            try:
+                self._playback_frames.put_nowait(frame)
+            except queue.Full:
+                pass
+
+    def _render_latest_playback_frame(self) -> None:
+        latest: tuple[int, bytes, float] | None = None
+        while True:
+            try:
+                latest = self._playback_frames.get_nowait()
+            except queue.Empty:
+                break
+        if latest is None:
+            return
+
+        session, frame, position = latest
+        if session != self._playback_session:
+            return
+        ppm_header = f"P6\n{PREVIEW_WIDTH} {PREVIEW_HEIGHT}\n255\n".encode("ascii")
+        self._removal_preview_image = tk.PhotoImage(data=ppm_header + frame, format="PPM")
+        self._show_removal_preview_image(self._removal_preview_image)
+        if not self._timeline_dragging:
+            self._set_removal_timeline_position(position)
+
+    def _stop_removal_playback(self, *, update_ui: bool = True) -> None:
+        self._playback_session += 1
+        self._playback_stop.set()
+        processes = tuple(
+            process
+            for process in (self._playback_process, self._playback_audio_process)
+            if process is not None
+        )
+        for process in processes:
+            if process.poll() is not None:
+                continue
+            try:
+                process.terminate()
+            except OSError:
+                pass
+        self._playback_process = None
+        self._playback_audio_process = None
+        self._playback_worker = None
+        if processes:
+            threading.Thread(
+                target=self._reap_playback_processes,
+                args=(processes,),
+                daemon=True,
+            ).start()
+        while True:
+            try:
+                self._playback_frames.get_nowait()
+            except queue.Empty:
+                break
+        if update_ui:
+            try:
+                self.removal_play_button.configure(text="Phát")
+            except tk.TclError:
+                pass
+
+    @staticmethod
+    def _reap_playback_processes(processes: tuple[subprocess.Popen[bytes], ...]) -> None:
+        for process in processes:
+            try:
+                process.wait(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                try:
+                    process.kill()
+                    process.wait(timeout=0.5)
+                except (OSError, subprocess.TimeoutExpired):
+                    pass
+            except OSError:
+                pass
+
+            for stream in (process.stdout, process.stderr):
+                if stream is not None:
+                    try:
+                        stream.close()
+                    except OSError:
+                        pass
+
+    def _is_removal_playing(self) -> bool:
+        return self._playback_process is not None and self._playback_process.poll() is None
+
+    def _on_removal_timeline_changed(self, value: str) -> None:
+        try:
+            position = float(value)
+        except ValueError:
+            return
+        self._update_removal_time_text(position)
+
+    def _start_removal_timeline_seek(self, _event: tk.Event) -> None:
+        self._timeline_dragging = True
+        self._resume_after_timeline_seek = self._is_removal_playing()
+        if self._resume_after_timeline_seek:
+            self._stop_removal_playback()
+
+    def _finish_removal_timeline_seek(self, _event: tk.Event) -> None:
+        self._timeline_dragging = False
+        position = max(
+            0.0,
+            min(self.removal_duration_seconds, float(self.removal_timeline_position.get())),
+        )
+        self._set_removal_timeline_position(position)
+        if self._resume_after_timeline_seek:
+            self._resume_after_timeline_seek = False
+            self._start_removal_playback()
+        else:
+            self.start_removal_preview(position)
+
+    def _set_removal_timeline_position(self, position_seconds: float) -> None:
+        position = max(0.0, min(self.removal_duration_seconds, position_seconds))
+        self.removal_timeline_position.set(position)
+        self._update_removal_time_text(position)
+
+    def _update_removal_time_text(self, position_seconds: float) -> None:
+        self.removal_time_text.set(
+            f"{self._format_playback_time(position_seconds)} / "
+            f"{self._format_playback_time(self.removal_duration_seconds)}"
+        )
+
+    @staticmethod
+    def _format_playback_time(seconds: float) -> str:
+        total_seconds = max(0, int(seconds))
+        hours, remainder = divmod(total_seconds, 3600)
+        minutes, secs = divmod(remainder, 60)
+        if hours:
+            return f"{hours:02}:{minutes:02}:{secs:02}"
+        return f"{minutes:02}:{secs:02}"
+
+    def _on_main_tab_changed(self, _event: tk.Event | None = None) -> None:
+        if self.main_notebook.select() != str(self.removal_tab):
+            self._stop_removal_playback()
+
     def start_remove_subtitles(self) -> None:
         if self.worker and self.worker.is_alive():
             return
+        self._stop_removal_playback()
         video = self.removal_video_path.get().strip()
         if not video:
             messagebox.showwarning("Missing video", "Choose a video before processing.")
@@ -1292,19 +1663,54 @@ class GalaxyStudioApp:
                 self.script_language_code = str(language_code)
                 self._select_voice_for_language(self.script_language_code)
             elif event == "removal_preview_ready":
+                session, source_path, preview_path, duration, position = (
+                    payload if isinstance(payload, tuple) else (-1, "", payload, 0.0, 0.0)
+                )
+                if (
+                    int(session) != self._removal_preview_session
+                    or str(source_path) != str(Path(self.removal_video_path.get().strip()).expanduser())
+                ):
+                    continue
                 self.progress.stop()
                 self.removal_progress.stop()
                 self._set_busy(False)
                 self.status.set("Ready")
-                self._load_removal_preview(Path(payload))
+                self._load_removal_preview(
+                    Path(preview_path),
+                    float(duration),
+                    float(position),
+                )
                 self._append_log("Video preview loaded.")
+            elif event == "removal_preview_error":
+                session, source_path, error = (
+                    payload if isinstance(payload, tuple) else (-1, "", payload)
+                )
+                if (
+                    int(session) != self._removal_preview_session
+                    or str(source_path) != str(Path(self.removal_video_path.get().strip()).expanduser())
+                ):
+                    continue
+                self._finish_error(error)
+            elif event == "removal_playback_ended":
+                session, position = payload if isinstance(payload, tuple) else (-1, 0.0)
+                if int(session) == self._playback_session:
+                    self._stop_removal_playback()
+                    self._set_removal_timeline_position(float(position))
+            elif event == "removal_playback_error":
+                session, error = payload if isinstance(payload, tuple) else (-1, payload)
+                if int(session) == self._playback_session:
+                    self._stop_removal_playback()
+                    self.status.set("Playback stopped")
+                    self._append_log(f"Playback error: {error}")
+                    messagebox.showerror("Playback failed", str(error))
             elif event == "done":
                 self._finish_success(payload)
             elif event == "error":
                 self._finish_error(payload)
 
+        self._render_latest_playback_frame()
         try:
-            self._poll_after_id = self.root.after(120, self._poll_events)
+            self._poll_after_id = self.root.after(60, self._poll_events)
         except tk.TclError:
             self._poll_after_id = None
 
@@ -1489,6 +1895,9 @@ class GalaxyStudioApp:
         self.removal_preview_button.configure(state=state)
         self.removal_process_button.configure(state=state)
         self.removal_mode_combo.configure(state="disabled" if busy else "readonly")
+        playback_state = "normal" if not busy and self.removal_duration_seconds > 0 else "disabled"
+        self.removal_play_button.configure(state=playback_state)
+        self.removal_timeline.configure(state=playback_state)
         if busy:
             for widget in self.removal_region_widgets:
                 widget.configure(state="disabled")
@@ -1522,6 +1931,8 @@ class GalaxyStudioApp:
     def _on_destroy(self, event: tk.Event) -> None:
         if event.widget is not self.root:
             return
+
+        self._stop_removal_playback(update_ui=False)
 
         with self._subtitle_draft_lock:
             self._closing = True

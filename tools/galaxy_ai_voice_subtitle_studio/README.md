@@ -59,7 +59,7 @@ powershell -ExecutionPolicy Bypass -File .\install_desktop_shortcut.ps1
 
 ## Cài ffmpeg bundled
 
-Video/audio workflow cần `ffmpeg`. Chạy lệnh này một lần để tải `ffmpeg.exe` vào `bin/` của tool:
+Video/audio workflow cần bộ FFmpeg. Chạy lệnh này một lần để tải `ffmpeg.exe`, `ffprobe.exe` và `ffplay.exe` vào `bin/` của tool:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install_ffmpeg.ps1
@@ -69,9 +69,11 @@ Sau khi cài, app sẽ ưu tiên dùng:
 
 ```text
 bin/ffmpeg.exe
+bin/ffprobe.exe
+bin/ffplay.exe
 ```
 
-Nếu file này không có, app mới tìm `ffmpeg` trong PATH.
+Nếu các file này không có, app tìm công cụ tương ứng trong PATH. Video preview vẫn chạy hình khi thiếu `ffplay`, nhưng sẽ không có tiếng.
 
 ## Chạy CLI
 
@@ -141,7 +143,7 @@ Bấm `Generate` sau đó sẽ tạo voice từ nội dung trong tab `Script`. N
 
 ## Xóa phụ đề khỏi video
 
-GUI có hai tab chính: `Voice` giữ nguyên toàn bộ workflow tạo voice/subtitle, còn `Xóa phụ đề` xử lý video đã có phụ đề. Chọn video, kéo khung vàng quanh vùng chữ trên preview rồi chọn một trong ba chế độ:
+GUI có hai tab chính: `Voice` giữ nguyên toàn bộ workflow tạo voice/subtitle, còn `Xóa phụ đề` xử lý video đã có phụ đề. Preview có nút `Phát` / `Tạm dừng` và timeline để xem hoặc tua đến đúng đoạn có chữ; kéo khung vàng quanh vùng subtitle rồi chọn một trong ba chế độ:
 
 - `Bỏ track phụ đề`: loại bỏ subtitle stream rời và copy các stream còn lại, không encode lại.
 - `Làm mờ vùng phụ đề`: làm mờ vùng đã chọn, phù hợp với nền chuyển động và cho kết quả ổn định.

@@ -65,6 +65,8 @@ class TranscriptionTests(unittest.TestCase):
             self.assertTrue(result.translated_srt_path and result.translated_srt_path.exists())
             self.assertIn("Hello.", result.source_srt_path.read_text(encoding="utf-8"))
             self.assertIn("VI Hello.", result.translated_srt_path.read_text(encoding="utf-8"))
+            self.assertEqual(result.script_text, "VI Hello.\nVI World.")
+            self.assertEqual(result.script_language, "vi")
             self.assertIn("subtitle_manifest.json", str(result.manifest_path))
             manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["ai_provider"], "deepseek")

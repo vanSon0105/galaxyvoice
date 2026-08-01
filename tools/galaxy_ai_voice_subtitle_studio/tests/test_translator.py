@@ -18,6 +18,7 @@ from app.translator import (  # noqa: E402
     default_translation_model,
     default_translation_provider,
     translate_cues,
+    translate_script_text,
     translation_provider_code,
     translation_provider_label,
 )
@@ -82,6 +83,23 @@ class TranslatorTests(unittest.TestCase):
                 )
 
         self.assertEqual(translated[0].text, "Xin chao.")
+
+    def test_translate_script_text_preserves_blank_lines(self) -> None:
+        def fake_client(_messages, _options):
+            return json.dumps({"translations": ["Xin chao.", "The gioi."]})
+
+        translated = translate_script_text(
+            "Hello.\n\nWorld.",
+            AITranslationOptions(
+                source_language="en",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated, "Xin chao.\n\nThe gioi.")
 
     def test_default_translation_api_key_reads_windows_user_environment(self) -> None:
         with patch.dict(os.environ, {}, clear=True):

@@ -4,6 +4,7 @@ import os
 import queue
 import threading
 import tkinter as tk
+from dataclasses import replace
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
@@ -12,10 +13,12 @@ from .languages import code_from_label, label_from_code, language_labels
 from .media import MediaExtractionOptions, MediaExtractionResult, extract_audio_from_video
 from .transcription import VideoSubtitleOptions, VideoSubtitleResult, create_subtitles_from_video
 from .translator import (
+    AITranslationOptions,
     default_translation_api_key,
     default_translation_base_url,
     default_translation_model,
     default_translation_provider,
+    translate_script_text,
     translation_provider_code,
     translation_provider_label,
     translation_provider_labels,
@@ -35,6 +38,7 @@ class GalaxyStudioApp:
         self.worker: threading.Thread | None = None
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.last_result: GenerationResult | MediaExtractionResult | VideoSubtitleResult | None = None
+        self._poll_after_id: str | None = None
 
         self.project_name = tk.StringVar(value="galaxy_project")
         self.output_dir = tk.StringVar(value=str(Path.cwd() / "exports"))
@@ -56,10 +60,13 @@ class GalaxyStudioApp:
         self.ai_model = tk.StringVar(value=default_translation_model(provider))
         self.ai_base_url = tk.StringVar(value=default_translation_base_url(provider))
         self.ai_api_key = tk.StringVar(value=default_translation_api_key(provider))
+        self.script_language_code = ""
+        self._setting_script_text = False
         self.status = tk.StringVar(value="Ready")
 
         self._configure_style()
         self._build_layout()
+        self.root.bind("<Destroy>", self._on_destroy, add="+")
         self._poll_events()
         self.refresh_voices()
 
@@ -117,6 +124,7 @@ class GalaxyStudioApp:
             bd=1,
         )
         self.script_text.grid(row=1, column=0, sticky="nsew")
+        self.script_text.bind("<<Modified>>", self._on_script_modified)
 
         right = ttk.Frame(shell, style="Panel.TFrame", padding=14)
         right.grid(row=1, column=1, sticky="nsew")
@@ -372,11 +380,27 @@ class GalaxyStudioApp:
         self.status.set("Generating")
         self._append_log("Starting generation...")
 
-        self.worker = threading.Thread(target=self._run_generation, args=(options,), daemon=True)
+        translation_options = self._build_generation_translation_options()
+        if translation_options:
+            target = label_from_code(translation_options.target_language, default=translation_options.target_language)
+            if self._select_voice_for_language(translation_options.target_language):
+                options = replace(options, voice_name=self.voice_name.get() or None)
+                self._append_log(f"Selected voice for {target}: {self.voice_name.get()}")
+            self.status.set("Translating")
+            self._append_log(f"Will translate Script to {target} before generating voice.")
+
+        self.worker = threading.Thread(target=self._run_generation, args=(options, translation_options), daemon=True)
         self.worker.start()
 
-    def _run_generation(self, options: GenerationOptions) -> None:
+    def _run_generation(self, options: GenerationOptions, translation_options: AITranslationOptions | None) -> None:
         try:
+            if translation_options:
+                target = label_from_code(translation_options.target_language, default=translation_options.target_language)
+                self.events.put(("log", f"Translating Script to {target}..."))
+                translated_text = translate_script_text(options.text, translation_options)
+                options = replace(options, text=translated_text)
+                self.events.put(("script_translated", (translated_text, translation_options.target_language)))
+
             result = generate_package(options, tts=self.tts, progress=lambda message: self.events.put(("log", message)))
             self.events.put(("done", result))
         except Exception as error:  # pragma: no cover - UI boundary
@@ -464,6 +488,24 @@ class GalaxyStudioApp:
         self.ai_base_url.set(default_translation_base_url(provider))
         self.ai_api_key.set(default_translation_api_key(provider))
 
+    def _build_generation_translation_options(self) -> AITranslationOptions | None:
+        source_language = self.script_language_code.strip().lower()
+        target_language = code_from_label(self.video_target_language.get(), default="none")
+        if not source_language or target_language == "none":
+            return None
+        if source_language != "auto" and source_language == target_language:
+            return None
+
+        provider = translation_provider_code(self.ai_provider.get())
+        return AITranslationOptions(
+            source_language=source_language,
+            target_language=target_language,
+            provider=provider,
+            api_key=self.ai_api_key.get(),
+            model=self.ai_model.get(),
+            base_url=self.ai_base_url.get(),
+        )
+
     def _poll_events(self) -> None:
         while True:
             try:
@@ -473,12 +515,20 @@ class GalaxyStudioApp:
 
             if event == "log":
                 self._append_log(str(payload))
+            elif event == "script_translated":
+                text, language_code = payload if isinstance(payload, tuple) else ("", "")
+                self._set_script_text(str(text))
+                self.script_language_code = str(language_code)
+                self._select_voice_for_language(self.script_language_code)
             elif event == "done":
                 self._finish_success(payload)
             elif event == "error":
                 self._finish_error(payload)
 
-        self.root.after(120, self._poll_events)
+        try:
+            self._poll_after_id = self.root.after(120, self._poll_events)
+        except tk.TclError:
+            self._poll_after_id = None
 
     def _finish_success(self, result: object) -> None:
         self.progress.stop()
@@ -507,6 +557,7 @@ class GalaxyStudioApp:
             self._append_log(f"Original SRT: {self.last_result.source_srt_path}")
             if self.last_result.translated_srt_path:
                 self._append_log(f"Translated SRT: {self.last_result.translated_srt_path}")
+            self._load_subtitle_script(self.last_result)
             self._append_log(f"Manifest: {self.last_result.manifest_path}")
             for warning in self.last_result.warnings:
                 self._append_log(f"Warning: {warning}")
@@ -529,6 +580,53 @@ class GalaxyStudioApp:
         self.log_text.see("end")
         self.log_text.configure(state="disabled")
 
+    def _load_subtitle_script(self, result: VideoSubtitleResult) -> None:
+        if not result.script_text.strip():
+            return
+
+        self._set_script_text(result.script_text)
+        self.script_language_code = result.script_language
+
+        language = label_from_code(result.script_language, default=result.script_language)
+        self._append_log(f"Loaded {language} script into Script.")
+        if self._select_voice_for_language(result.script_language):
+            self._append_log(f"Selected voice for {language}: {self.voice_name.get()}")
+        elif result.script_language not in {"auto", "none"}:
+            self._append_log(f"No installed Windows voice found for {language}; Generate will use the selected voice.")
+
+    def _select_voice_for_language(self, language_code: str) -> bool:
+        normalized = language_code.strip().lower()
+        if not normalized or normalized in {"auto", "none"}:
+            return False
+
+        culture_prefix = f"{normalized}-"
+        for voice in self.voices:
+            culture = voice.culture.strip().lower()
+            if culture == normalized or culture.startswith(culture_prefix):
+                self.voice_name.set(voice.name)
+                return True
+
+        return False
+
+    def _set_script_text(self, text: str) -> None:
+        self._setting_script_text = True
+        try:
+            self.script_text.edit_separator()
+            self.script_text.delete("1.0", "end")
+            self.script_text.insert("1.0", text)
+            self.script_text.edit_separator()
+            self.script_text.edit_modified(False)
+        finally:
+            self._setting_script_text = False
+
+    def _on_script_modified(self, event: tk.Event) -> None:
+        widget = event.widget
+        if not isinstance(widget, tk.Text) or not widget.edit_modified():
+            return
+        if not self._setting_script_text:
+            self.script_language_code = ""
+        widget.edit_modified(False)
+
     def _set_busy(self, busy: bool) -> None:
         state = "disabled" if busy else "normal"
         self.generate_button.configure(state=state)
@@ -547,6 +645,16 @@ class GalaxyStudioApp:
         if canvas is not None:
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
         return "break"
+
+    def _on_destroy(self, event: tk.Event) -> None:
+        if event.widget is not self.root or not self._poll_after_id:
+            return
+
+        try:
+            self.root.after_cancel(self._poll_after_id)
+        except tk.TclError:
+            pass
+        self._poll_after_id = None
 
 
 def run_app() -> None:

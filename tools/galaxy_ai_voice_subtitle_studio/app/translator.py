@@ -177,6 +177,27 @@ def translate_texts(
     return translated
 
 
+def translate_script_text(
+    text: str,
+    options: AITranslationOptions,
+    client: ChatClient | None = None,
+) -> str:
+    options = resolve_translation_options(options)
+    if options.target_language == "none" or _same_language(options.source_language, options.target_language):
+        return text
+
+    validate_translation_options(options)
+    lines = text.splitlines()
+    translatable = [line.strip() for line in lines if line.strip()]
+    if not translatable:
+        return text
+
+    translated = translate_texts(translatable, options, client=client or _chat_completion)
+    translated_iter = iter(translated)
+    output_lines = [next(translated_iter) if line.strip() else line for line in lines]
+    return "\n".join(output_lines).strip()
+
+
 def _translate_batch(texts: list[str], options: AITranslationOptions, client: ChatClient) -> list[str]:
     source = label_from_code(options.source_language, default=options.source_language or "Auto detect")
     target = label_from_code(options.target_language, default=options.target_language)
@@ -263,6 +284,12 @@ def _chat_completion(messages: list[dict[str, str]], options: AITranslationOptio
 def _requires_api_key(base_url: str) -> bool:
     lowered = base_url.lower()
     return not any(host in lowered for host in ["localhost", "127.0.0.1", "0.0.0.0"])
+
+
+def _same_language(source_language: str, target_language: str) -> bool:
+    source = source_language.strip().lower()
+    target = target_language.strip().lower()
+    return bool(source and target and source != "auto" and source == target)
 
 
 def resolve_translation_options(options: AITranslationOptions) -> AITranslationOptions:

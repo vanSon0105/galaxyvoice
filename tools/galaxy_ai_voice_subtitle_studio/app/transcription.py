@@ -49,6 +49,8 @@ class VideoSubtitleResult:
     translated_srt_path: Path | None
     manifest_path: Path
     cue_count: int
+    script_text: str
+    script_language: str
     warnings: list[str]
 
 
@@ -112,6 +114,10 @@ def create_subtitles_from_video(
         translated_cues = translate(cues, ai_options)
         translated_srt_path.write_text(render_srt(translated_cues), encoding="utf-8")
 
+    script_cues = translated_cues or cues
+    script_language = target_language if translated_cues else source_language
+    script_text = cues_to_script(script_cues)
+
     manifest = {
         "app": "Galaxy AI Voice & Subtitle Studio",
         "version": "0.1.0",
@@ -141,6 +147,8 @@ def create_subtitles_from_video(
         translated_srt_path=translated_srt_path,
         manifest_path=manifest_path,
         cue_count=len(cues),
+        script_text=script_text,
+        script_language=script_language,
         warnings=warnings,
     )
 
@@ -189,3 +197,7 @@ def transcribe_with_faster_whisper(
 def _normalize_language(value: str, auto_value: str) -> str:
     normalized = value.strip().lower()
     return normalized or auto_value
+
+
+def cues_to_script(cues: list[SubtitleCue]) -> str:
+    return "\n".join(cue.text.strip() for cue in cues if cue.text.strip())

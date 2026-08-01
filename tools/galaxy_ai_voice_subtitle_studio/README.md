@@ -93,6 +93,8 @@ Chỉ tạo SRT gốc, không dịch:
 python run.py --video .\video.mp4 --transcribe --source-language auto --no-translate
 ```
 
+Trong GUI, sau khi bấm `Create Subtitles`, app sẽ tự đưa transcript đã dịch vào ô `Script`. Bấm `Generate` sau đó sẽ tạo voice từ chính script này. Nếu script được tạo từ video và bạn đổi `Translate to` trước khi generate, app sẽ dịch script sang ngôn ngữ mới rồi mới tạo voice. Nếu máy có voice Windows/SAPI trùng ngôn ngữ đã chọn, app sẽ tự chọn voice đó; nếu không, hãy cài hoặc chọn voice phù hợp thủ công.
+
 ## Output
 
 Mỗi lần generate tạo một thư mục riêng:

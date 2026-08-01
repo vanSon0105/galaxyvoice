@@ -243,9 +243,11 @@ def _translate_batch(texts: list[str], options: AITranslationOptions, client: Ch
     source = label_from_code(options.source_language, default=options.source_language or "Auto detect")
     target = label_from_code(options.target_language, default=options.target_language)
     payload = [{"index": index, "text": text} for index, text in enumerate(texts, start=1)]
+    wrong_language = ""
     for attempt in range(_TRANSLATION_ATTEMPTS):
         retry_instruction = (
-            "The previous response used the wrong output language. Correct that mistake.\n"
+            f"The previous response was written in {wrong_language}, not {target}. "
+            f"Translate it into {target} now.\n"
             if attempt
             else ""
         )
@@ -275,23 +277,30 @@ def _translate_batch(texts: list[str], options: AITranslationOptions, client: Ch
             raise RuntimeError(
                 f"AI translation returned {len(translations)} lines for a batch that expected {len(texts)} lines."
             )
-        if not _looks_like_english_instead_of_vietnamese(translations, options.target_language):
+        detected_language = _wrong_output_language(translations, options.target_language)
+        if detected_language is None:
             return translations
+        wrong_language = detected_language
 
     raise RuntimeError(
-        "AI translation returned English instead of Vietnamese after retrying. "
+        f"AI translation returned {wrong_language or 'another language'} instead of Vietnamese after retrying. "
         "No mixed-language subtitle file was created."
     )
 
 
-def _looks_like_english_instead_of_vietnamese(translations: list[str], target_language: str) -> bool:
+def _wrong_output_language(translations: list[str], target_language: str) -> str | None:
     if target_language.strip().lower() != "vi":
-        return False
+        return None
 
     combined = " ".join(translations)
+    han_characters = sum(_is_han(character) for character in combined)
+    alphabetic_characters = sum(character.isalpha() for character in combined)
+    if han_characters >= 4 and han_characters * 2 >= alphabetic_characters:
+        return "Chinese"
+
     words = re.findall(r"[a-z]+", combined.lower())
     if len(words) < 12:
-        return False
+        return None
 
     normalized = unicodedata.normalize("NFD", combined)
     vietnamese_marks = sum(
@@ -299,7 +308,18 @@ def _looks_like_english_instead_of_vietnamese(translations: list[str], target_la
         for character in normalized
     )
     english_words = sum(word in _ENGLISH_WORDS for word in words)
-    return vietnamese_marks < 2 and english_words >= max(4, len(words) // 8)
+    if vietnamese_marks < 2 and english_words >= max(4, len(words) // 8):
+        return "English"
+    return None
+
+
+def _is_han(character: str) -> bool:
+    codepoint = ord(character)
+    return (
+        0x3400 <= codepoint <= 0x4DBF
+        or 0x4E00 <= codepoint <= 0x9FFF
+        or 0xF900 <= codepoint <= 0xFAFF
+    )
 
 
 def _extract_translations(raw: str) -> list[str]:

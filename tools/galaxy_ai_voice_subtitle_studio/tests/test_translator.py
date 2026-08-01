@@ -94,6 +94,48 @@ class TranslatorTests(unittest.TestCase):
         self.assertTrue(all("English translation" not in cue.text for cue in translated))
         self.assertEqual(batch_sizes, [20, 20, 1])
 
+    def test_translate_cues_retries_chinese_returned_instead_of_vietnamese(self) -> None:
+        cues = [
+            SubtitleCue(
+                index=1,
+                start_ms=0,
+                end_ms=3760,
+                text="\u6211\u7684\u4e16\u754c\uff0c\u4f46\u53ea\u80fd\u4f7f\u7528\u4e00\u683c\u7269\u54c1",
+            )
+        ]
+        responses = iter(
+            [
+                ["\u6211\u7684\u4e16\u754c\uff0c\u4f46\u53ea\u80fd\u4f7f\u7528\u4e00\u683c\u7269\u54c1\u6765\u901a\u5173"],
+                ["Th\u1ebf gi\u1edbi c\u1ee7a t\u00f4i, nh\u01b0ng ch\u1ec9 \u0111\u01b0\u1ee3c d\u00f9ng m\u1ed9t \u00f4 v\u1eadt ph\u1ea9m"],
+            ]
+        )
+        call_count = 0
+
+        def fake_client(messages, _options):
+            nonlocal call_count
+            call_count += 1
+            self.assertIn("Target language: Vietnamese (vi)", messages[1]["content"])
+            if call_count == 2:
+                self.assertIn("previous response was written in Chinese", messages[1]["content"])
+            return json.dumps({"translations": next(responses)}, ensure_ascii=False)
+
+        translated = translate_cues(
+            cues,
+            AITranslationOptions(
+                source_language="auto",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(
+            translated[0].text,
+            "Th\u1ebf gi\u1edbi c\u1ee7a t\u00f4i, nh\u01b0ng ch\u1ec9 \u0111\u01b0\u1ee3c d\u00f9ng m\u1ed9t \u00f4 v\u1eadt ph\u1ea9m",
+        )
+        self.assertEqual(call_count, 2)
+
     def test_translate_cues_rejects_a_persistently_wrong_output_language(self) -> None:
         cues = [
             SubtitleCue(index=index, start_ms=index * 1000, end_ms=(index + 1) * 1000, text=f"这是第 {index} 行")
@@ -114,6 +156,39 @@ class TranslatorTests(unittest.TestCase):
             )
 
         with self.assertRaisesRegex(RuntimeError, "English instead of Vietnamese"):
+            translate_cues(
+                cues,
+                AITranslationOptions(
+                    source_language="auto",
+                    target_language="vi",
+                    api_key="test-key",
+                    model="test-model",
+                ),
+                client=fake_client,
+            )
+
+        self.assertEqual(call_count, 2)
+
+    def test_translate_cues_rejects_persistently_chinese_output_for_vietnamese(self) -> None:
+        cues = [
+            SubtitleCue(
+                index=1,
+                start_ms=0,
+                end_ms=3760,
+                text="\u6211\u7684\u4e16\u754c\uff0c\u4f46\u53ea\u80fd\u4f7f\u7528\u4e00\u683c\u7269\u54c1",
+            )
+        ]
+        call_count = 0
+
+        def fake_client(_messages, _options):
+            nonlocal call_count
+            call_count += 1
+            return json.dumps(
+                {"translations": ["\u8fd9\u4ecd\u7136\u662f\u4e00\u53e5\u4e2d\u6587\u5b57\u5e55"]},
+                ensure_ascii=False,
+            )
+
+        with self.assertRaisesRegex(RuntimeError, "Chinese instead of Vietnamese"):
             translate_cues(
                 cues,
                 AITranslationOptions(

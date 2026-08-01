@@ -37,6 +37,18 @@ class FakeTTS:
             handle.writeframes(b"\x00\x00" * duration_ms)
 
 
+class FailingTTS(FakeTTS):
+    def synthesize_to_wav(
+        self,
+        text: str,
+        output_path: Path,
+        voice_name: str | None = None,
+        rate: int = 0,
+        volume: int = 100,
+    ) -> None:
+        raise RuntimeError("provider returned no audio")
+
+
 class EngineTests(unittest.TestCase):
     def test_generate_package_writes_audio_srt_and_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -76,6 +88,18 @@ class EngineTests(unittest.TestCase):
 
             manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["tts_engine"], "edge")
+
+    def test_generation_error_identifies_the_failed_segment(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with self.assertRaisesRegex(RuntimeError, r"Segment 1/1 failed.*Xin chao"):
+                generate_package(
+                    GenerationOptions(
+                        text="Xin chao.",
+                        output_dir=Path(temp_dir),
+                        export_mp3=False,
+                    ),
+                    tts=FailingTTS(),  # type: ignore[arg-type]
+                )
 
 
 if __name__ == "__main__":

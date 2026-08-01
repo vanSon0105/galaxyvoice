@@ -28,6 +28,11 @@ class TextSplitterTests(unittest.TestCase):
         self.assertGreater(len(chunks), 1)
         self.assertTrue(all(len(chunk) <= 60 for chunk in chunks))
 
+    def test_split_text_discards_symbol_only_chunks(self) -> None:
+        chunks = split_text("Xin chao. ... Tam biet.\n\n♪", max_chars=80)
+
+        self.assertEqual(chunks, ["Xin chao.", "Tam biet."])
+
 
 if __name__ == "__main__":
     unittest.main()

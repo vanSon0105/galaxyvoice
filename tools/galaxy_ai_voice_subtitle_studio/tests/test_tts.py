@@ -53,9 +53,31 @@ class FakeEdgeModule:
         ]
 
 
+class FakeNoAudioReceived(Exception):
+    pass
+
+
+class FlakyCommunicate(FakeCommunicate):
+    attempts = 0
+
+    async def save(self, output_path: str) -> None:
+        self.__class__.attempts += 1
+        if self.__class__.attempts == 1:
+            raise FakeNoAudioReceived("No audio was received.")
+        Path(output_path).write_bytes(b"fake mp3")
+
+
+class FlakyEdgeModule(FakeEdgeModule):
+    Communicate = FlakyCommunicate
+
+    class exceptions:
+        NoAudioReceived = FakeNoAudioReceived
+
+
 class EdgeTTSTests(unittest.TestCase):
     def setUp(self) -> None:
         FakeCommunicate.calls.clear()
+        FlakyCommunicate.attempts = 0
 
     def test_lists_vietnamese_voice_first(self) -> None:
         voices = EdgeTTS(edge_module=FakeEdgeModule).list_voices()
@@ -114,6 +136,26 @@ class EdgeTTSTests(unittest.TestCase):
                 reason = EdgeTTS().unavailable_reason()
 
         self.assertIn("pip install -r requirements-voice.txt", reason)
+
+    def test_retries_once_when_edge_returns_no_audio(self) -> None:
+        engine = EdgeTTS(edge_module=FlakyEdgeModule)
+
+        def write_wav(_source: Path, output: Path) -> None:
+            with wave.open(str(output), "wb") as handle:
+                handle.setnchannels(1)
+                handle.setsampwidth(2)
+                handle.setframerate(24000)
+                handle.writeframes(b"\x00\x00" * 100)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output_path = Path(temp_dir) / "voice.wav"
+            with patch("app.tts.find_ffmpeg", return_value="ffmpeg"):
+                with patch("app.tts.time.sleep") as sleep:
+                    with patch("app.tts._convert_edge_audio_to_wav", side_effect=write_wav):
+                        engine.synthesize_to_wav("Xin chao.", output_path)
+
+        self.assertEqual(FlakyCommunicate.attempts, 2)
+        sleep.assert_called_once_with(0.35)
 
 
 if __name__ == "__main__":

@@ -65,13 +65,17 @@ def generate_package(
     for index, chunk in enumerate(chunks, start=1):
         report(f"Synthesizing segment {index}/{len(chunks)}")
         segment_path = segments_dir / f"segment_{index:03}.wav"
-        tts_engine.synthesize_to_wav(
-            chunk,
-            segment_path,
-            voice_name=options.voice_name,
-            rate=options.rate,
-            volume=options.volume,
-        )
+        try:
+            tts_engine.synthesize_to_wav(
+                chunk,
+                segment_path,
+                voice_name=options.voice_name,
+                rate=options.rate,
+                volume=options.volume,
+            )
+        except Exception as error:
+            preview = chunk if len(chunk) <= 80 else f"{chunk[:77]}..."
+            raise RuntimeError(f"Segment {index}/{len(chunks)} failed ({preview!r}): {error}") from error
         segment_paths.append(segment_path)
 
     project_slug = project_dir.name

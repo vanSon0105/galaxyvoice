@@ -40,7 +40,7 @@ def split_text(text: str, max_chars: int = 160) -> list[str]:
         for sentence in _split_paragraph_into_sentences(paragraph):
             chunks.extend(_chunk_long_sentence(sentence, max_chars=max_chars))
 
-    return [chunk for chunk in chunks if chunk]
+    return [chunk for chunk in chunks if chunk and any(char.isalnum() for char in chunk)]
 
 
 def _split_paragraph_into_sentences(paragraph: str) -> list[str]:

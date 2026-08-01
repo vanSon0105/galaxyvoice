@@ -7,6 +7,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
@@ -283,6 +284,8 @@ class EdgeTTS:
     ) -> None:
         if not text.strip():
             raise ValueError("Cannot synthesize empty text.")
+        if not any(char.isalnum() for char in text):
+            raise ValueError("Edge TTS text has no speakable letters or numbers.")
         if not find_ffmpeg():
             raise RuntimeError("Edge TTS needs ffmpeg. Run install_ffmpeg.ps1 or add ffmpeg to PATH.")
 
@@ -294,13 +297,23 @@ class EdgeTTS:
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as handle:
                 temp_path = Path(handle.name)
 
-            communicate = module.Communicate(
-                text,
-                voice_name or DEFAULT_EDGE_VOICE,
-                rate=_format_percent(max(-10, min(10, int(rate))) * 10),
-                volume=_format_percent(max(0, min(100, int(volume))) - 100),
-            )
-            asyncio.run(asyncio.wait_for(communicate.save(str(temp_path)), timeout=60))
+            for attempt in range(2):
+                communicate = module.Communicate(
+                    text,
+                    voice_name or DEFAULT_EDGE_VOICE,
+                    rate=_format_percent(max(-10, min(10, int(rate))) * 10),
+                    volume=_format_percent(max(0, min(100, int(volume))) - 100),
+                )
+                try:
+                    asyncio.run(asyncio.wait_for(communicate.save(str(temp_path)), timeout=60))
+                    break
+                except Exception as error:
+                    no_audio_error = getattr(getattr(module, "exceptions", None), "NoAudioReceived", None)
+                    if attempt == 0 and no_audio_error and isinstance(error, no_audio_error):
+                        temp_path.write_bytes(b"")
+                        time.sleep(0.35)
+                        continue
+                    raise
             if not temp_path.exists() or temp_path.stat().st_size == 0:
                 raise RuntimeError("Edge TTS returned no audio. Check the internet connection and try again.")
 

@@ -73,6 +73,7 @@ class AITranslationOptions:
 ChatClient = Callable[[list[dict[str, str]], AITranslationOptions], str]
 
 _TRANSLATION_ATTEMPTS = 2
+_MIN_TRANSLATION_FALLBACK_BATCH_SIZE = 5
 _ENGLISH_WORDS = frozenset(
     {
         "a",
@@ -280,6 +281,11 @@ def _translate_batch(texts: list[str], options: AITranslationOptions, client: Ch
         detected_language = _wrong_output_language(translations, options.target_language)
         if detected_language is None:
             return translations
+        if detected_language == "Chinese" and len(texts) > _MIN_TRANSLATION_FALLBACK_BATCH_SIZE:
+            midpoint = len(texts) // 2
+            return _translate_batch(texts[:midpoint], options, client) + _translate_batch(
+                texts[midpoint:], options, client
+            )
         wrong_language = detected_language
 
     raise RuntimeError(

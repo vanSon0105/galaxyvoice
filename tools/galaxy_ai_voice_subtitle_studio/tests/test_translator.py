@@ -136,6 +136,57 @@ class TranslatorTests(unittest.TestCase):
         )
         self.assertEqual(call_count, 2)
 
+    def test_translate_cues_splits_a_large_batch_returned_in_chinese(self) -> None:
+        cues = [
+            SubtitleCue(
+                index=index,
+                start_ms=index * 1000,
+                end_ms=(index + 1) * 1000,
+                text=f"\u8fd9\u662f\u7b2c {index} \u884c\u5b57\u5e55",
+            )
+            for index in range(1, 21)
+        ]
+        batch_sizes: list[int] = []
+
+        def fake_client(messages, _options):
+            batch_size = messages[1]["content"].count('"index"')
+            batch_sizes.append(batch_size)
+            if batch_size > 10:
+                return json.dumps(
+                    {
+                        "translations": [
+                            f"\u8fd9\u4ecd\u7136\u662f\u7b2c {index} \u884c\u4e2d\u6587\u5b57\u5e55"
+                            for index in range(1, batch_size + 1)
+                        ]
+                    },
+                    ensure_ascii=False,
+                )
+            return json.dumps(
+                {
+                    "translations": [
+                        f"\u0110\u00e2y l\u00e0 b\u1ea3n d\u1ecbch ti\u1ebfng Vi\u1ec7t {index}"
+                        for index in range(1, batch_size + 1)
+                    ]
+                },
+                ensure_ascii=False,
+            )
+
+        translated = translate_cues(
+            cues,
+            AITranslationOptions(
+                source_language="auto",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(batch_sizes, [20, 10, 10])
+        self.assertEqual(len(translated), 20)
+        self.assertTrue(all("b\u1ea3n d\u1ecbch ti\u1ebfng Vi\u1ec7t" in cue.text for cue in translated))
+        self.assertEqual([cue.index for cue in translated], list(range(1, 21)))
+
     def test_translate_cues_rejects_a_persistently_wrong_output_language(self) -> None:
         cues = [
             SubtitleCue(index=index, start_ms=index * 1000, end_ms=(index + 1) * 1000, text=f"这是第 {index} 行")

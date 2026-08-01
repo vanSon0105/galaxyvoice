@@ -116,7 +116,7 @@ class TranslatorTests(unittest.TestCase):
             call_count += 1
             self.assertIn("Target language: Vietnamese (vi)", messages[1]["content"])
             if call_count == 2:
-                self.assertIn("previous response was written in Chinese", messages[1]["content"])
+                self.assertIn("Ph\u1ea3n h\u1ed3i tr\u01b0\u1edbc v\u1eabn \u0111\u01b0\u1ee3c vi\u1ebft b\u1eb1ng Chinese", messages[1]["content"])
             return json.dumps({"translations": next(responses)}, ensure_ascii=False)
 
         translated = translate_cues(
@@ -135,6 +135,95 @@ class TranslatorTests(unittest.TestCase):
             "Th\u1ebf gi\u1edbi c\u1ee7a t\u00f4i, nh\u01b0ng ch\u1ec9 \u0111\u01b0\u1ee3c d\u00f9ng m\u1ed9t \u00f4 v\u1eadt ph\u1ea9m",
         )
         self.assertEqual(call_count, 2)
+
+    def test_translate_cues_retries_a_single_character_chinese_cue(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=520, text="\u597d")
+        responses = iter([["\u597d"], ["\u0110\u01b0\u1ee3c."]])
+        call_count = 0
+
+        def fake_client(_messages, _options):
+            nonlocal call_count
+            call_count += 1
+            return json.dumps({"translations": next(responses)}, ensure_ascii=False)
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="auto",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "\u0110\u01b0\u1ee3c.")
+        self.assertEqual(call_count, 2)
+
+    def test_vietnamese_translation_prompt_uses_vietnamese_instructions_and_example(self) -> None:
+        cue = SubtitleCue(
+            index=1,
+            start_ms=0,
+            end_ms=3760,
+            text="\u6211\u7684\u4e16\u754c\uff0c\u4f46\u53ea\u80fd\u4f7f\u7528\u4e00\u683c\u7269\u54c1",
+        )
+        call_count = 0
+
+        def fake_client(messages, _options):
+            nonlocal call_count
+            call_count += 1
+            prompt = "\n".join(message["content"] for message in messages)
+            if "Nhi\u1ec7m v\u1ee5 duy nh\u1ea5t" in prompt and "Ch\u1edd m\u1ed9t ch\u00fat" in prompt:
+                return json.dumps({"translations": ["Th\u1ebf gi\u1edbi c\u1ee7a t\u00f4i"]}, ensure_ascii=False)
+            return json.dumps({"translations": ["\u8fd9\u4ecd\u7136\u662f\u4e2d\u6587\u5b57\u5e55"]}, ensure_ascii=False)
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="auto",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "Th\u1ebf gi\u1edbi c\u1ee7a t\u00f4i")
+        self.assertEqual(call_count, 1)
+
+    def test_translate_cues_uses_plain_text_fallback_for_a_stubborn_chinese_cue(self) -> None:
+        cue = SubtitleCue(
+            index=1,
+            start_ms=0,
+            end_ms=1720,
+            text="\u4e5f\u4f1a\u4ea7\u751f\u540c\u6837\u7684\u7206\u70b8",
+        )
+        call_count = 0
+
+        def fake_client(messages, _options):
+            nonlocal call_count
+            call_count += 1
+            prompt = "\n".join(message["content"] for message in messages)
+            if "\u4e2d\u8d8a\u7ffb\u8bd1" in prompt:
+                return "C\u0169ng s\u1ebd t\u1ea1o ra v\u1ee5 n\u1ed5 t\u01b0\u01a1ng t\u1ef1."
+            return json.dumps(
+                {"translations": ["\u4e5f\u4f1a\u4ea7\u751f\u540c\u6837\u7684\u7206\u70b8"]},
+                ensure_ascii=False,
+            )
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="auto",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "C\u0169ng s\u1ebd t\u1ea1o ra v\u1ee5 n\u1ed5 t\u01b0\u01a1ng t\u1ef1.")
+        self.assertEqual(call_count, 3)
 
     def test_translate_cues_splits_a_large_batch_returned_in_chinese(self) -> None:
         cues = [
@@ -186,6 +275,41 @@ class TranslatorTests(unittest.TestCase):
         self.assertEqual(len(translated), 20)
         self.assertTrue(all("b\u1ea3n d\u1ecbch ti\u1ebfng Vi\u1ec7t" in cue.text for cue in translated))
         self.assertEqual([cue.index for cue in translated], list(range(1, 21)))
+
+    def test_translate_cues_splits_chinese_batches_down_to_single_cues(self) -> None:
+        cues = [
+            SubtitleCue(
+                index=index,
+                start_ms=index * 1000,
+                end_ms=(index + 1) * 1000,
+                text=f"\u8fd9\u662f\u7b2c {index} \u884c\u5b57\u5e55",
+            )
+            for index in range(1, 6)
+        ]
+        batch_sizes: list[int] = []
+
+        def fake_client(messages, _options):
+            batch_size = messages[1]["content"].count('"index"')
+            batch_sizes.append(batch_size)
+            language = "\u4e2d\u6587\u5b57\u5e55" if batch_size > 1 else "b\u1ea3n d\u1ecbch ti\u1ebfng Vi\u1ec7t"
+            return json.dumps(
+                {"translations": [f"{language} {index}" for index in range(1, batch_size + 1)]},
+                ensure_ascii=False,
+            )
+
+        translated = translate_cues(
+            cues,
+            AITranslationOptions(
+                source_language="auto",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(batch_sizes, [5, 2, 1, 1, 3, 1, 2, 1, 1])
+        self.assertTrue(all("b\u1ea3n d\u1ecbch ti\u1ebfng Vi\u1ec7t" in cue.text for cue in translated))
 
     def test_translate_cues_rejects_a_persistently_wrong_output_language(self) -> None:
         cues = [
@@ -251,7 +375,7 @@ class TranslatorTests(unittest.TestCase):
                 client=fake_client,
             )
 
-        self.assertEqual(call_count, 2)
+        self.assertEqual(call_count, 3)
 
     def test_translate_cues_can_skip_translation(self) -> None:
         cues = [SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Original")]

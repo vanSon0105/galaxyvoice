@@ -73,7 +73,6 @@ class AITranslationOptions:
 ChatClient = Callable[[list[dict[str, str]], AITranslationOptions], str]
 
 _TRANSLATION_ATTEMPTS = 2
-_MIN_TRANSLATION_FALLBACK_BATCH_SIZE = 5
 _ENGLISH_WORDS = frozenset(
     {
         "a",
@@ -246,32 +245,13 @@ def _translate_batch(texts: list[str], options: AITranslationOptions, client: Ch
     payload = [{"index": index, "text": text} for index, text in enumerate(texts, start=1)]
     wrong_language = ""
     for attempt in range(_TRANSLATION_ATTEMPTS):
-        retry_instruction = (
-            f"The previous response was written in {wrong_language}, not {target}. "
-            f"Translate it into {target} now.\n"
-            if attempt
-            else ""
+        messages = _translation_messages(
+            source=source,
+            target=target,
+            target_language=options.target_language,
+            payload=payload,
+            wrong_language=wrong_language if attempt else "",
         )
-        user_prompt = (
-            f"Source language: {source}\n"
-            f"Target language: {target} ({options.target_language})\n"
-            f"{retry_instruction}"
-            f"Translate every cue directly into {target}. Do not use English unless the target language is English. "
-            "Keep names, numbers, meaning, tone, and line order. Keep each translation concise enough for subtitles.\n\n"
-            f"{json.dumps(payload, ensure_ascii=False)}"
-        )
-        messages = [
-            {
-                "role": "system",
-                "content": (
-                    f"You are a professional subtitle translator. Every translated sentence must be written in "
-                    f"{target}. Never substitute another language. Return only valid JSON with this exact shape: "
-                    "{\"translations\":[\"...\"]}. The translations array must have exactly the same length and "
-                    "order as the input subtitle cues."
-                ),
-            },
-            {"role": "user", "content": user_prompt},
-        ]
         raw = client(messages, options)
         translations = _extract_translations(raw)
         if len(translations) != len(texts):
@@ -281,12 +261,17 @@ def _translate_batch(texts: list[str], options: AITranslationOptions, client: Ch
         detected_language = _wrong_output_language(translations, options.target_language)
         if detected_language is None:
             return translations
-        if detected_language == "Chinese" and len(texts) > _MIN_TRANSLATION_FALLBACK_BATCH_SIZE:
+        if detected_language == "Chinese" and len(texts) > 1:
             midpoint = len(texts) // 2
             return _translate_batch(texts[:midpoint], options, client) + _translate_batch(
                 texts[midpoint:], options, client
             )
         wrong_language = detected_language
+
+    if len(texts) == 1 and wrong_language == "Chinese" and options.target_language.strip().lower() == "vi":
+        direct_translation = _translate_chinese_cue_directly(texts[0], options, client)
+        if _wrong_output_language([direct_translation], options.target_language) is None:
+            return [direct_translation]
 
     raise RuntimeError(
         f"AI translation returned {wrong_language or 'another language'} instead of Vietnamese after retrying. "
@@ -294,16 +279,115 @@ def _translate_batch(texts: list[str], options: AITranslationOptions, client: Ch
     )
 
 
+def _translation_messages(
+    source: str,
+    target: str,
+    target_language: str,
+    payload: list[dict[str, object]],
+    wrong_language: str,
+) -> list[dict[str, str]]:
+    if target_language.strip().lower() == "vi":
+        source_description = (
+            "t\u1ef1 nh\u1eadn di\u1ec7n" if source.lower() == "auto detect" else source
+        )
+        retry_instruction = (
+            f"Ph\u1ea3n h\u1ed3i tr\u01b0\u1edbc v\u1eabn \u0111\u01b0\u1ee3c vi\u1ebft b\u1eb1ng {wrong_language}, kh\u00f4ng ph\u1ea3i ti\u1ebfng Vi\u1ec7t. "
+            "H\u00e3y d\u1ecbch l\u1ea1i ho\u00e0n to\u00e0n.\n"
+            if wrong_language
+            else ""
+        )
+        return [
+            {
+                "role": "system",
+                "content": (
+                    "B\u1ea1n l\u00e0 bi\u00ean d\u1ecbch ph\u1ee5 \u0111\u1ec1 chuy\u00ean nghi\u1ec7p. Nhi\u1ec7m v\u1ee5 duy nh\u1ea5t l\u00e0 d\u1ecbch "
+                    "t\u1eebng c\u00e2u sang ti\u1ebfng Vi\u1ec7t t\u1ef1 nhi\u00ean. M\u1ecdi ph\u1ea7n t\u1eed trong translations ph\u1ea3i b\u1eb1ng "
+                    "ti\u1ebfng Vi\u1ec7t; kh\u00f4ng \u0111\u01b0\u1ee3c tr\u1ea3 nguy\u00ean c\u00e2u b\u1eb1ng ti\u1ebfng Trung ho\u1eb7c ti\u1ebfng Anh. "
+                    "Gi\u1eef t\u00ean ri\u00eang, s\u1ed1, \u00fd ngh\u0129a, gi\u1ecdng \u0111i\u1ec7u v\u00e0 th\u1ee9 t\u1ef1. N\u1ebfu c\u00e2u ngu\u1ed3n nh\u1eadn d\u1ea1ng "
+                    "ch\u01b0a chu\u1ea9n, h\u00e3y d\u1ecbch theo ngh\u0129a h\u1ee3p l\u00fd nh\u1ea5t. Ch\u1ec9 tr\u1ea3 v\u1ec1 JSON h\u1ee3p l\u1ec7 d\u1ea1ng "
+                    "{\"translations\":[\"...\"]}, \u0111\u00fang s\u1ed1 l\u01b0\u1ee3ng v\u00e0 th\u1ee9 t\u1ef1 c\u00e2u."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"Source language: {source_description}\n"
+                    "Target language: Vietnamese (vi)\n"
+                    f"{retry_instruction}"
+                    "V\u00ed d\u1ee5 ng\u00f4n ng\u1eef: c\u00e2u ngu\u1ed3n \u201c\u7b49\u4e00\u4e0b\u201d ph\u1ea3i d\u1ecbch th\u00e0nh \u201cCh\u1edd m\u1ed9t ch\u00fat.\u201d\n"
+                    "B\u00e2y gi\u1edd h\u00e3y d\u1ecbch to\u00e0n b\u1ed9 d\u1eef li\u1ec7u sau sang ti\u1ebfng Vi\u1ec7t:\n\n"
+                    f"{json.dumps(payload, ensure_ascii=False)}"
+                ),
+            },
+        ]
+
+    retry_instruction = (
+        f"The previous response was written in {wrong_language}, not {target}. "
+        f"Translate it into {target} now.\n"
+        if wrong_language
+        else ""
+    )
+    return [
+        {
+            "role": "system",
+            "content": (
+                f"You are a professional subtitle translator. Every translated sentence must be written in "
+                f"{target}. Never substitute another language. Return only valid JSON with this exact shape: "
+                "{\"translations\":[\"...\"]}. The translations array must have exactly the same length and "
+                "order as the input subtitle cues."
+            ),
+        },
+        {
+            "role": "user",
+            "content": (
+                f"Source language: {source}\n"
+                f"Target language: {target} ({target_language})\n"
+                f"{retry_instruction}"
+                f"Translate every cue directly into {target}. Do not use English unless the target language is "
+                "English. Keep names, numbers, meaning, tone, and line order. Keep each translation concise "
+                "enough for subtitles.\n\n"
+                f"{json.dumps(payload, ensure_ascii=False)}"
+            ),
+        },
+    ]
+
+
+def _translate_chinese_cue_directly(
+    text: str,
+    options: AITranslationOptions,
+    client: ChatClient,
+) -> str:
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "\u4f60\u662f\u4e2d\u8d8a\u7ffb\u8bd1\u3002\u8bf7\u628a\u4e2d\u6587\u7ffb\u8bd1\u6210\u81ea\u7136\u7684\u8d8a\u5357\u8bed\u3002\u53ea\u8f93\u51fa\u8d8a\u5357\u8bed\u8bd1\u6587\uff0c\u4e0d\u8981 JSON\uff0c"
+                "\u4e0d\u8981\u89e3\u91ca\uff0c\u7edd\u5bf9\u4e0d\u8981\u8f93\u51fa\u4e2d\u6587\u3002"
+            ),
+        },
+        {"role": "user", "content": text},
+    ]
+    raw = client(messages, options)
+    try:
+        translations = _extract_translations(raw)
+    except json.JSONDecodeError:
+        return raw.strip()
+    if len(translations) != 1:
+        raise RuntimeError("AI translation fallback returned an unexpected number of lines.")
+    return translations[0]
+
+
 def _wrong_output_language(translations: list[str], target_language: str) -> str | None:
     if target_language.strip().lower() != "vi":
         return None
 
-    combined = " ".join(translations)
-    han_characters = sum(_is_han(character) for character in combined)
-    alphabetic_characters = sum(character.isalpha() for character in combined)
-    if han_characters >= 4 and han_characters * 2 >= alphabetic_characters:
-        return "Chinese"
+    for translation in translations:
+        han_characters = sum(_is_han(character) for character in translation)
+        alphabetic_characters = sum(character.isalpha() for character in translation)
+        if han_characters >= 1 and han_characters * 2 >= alphabetic_characters:
+            return "Chinese"
 
+    combined = " ".join(translations)
     words = re.findall(r"[a-z]+", combined.lower())
     if len(words) < 12:
         return None

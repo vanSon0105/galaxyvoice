@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
 import wave
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
@@ -13,6 +15,9 @@ from app.engine import GenerationOptions, generate_package  # noqa: E402
 
 
 class FakeTTS:
+    code = "fake"
+    label = "Fake TTS"
+
     def available(self) -> bool:
         return True
 
@@ -50,6 +55,27 @@ class EngineTests(unittest.TestCase):
             self.assertTrue(result.srt_path.exists())
             self.assertTrue(result.manifest_path.exists())
             self.assertIn("00:00:00,000 -->", result.srt_path.read_text(encoding="utf-8"))
+            manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["tts_engine"], "fake")
+
+    def test_edge_tts_is_the_default_engine(self) -> None:
+        edge = FakeTTS()
+        edge.code = "edge"
+        edge.label = "Edge TTS (Online)"
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch("app.engine.EdgeTTS", return_value=edge):
+                result = generate_package(
+                    GenerationOptions(
+                        text="Xin chao.",
+                        output_dir=Path(temp_dir),
+                        project_name="edge-default",
+                        export_mp3=False,
+                    )
+                )
+
+            manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["tts_engine"], "edge")
 
 
 if __name__ == "__main__":

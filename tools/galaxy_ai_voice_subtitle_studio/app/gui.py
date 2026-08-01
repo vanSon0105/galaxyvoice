@@ -23,7 +23,15 @@ from .translator import (
     translation_provider_label,
     translation_provider_labels,
 )
-from .tts import PowerShellSapiTTS, Voice
+from .tts import (
+    EDGE_ENGINE_LABEL,
+    EdgeTTS,
+    TTSEngine,
+    Voice,
+    create_tts_engine,
+    tts_engine_code,
+    tts_engine_labels,
+)
 
 
 class GalaxyStudioApp:
@@ -33,9 +41,10 @@ class GalaxyStudioApp:
         self.root.geometry("1120x720")
         self.root.minsize(900, 600)
 
-        self.tts = PowerShellSapiTTS()
+        self.tts: TTSEngine = EdgeTTS()
         self.voices: list[Voice] = []
         self.worker: threading.Thread | None = None
+        self.voice_worker: threading.Thread | None = None
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.last_result: GenerationResult | MediaExtractionResult | VideoSubtitleResult | None = None
         self._poll_after_id: str | None = None
@@ -43,6 +52,7 @@ class GalaxyStudioApp:
         self.project_name = tk.StringVar(value="galaxy_project")
         self.output_dir = tk.StringVar(value=str(Path.cwd() / "exports"))
         self.video_path = tk.StringVar()
+        self.tts_engine_name = tk.StringVar(value=EDGE_ENGINE_LABEL)
         self.voice_name = tk.StringVar()
         self.rate = tk.IntVar(value=0)
         self.volume = tk.IntVar(value=100)
@@ -68,7 +78,7 @@ class GalaxyStudioApp:
         self._build_layout()
         self.root.bind("<Destroy>", self._on_destroy, add="+")
         self._poll_events()
-        self.refresh_voices()
+        self._apply_voices(self.tts.initial_voices())
 
     def _configure_style(self) -> None:
         style = ttk.Style()
@@ -202,15 +212,27 @@ class GalaxyStudioApp:
 
     def _build_voice_panel(self, parent: ttk.Frame) -> None:
         ttk.Label(parent, text="Voice", style="Section.TLabel").grid(row=5, column=0, sticky="w", pady=(18, 8))
+        ttk.Label(parent, text="Engine", style="Panel.TLabel").grid(row=6, column=0, sticky="w", pady=(0, 2))
+        self.tts_engine_combo = ttk.Combobox(
+            parent,
+            textvariable=self.tts_engine_name,
+            values=tts_engine_labels(),
+            state="readonly",
+        )
+        self.tts_engine_combo.grid(row=7, column=0, sticky="ew")
+        self.tts_engine_combo.bind("<<ComboboxSelected>>", self._on_tts_engine_changed)
+
+        ttk.Label(parent, text="Voice", style="Panel.TLabel").grid(row=8, column=0, sticky="w", pady=(10, 2))
         voice_row = ttk.Frame(parent, style="Surface.TFrame")
-        voice_row.grid(row=6, column=0, sticky="ew")
+        voice_row.grid(row=9, column=0, sticky="ew")
         voice_row.columnconfigure(0, weight=1)
         self.voice_combo = ttk.Combobox(voice_row, textvariable=self.voice_name, state="readonly")
         self.voice_combo.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        ttk.Button(voice_row, text="Refresh", command=self.refresh_voices).grid(row=0, column=1)
+        self.refresh_voices_button = ttk.Button(voice_row, text="Refresh", command=self.refresh_voices)
+        self.refresh_voices_button.grid(row=0, column=1)
 
         sliders = ttk.Frame(parent, style="Surface.TFrame")
-        sliders.grid(row=7, column=0, sticky="ew", pady=(10, 0))
+        sliders.grid(row=10, column=0, sticky="ew", pady=(10, 0))
         sliders.columnconfigure(1, weight=1)
         self._add_slider(sliders, row=0, label="Speed", variable=self.rate, from_=-10, to=10)
         self._add_slider(sliders, row=1, label="Volume", variable=self.volume, from_=0, to=100)
@@ -218,7 +240,7 @@ class GalaxyStudioApp:
 
     def _build_export_panel(self, parent: ttk.Frame) -> None:
         export = ttk.Frame(parent, style="Surface.TFrame")
-        export.grid(row=8, column=0, sticky="ew", pady=(18, 0))
+        export.grid(row=11, column=0, sticky="ew", pady=(18, 0))
         export.columnconfigure(1, weight=1)
         ttk.Label(export, text="Subtitle", style="Section.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
         ttk.Label(export, text="Max chars", style="Panel.TLabel").grid(row=1, column=0, sticky="w", pady=(10, 0))
@@ -234,7 +256,7 @@ class GalaxyStudioApp:
 
     def _build_video_panel(self, parent: ttk.Frame) -> None:
         video = ttk.Frame(parent, style="Surface.TFrame")
-        video.grid(row=9, column=0, sticky="ew", pady=(18, 0))
+        video.grid(row=12, column=0, sticky="ew", pady=(18, 0))
         video.columnconfigure(0, weight=1)
         video.columnconfigure(1, weight=1)
         ttk.Label(video, text="Video", style="Section.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
@@ -340,16 +362,43 @@ class GalaxyStudioApp:
                 self.project_name.set(Path(file_path).stem)
 
     def refresh_voices(self) -> None:
-        try:
-            self.voices = self.tts.list_voices()
-        except Exception as error:  # pragma: no cover - UI boundary
-            self.voices = []
-            self._append_log(f"Could not load voices: {error}")
+        if self.voice_worker and self.voice_worker.is_alive():
+            return
 
+        engine = self.tts
+        self.refresh_voices_button.configure(state="disabled")
+        self.tts_engine_combo.configure(state="disabled")
+        self.voice_combo.configure(state="disabled")
+        self._append_log(f"Loading {engine.label} voices...")
+        self.voice_worker = threading.Thread(target=self._run_voice_refresh, args=(engine,), daemon=True)
+        self.voice_worker.start()
+
+    def _run_voice_refresh(self, engine: TTSEngine) -> None:
+        try:
+            voices = engine.list_voices()
+            self.events.put(("voices_loaded", (engine.code, voices)))
+        except Exception as error:  # pragma: no cover - UI boundary
+            self.events.put(("voices_error", (engine.code, error)))
+
+    def _apply_voices(self, voices: list[Voice]) -> None:
+        self.voices = voices
         names = [voice.name for voice in self.voices]
         self.voice_combo.configure(values=names)
-        if names and not self.voice_name.get():
-            self.voice_name.set(names[0])
+        if not names:
+            self.voice_name.set("")
+        elif self.voice_name.get() not in names:
+            preferred = self.tts.preferred_voice_name("vi")
+            default_voice = preferred if preferred in names else names[0]
+            self.voice_name.set(default_voice)
+
+    def _on_tts_engine_changed(self, _event: tk.Event | None = None) -> None:
+        self.tts = create_tts_engine(tts_engine_code(self.tts_engine_name.get()))
+        self.voice_name.set("")
+        initial_voices = self.tts.initial_voices()
+        self._apply_voices(initial_voices)
+        self._append_log(f"Voice engine: {self.tts.label}")
+        if not initial_voices:
+            self.refresh_voices()
 
     def start_generate(self) -> None:
         if self.worker and self.worker.is_alive():
@@ -389,10 +438,19 @@ class GalaxyStudioApp:
             self.status.set("Translating")
             self._append_log(f"Will translate Script to {target} before generating voice.")
 
-        self.worker = threading.Thread(target=self._run_generation, args=(options, translation_options), daemon=True)
+        self.worker = threading.Thread(
+            target=self._run_generation,
+            args=(options, translation_options, self.tts),
+            daemon=True,
+        )
         self.worker.start()
 
-    def _run_generation(self, options: GenerationOptions, translation_options: AITranslationOptions | None) -> None:
+    def _run_generation(
+        self,
+        options: GenerationOptions,
+        translation_options: AITranslationOptions | None,
+        tts_engine: TTSEngine | None = None,
+    ) -> None:
         try:
             if translation_options:
                 target = label_from_code(translation_options.target_language, default=translation_options.target_language)
@@ -401,7 +459,11 @@ class GalaxyStudioApp:
                 options = replace(options, text=translated_text)
                 self.events.put(("script_translated", (translated_text, translation_options.target_language)))
 
-            result = generate_package(options, tts=self.tts, progress=lambda message: self.events.put(("log", message)))
+            result = generate_package(
+                options,
+                tts=tts_engine or self.tts,
+                progress=lambda message: self.events.put(("log", message)),
+            )
             self.events.put(("done", result))
         except Exception as error:  # pragma: no cover - UI boundary
             self.events.put(("error", error))
@@ -515,6 +577,17 @@ class GalaxyStudioApp:
 
             if event == "log":
                 self._append_log(str(payload))
+            elif event == "voices_loaded":
+                engine_code, voices = payload if isinstance(payload, tuple) else ("", [])
+                if engine_code == self.tts.code and isinstance(voices, list):
+                    self._apply_voices(voices)
+                    self._append_log(f"Loaded {len(voices)} {self.tts.label} voices.")
+                self._finish_voice_refresh()
+            elif event == "voices_error":
+                engine_code, error = payload if isinstance(payload, tuple) else ("", payload)
+                if engine_code == self.tts.code:
+                    self._append_log(f"Could not load {self.tts.label} voices: {error}")
+                self._finish_voice_refresh()
             elif event == "script_translated":
                 text, language_code = payload if isinstance(payload, tuple) else ("", "")
                 self._set_script_text(str(text))
@@ -592,7 +665,7 @@ class GalaxyStudioApp:
         if self._select_voice_for_language(result.script_language):
             self._append_log(f"Selected voice for {language}: {self.voice_name.get()}")
         elif result.script_language not in {"auto", "none"}:
-            self._append_log(f"No installed Windows voice found for {language}; Generate will use the selected voice.")
+            self._append_log(f"No {self.tts.label} voice found for {language}; choose a matching voice before Generate.")
 
     def _select_voice_for_language(self, language_code: str) -> bool:
         normalized = language_code.strip().lower()
@@ -600,12 +673,27 @@ class GalaxyStudioApp:
             return False
 
         culture_prefix = f"{normalized}-"
-        for voice in self.voices:
-            culture = voice.culture.strip().lower()
-            if culture == normalized or culture.startswith(culture_prefix):
-                self.voice_name.set(voice.name)
-                return True
+        matching = [
+            voice
+            for voice in self.voices
+            if voice.culture.strip().lower() == normalized
+            or voice.culture.strip().lower().startswith(culture_prefix)
+        ]
+        if not matching:
+            return False
 
+        current_name = self.voice_name.get()
+        if any(voice.name == current_name for voice in matching):
+            return True
+
+        preferred = self.tts.preferred_voice_name(normalized)
+        if preferred and any(voice.name == preferred for voice in matching):
+            self.voice_name.set(preferred)
+            return True
+
+        for voice in matching:
+            self.voice_name.set(voice.name)
+            return True
         return False
 
     def _set_script_text(self, text: str) -> None:
@@ -632,6 +720,17 @@ class GalaxyStudioApp:
         self.generate_button.configure(state=state)
         self.extract_button.configure(state=state)
         self.subtitle_button.configure(state=state)
+        voice_refreshing = bool(self.voice_worker and self.voice_worker.is_alive())
+        self.refresh_voices_button.configure(state="disabled" if busy or voice_refreshing else "normal")
+        self.tts_engine_combo.configure(state="disabled" if busy else "readonly")
+        self.voice_combo.configure(state="disabled" if busy else "readonly")
+
+    def _finish_voice_refresh(self) -> None:
+        self.voice_worker = None
+        busy = bool(self.worker and self.worker.is_alive())
+        self.refresh_voices_button.configure(state="disabled" if busy else "normal")
+        self.tts_engine_combo.configure(state="disabled" if busy else "readonly")
+        self.voice_combo.configure(state="disabled" if busy else "readonly")
 
     def _on_controls_mousewheel(self, event: tk.Event) -> str:
         widget = event.widget

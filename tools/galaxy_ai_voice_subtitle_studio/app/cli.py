@@ -8,7 +8,7 @@ from .engine import GenerationOptions, generate_package
 from .media import MediaExtractionOptions, extract_audio_from_video
 from .transcription import VideoSubtitleOptions, create_subtitles_from_video
 from .translator import default_translation_provider, translation_provider_codes
-from .tts import PowerShellSapiTTS
+from .tts import EDGE_ENGINE_CODE, create_tts_engine, tts_engine_codes
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -21,7 +21,7 @@ def main(argv: list[str] | None = None) -> int:
         run_app()
         return 0
 
-    tts = PowerShellSapiTTS()
+    tts = create_tts_engine(args.tts_engine)
     if args.list_voices:
         for voice in tts.list_voices():
             print(voice.label)
@@ -100,14 +100,20 @@ def main(argv: list[str] | None = None) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Galaxy AI Voice & Subtitle Studio")
     parser.add_argument("--gui", action="store_true", help="Open the desktop UI.")
-    parser.add_argument("--list-voices", action="store_true", help="List Windows SAPI voices.")
+    parser.add_argument("--list-voices", action="store_true", help="List voices for the selected TTS engine.")
+    parser.add_argument(
+        "--tts-engine",
+        default=EDGE_ENGINE_CODE,
+        choices=tts_engine_codes(),
+        help="Voice engine: edge (online, default) or sapi (Windows offline).",
+    )
     parser.add_argument("--text", help="Narration text to synthesize.")
     parser.add_argument("--text-file", help="UTF-8 text file to synthesize.")
     parser.add_argument("--video", help="Video file to extract audio from.")
     parser.add_argument("--transcribe", action="store_true", help="Create SRT subtitles from --video.")
     parser.add_argument("--output-dir", default="exports", help="Directory where exports are written.")
     parser.add_argument("--name", help="Project/export name.")
-    parser.add_argument("--voice", help="Exact Windows SAPI voice name.")
+    parser.add_argument("--voice", help="Exact voice name for the selected TTS engine.")
     parser.add_argument("--rate", type=int, default=0, choices=range(-10, 11), metavar="-10..10")
     parser.add_argument("--volume", type=int, default=100, choices=range(0, 101), metavar="0..100")
     parser.add_argument("--pause-ms", type=int, default=250)

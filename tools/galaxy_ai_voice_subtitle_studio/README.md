@@ -1,16 +1,16 @@
 # Galaxy AI Voice & Subtitle Studio
 
-MVP local cho workflow:
+MVP desktop cho workflow:
 
 1. Dán kịch bản.
-2. Chọn voice Windows SAPI có sẵn trên máy.
+2. Chọn Edge TTS online hoặc Windows SAPI offline.
 3. Generate audio `.wav`.
 4. Tự xuất phụ đề `.srt` khớp timing theo từng đoạn audio đã sinh.
 5. Xuất thêm `.mp3` nếu máy có `ffmpeg`.
 6. Trích audio `.wav` / `.mp3` từ video bằng `ffmpeg`.
 7. Tạo phụ đề từ giọng nói trong video bằng `faster-whisper`, rồi dịch phụ đề bằng AI qua API OpenAI-compatible.
 
-Bản này không dùng cloud API, không cần key, và được đặt trong `tools/` đúng yêu cầu.
+Edge TTS dùng dịch vụ giọng đọc online của Microsoft Edge nhưng không cần API key. Windows SAPI vẫn hoạt động hoàn toàn offline. Phần dịch phụ đề chỉ gọi cloud khi người dùng chọn dịch bằng OpenAI hoặc DeepSeek.
 
 ## Chạy GUI
 
@@ -20,12 +20,24 @@ Double-click:
 Galaxy Studio.bat
 ```
 
+Launcher sẽ tự cài `edge-tts` ở lần mở đầu tiên nếu máy chưa có.
+
 Hoặc chạy bằng terminal:
 
 ```powershell
 cd tools\galaxy_ai_voice_subtitle_studio
+pip install -r .\requirements-voice.txt
 python run.py
 ```
+
+## Giọng đọc
+
+Engine mặc định là `Edge TTS (Online)`. App ưu tiên hai giọng tiếng Việt:
+
+- Nữ: `vi-VN-HoaiMyNeural`
+- Nam: `vi-VN-NamMinhNeural`
+
+Edge TTS cần Internet và dùng `ffmpeg` bundled để chuyển audio sang WAV cho bước ghép phụ đề. Chọn `Windows SAPI (Offline)` trong GUI khi cần chạy không có mạng.
 
 ## Tạo shortcut ngoài Desktop
 
@@ -57,6 +69,12 @@ Liệt kê voice:
 python run.py --list-voices
 ```
 
+Liệt kê voice Windows offline:
+
+```powershell
+python run.py --tts-engine sapi --list-voices
+```
+
 Generate từ file text:
 
 ```powershell
@@ -66,7 +84,13 @@ python run.py --text-file .\script.txt --output-dir .\exports --name review-phim
 Chọn voice cụ thể:
 
 ```powershell
-python run.py --text-file .\script.txt --voice "Microsoft David Desktop" --rate 1 --pause-ms 300
+python run.py --text-file .\script.txt --voice "vi-VN-HoaiMyNeural" --rate 1 --pause-ms 300
+```
+
+Generate bằng Windows SAPI offline:
+
+```powershell
+python run.py --tts-engine sapi --text-file .\script.txt --voice "Microsoft David Desktop"
 ```
 
 Trích audio từ video:

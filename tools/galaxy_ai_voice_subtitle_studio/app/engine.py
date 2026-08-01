@@ -10,7 +10,7 @@ from .audio import concatenate_wavs, try_convert_to_mp3
 from .paths import unique_project_dir
 from .srt import SubtitleCue, render_srt
 from .text_splitter import split_text
-from .tts import PowerShellSapiTTS
+from .tts import EdgeTTS, TTSEngine
 
 ProgressCallback = Callable[[str], None]
 
@@ -43,7 +43,7 @@ class GenerationResult:
 
 def generate_package(
     options: GenerationOptions,
-    tts: PowerShellSapiTTS | None = None,
+    tts: TTSEngine | None = None,
     progress: ProgressCallback | None = None,
 ) -> GenerationResult:
     report = progress or (lambda _message: None)
@@ -51,9 +51,9 @@ def generate_package(
     if not chunks:
         raise ValueError("Script is empty.")
 
-    tts_engine = tts or PowerShellSapiTTS()
+    tts_engine = tts or EdgeTTS()
     if not tts_engine.available():
-        raise RuntimeError("No PowerShell executable was found for Windows SAPI TTS.")
+        raise RuntimeError(tts_engine.unavailable_reason() or f"{tts_engine.label} is unavailable.")
 
     project_dir = unique_project_dir(options.output_dir, options.project_name)
     segments_dir = project_dir / "segments"
@@ -103,6 +103,7 @@ def generate_package(
         "app": "Galaxy AI Voice & Subtitle Studio",
         "version": "0.1.0",
         "created_at": datetime.now().isoformat(timespec="seconds"),
+        "tts_engine": tts_engine.code,
         "voice_name": options.voice_name,
         "rate": options.rate,
         "volume": options.volume,

@@ -13,10 +13,31 @@ from app.gui import GalaxyStudioApp  # noqa: E402
 from app.engine import GenerationOptions, GenerationResult  # noqa: E402
 from app.transcription import VideoSubtitleResult  # noqa: E402
 from app.translator import AITranslationOptions  # noqa: E402
-from app.tts import Voice  # noqa: E402
+from app.tts import EDGE_ENGINE_LABEL, EdgeTTS, Voice  # noqa: E402
 
 
 class GuiLayoutTests(unittest.TestCase):
+    def test_edge_tts_is_the_default_voice_engine(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        voices = [
+            Voice(name="vi-VN-HoaiMyNeural", culture="vi-VN", gender="Female", age=""),
+            Voice(name="vi-VN-NamMinhNeural", culture="vi-VN", gender="Male", age=""),
+        ]
+
+        try:
+            with patch("app.gui.EdgeTTS.initial_voices", return_value=voices):
+                app = GalaxyStudioApp(root)
+
+            self.assertEqual(app.tts_engine_name.get(), EDGE_ENGINE_LABEL)
+            self.assertIsInstance(app.tts, EdgeTTS)
+            self.assertEqual(app.voice_name.get(), "vi-VN-HoaiMyNeural")
+        finally:
+            root.destroy()
+
     def test_right_panel_direct_children_fit_small_window(self) -> None:
         try:
             root = tk.Tk()
@@ -56,7 +77,7 @@ class GuiLayoutTests(unittest.TestCase):
         ]
 
         try:
-            with patch("app.gui.PowerShellSapiTTS.list_voices", return_value=voices):
+            with patch("app.gui.EdgeTTS.initial_voices", return_value=voices):
                 app = GalaxyStudioApp(root)
                 result = VideoSubtitleResult(
                     project_dir=Path("exports") / "clip",
@@ -95,7 +116,7 @@ class GuiLayoutTests(unittest.TestCase):
         )
 
         try:
-            with patch("app.gui.PowerShellSapiTTS.list_voices", return_value=[]):
+            with patch("app.gui.EdgeTTS.initial_voices", return_value=[]):
                 app = GalaxyStudioApp(root)
                 options = GenerationOptions(text="Hello.", output_dir=Path("exports"), project_name="clip")
                 translation_options = AITranslationOptions(
@@ -131,7 +152,7 @@ class GuiLayoutTests(unittest.TestCase):
         ]
 
         try:
-            with patch("app.gui.PowerShellSapiTTS.list_voices", return_value=voices):
+            with patch("app.gui.EdgeTTS.initial_voices", return_value=voices):
                 app = GalaxyStudioApp(root)
                 app.script_text.insert("1.0", "Hello.")
                 app.script_language_code = "en"
@@ -141,10 +162,28 @@ class GuiLayoutTests(unittest.TestCase):
                 with patch("app.gui.threading.Thread") as thread:
                     app.start_generate()
 
-                generation_options, translation_options = thread.call_args.kwargs["args"]
+                generation_options, translation_options, tts_engine = thread.call_args.kwargs["args"]
                 self.assertEqual(generation_options.voice_name, "Vietnamese Voice")
                 self.assertEqual(translation_options.target_language, "vi")
+                self.assertIs(tts_engine, app.tts)
                 thread.return_value.start.assert_called_once()
+        finally:
+            root.destroy()
+
+    def test_refresh_voices_runs_outside_the_tk_thread(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root)
+            with patch("app.gui.threading.Thread") as thread:
+                app.refresh_voices()
+
+            self.assertEqual(thread.call_args.kwargs["target"], app._run_voice_refresh)
+            self.assertEqual(thread.call_args.kwargs["args"], (app.tts,))
+            thread.return_value.start.assert_called_once()
         finally:
             root.destroy()
 

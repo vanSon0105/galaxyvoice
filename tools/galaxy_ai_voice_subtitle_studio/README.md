@@ -131,6 +131,12 @@ python run.py --video .\video.mp4 --transcribe --source-language auto --no-trans
 
 Trong GUI, `Create Subtitles` chỉ xử lý video và đưa kết quả vào ba tab `Script`, `Sub gốc`, `Sub dịch`; bước này chưa ghi file vào output folder. Có thể kiểm tra hoặc sửa nội dung SRT trong hai tab subtitle, sau đó bấm `Export Subtitles` để xuất bộ file theo đúng cấu trúc cũ. CLI với `--transcribe` vẫn xử lý và xuất file ngay trong một lệnh.
 
+App lưu cache transcription và checkpoint dịch tại `%LOCALAPPDATA%\GalaxyAIStudio\cache`. Khi chạy lại cùng video, ngôn ngữ và Whisper model, app vẫn trích audio phục vụ export nhưng bỏ qua bước Whisper đã hoàn thành. Phần dịch tiếp tục từ các cue còn thiếu sau lỗi mạng hoặc khi app bị đóng; API key không được ghi vào cache.
+
+DeepSeek dịch các batch nhỏ song song và luôn ghép kết quả theo index gốc. Thanh tiến độ hiển thị số cue đã dịch, ví dụ `Translating 240/768`. Batch nào trả sai ngôn ngữ mới được chia nhỏ và chạy fallback riêng, nên các batch đúng không bị làm lại.
+
+Whisper tự ưu tiên NVIDIA CUDA với `float16` khi CTranslate2 phát hiện GPU tương thích. Nếu CUDA không khởi tạo được, app ghi cảnh báo vào log rồi tự chạy lại bằng CPU `int8`.
+
 Bấm `Generate` sau đó sẽ tạo voice từ nội dung trong tab `Script`. Nếu script được tạo từ video và bạn đổi `Translate to` trước khi generate, app sẽ dịch script sang ngôn ngữ mới rồi mới tạo voice. Nếu máy có voice Windows/SAPI trùng ngôn ngữ đã chọn, app sẽ tự chọn voice đó; nếu không, hãy cài hoặc chọn voice phù hợp thủ công.
 
 ## Output

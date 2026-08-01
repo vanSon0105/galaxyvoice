@@ -411,6 +411,25 @@ class GuiLayoutTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_subtitle_progress_event_updates_status_and_progress_bar(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.events.put(("task_progress", ("Translating", 240, 768)))
+
+            app._poll_events()
+
+            self.assertEqual(app.status.get(), "Translating 240/768")
+            self.assertEqual(str(app.progress.cget("mode")), "determinate")
+            self.assertEqual(float(app.progress.cget("maximum")), 768.0)
+            self.assertEqual(float(app.progress.cget("value")), 240.0)
+        finally:
+            root.destroy()
+
 
 def _find_grid_child(parent: tk.Misc, row: int, column: int) -> tk.Widget | None:
     for child in parent.winfo_children():

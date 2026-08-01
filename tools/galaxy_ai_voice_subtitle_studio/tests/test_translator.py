@@ -3,6 +3,9 @@ from __future__ import annotations
 import json
 import os
 import sys
+import tempfile
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -25,6 +28,270 @@ from app.translator import (  # noqa: E402
 
 
 class TranslatorTests(unittest.TestCase):
+    def test_translate_cues_runs_batches_in_parallel_and_preserves_cue_order(self) -> None:
+        cues = [
+            SubtitleCue(index=index, start_ms=index * 1000, end_ms=(index + 1) * 1000, text=f"Source {index}")
+            for index in range(1, 5)
+        ]
+        first_two_started = threading.Barrier(2)
+
+        def fake_client(messages, _options):
+            payload = json.loads(messages[1]["content"].rsplit("\n\n", 1)[-1])
+            source_text = payload[0]["text"]
+            if source_text in {"Source 1", "Source 2"}:
+                first_two_started.wait(timeout=2)
+            if source_text == "Source 1":
+                time.sleep(0.05)
+            return json.dumps({"translations": [f"\u0110\u00e3 d\u1ecbch {source_text}"]}, ensure_ascii=False)
+
+        translated = translate_cues(
+            cues,
+            AITranslationOptions(
+                source_language="en",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+                batch_size=1,
+                max_workers=2,
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual([cue.text for cue in translated], [f"\u0110\u00e3 d\u1ecbch Source {index}" for index in range(1, 5)])
+        self.assertEqual([cue.index for cue in translated], [1, 2, 3, 4])
+
+    def test_translate_cues_resumes_only_missing_batches_from_checkpoint(self) -> None:
+        cues = [
+            SubtitleCue(index=index, start_ms=index * 1000, end_ms=(index + 1) * 1000, text=f"Source {index}")
+            for index in range(1, 5)
+        ]
+        calls: list[str] = []
+        fail_second_batch = True
+
+        def fake_client(messages, _options):
+            nonlocal fail_second_batch
+            payload = json.loads(messages[1]["content"].rsplit("\n\n", 1)[-1])
+            calls.append(payload[0]["text"])
+            if payload[0]["text"] == "Source 3" and fail_second_batch:
+                raise RuntimeError("temporary API failure")
+            return json.dumps(
+                {"translations": [f"\u0110\u00e3 d\u1ecbch {item['text']}" for item in payload]},
+                ensure_ascii=False,
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint_path = Path(temp_dir) / "translation.json"
+            options = AITranslationOptions(
+                source_language="en",
+                target_language="vi",
+                api_key="secret-key-must-not-be-cached",
+                model="test-model",
+                batch_size=2,
+                max_workers=1,
+            )
+            with self.assertRaisesRegex(RuntimeError, "temporary API failure"):
+                translate_cues(cues, options, client=fake_client, checkpoint_path=checkpoint_path)
+
+            fail_second_batch = False
+            translated = translate_cues(cues, options, client=fake_client, checkpoint_path=checkpoint_path)
+
+            self.assertEqual(calls, ["Source 1", "Source 3", "Source 3"])
+            self.assertEqual([cue.text for cue in translated], [f"\u0110\u00e3 d\u1ecbch Source {index}" for index in range(1, 5)])
+            self.assertNotIn("secret-key-must-not-be-cached", checkpoint_path.read_text(encoding="utf-8"))
+
+    def test_parallel_translation_checkpoints_successes_that_finish_after_a_failure(self) -> None:
+        cues = [
+            SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Source 1"),
+            SubtitleCue(index=2, start_ms=1000, end_ms=2000, text="Source 2"),
+        ]
+        first_attempt_started = threading.Barrier(2)
+        fail_second_cue = True
+        calls: list[str] = []
+
+        def fake_client(messages, _options):
+            nonlocal fail_second_cue
+            payload = json.loads(messages[1]["content"].rsplit("\n\n", 1)[-1])
+            source_text = payload[0]["text"]
+            calls.append(source_text)
+            if len(calls) <= 2:
+                first_attempt_started.wait(timeout=2)
+            if source_text == "Source 1" and fail_second_cue:
+                time.sleep(0.05)
+            if source_text == "Source 2" and fail_second_cue:
+                raise RuntimeError("temporary API failure")
+            return json.dumps({"translations": [f"\u0110\u00e3 d\u1ecbch {source_text}"]}, ensure_ascii=False)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint_path = Path(temp_dir) / "translation.json"
+            options = AITranslationOptions(
+                source_language="en",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+                batch_size=1,
+                max_workers=2,
+            )
+            with self.assertRaisesRegex(RuntimeError, "temporary API failure"):
+                translate_cues(cues, options, client=fake_client, checkpoint_path=checkpoint_path)
+
+            fail_second_cue = False
+            translated = translate_cues(cues, options, client=fake_client, checkpoint_path=checkpoint_path)
+
+        self.assertEqual(calls.count("Source 1"), 1)
+        self.assertEqual(calls.count("Source 2"), 2)
+        self.assertEqual([cue.text for cue in translated], ["\u0110\u00e3 d\u1ecbch Source 1", "\u0110\u00e3 d\u1ecbch Source 2"])
+
+    def test_parallel_translation_stops_scheduling_new_batches_after_a_failure(self) -> None:
+        cues = [
+            SubtitleCue(index=index, start_ms=index * 1000, end_ms=(index + 1) * 1000, text=f"Source {index}")
+            for index in range(1, 21)
+        ]
+        calls: list[str] = []
+        calls_lock = threading.Lock()
+
+        def fake_client(messages, _options):
+            payload = json.loads(messages[1]["content"].rsplit("\n\n", 1)[-1])
+            source_text = payload[0]["text"]
+            with calls_lock:
+                calls.append(source_text)
+            if source_text == "Source 1":
+                raise RuntimeError("API is unavailable")
+            time.sleep(0.05)
+            return json.dumps({"translations": [f"\u0110\u00e3 d\u1ecbch {source_text}"]}, ensure_ascii=False)
+
+        with self.assertRaisesRegex(RuntimeError, "API is unavailable"):
+            translate_cues(
+                cues,
+                AITranslationOptions(
+                    source_language="en",
+                    target_language="vi",
+                    api_key="test-key",
+                    model="test-model",
+                    batch_size=1,
+                    max_workers=2,
+                ),
+                client=fake_client,
+            )
+
+        self.assertLessEqual(len(calls), 2)
+
+    def test_parallel_translation_never_exceeds_six_requests(self) -> None:
+        cues = [
+            SubtitleCue(index=index, start_ms=index * 1000, end_ms=(index + 1) * 1000, text=f"Source {index}")
+            for index in range(1, 9)
+        ]
+        active = 0
+        maximum_active = 0
+        active_lock = threading.Lock()
+
+        def fake_client(messages, _options):
+            nonlocal active, maximum_active
+            payload = json.loads(messages[1]["content"].rsplit("\n\n", 1)[-1])
+            source_text = payload[0]["text"]
+            with active_lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            time.sleep(0.05)
+            with active_lock:
+                active -= 1
+            return json.dumps({"translations": [f"\u0110\u00e3 d\u1ecbch {source_text}"]}, ensure_ascii=False)
+
+        translate_cues(
+            cues,
+            AITranslationOptions(
+                source_language="en",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+                batch_size=1,
+                max_workers=16,
+            ),
+            client=fake_client,
+        )
+
+        self.assertLessEqual(maximum_active, 6)
+
+    def test_mixed_batch_checkpoints_correct_cue_when_failed_cue_retry_raises(self) -> None:
+        cues = [
+            SubtitleCue(index=1, start_ms=0, end_ms=1000, text="\u7b2c\u4e00\u53e5"),
+            SubtitleCue(index=2, start_ms=1000, end_ms=2000, text="\u7b2c\u4e8c\u53e5"),
+        ]
+        fail_retry = True
+        requested_texts: list[list[str]] = []
+
+        def fake_client(messages, _options):
+            nonlocal fail_retry
+            payload = json.loads(messages[1]["content"].rsplit("\n\n", 1)[-1])
+            texts = [item["text"] for item in payload]
+            requested_texts.append(texts)
+            if len(texts) == 2:
+                return json.dumps(
+                    {"translations": ["C\u00e2u \u0111\u1ea7u \u0111\u00e3 d\u1ecbch.", "\u8fd8\u662f\u4e2d\u6587"]},
+                    ensure_ascii=False,
+                )
+            if fail_retry:
+                raise RuntimeError("temporary API failure")
+            return json.dumps({"translations": ["C\u00e2u th\u1ee9 hai \u0111\u00e3 d\u1ecbch."]}, ensure_ascii=False)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint_path = Path(temp_dir) / "translation.json"
+            options = AITranslationOptions(
+                source_language="zh",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+                batch_size=2,
+            )
+            with self.assertRaisesRegex(RuntimeError, "temporary API failure"):
+                translate_cues(cues, options, client=fake_client, checkpoint_path=checkpoint_path)
+
+            fail_retry = False
+            translated = translate_cues(cues, options, client=fake_client, checkpoint_path=checkpoint_path)
+
+        self.assertEqual(
+            requested_texts,
+            [["\u7b2c\u4e00\u53e5", "\u7b2c\u4e8c\u53e5"], ["\u7b2c\u4e8c\u53e5"], ["\u7b2c\u4e8c\u53e5"]],
+        )
+        self.assertEqual(
+            [cue.text for cue in translated],
+            ["C\u00e2u \u0111\u1ea7u \u0111\u00e3 d\u1ecbch.", "C\u00e2u th\u1ee9 hai \u0111\u00e3 d\u1ecbch."],
+        )
+
+    def test_translate_cues_warns_once_when_checkpoint_cannot_be_saved(self) -> None:
+        cues = [
+            SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Source 1"),
+            SubtitleCue(index=2, start_ms=1000, end_ms=2000, text="Source 2"),
+        ]
+        warnings: list[str] = []
+
+        def fake_client(messages, _options):
+            payload = json.loads(messages[1]["content"].rsplit("\n\n", 1)[-1])
+            return json.dumps(
+                {"translations": [f"\u0110\u00e3 d\u1ecbch {item['text']}" for item in payload]},
+                ensure_ascii=False,
+            )
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with patch("app.translator.write_json_atomic", side_effect=PermissionError("file is locked")):
+                translated = translate_cues(
+                    cues,
+                    AITranslationOptions(
+                        source_language="en",
+                        target_language="vi",
+                        api_key="test-key",
+                        model="test-model",
+                        batch_size=1,
+                    ),
+                    client=fake_client,
+                    checkpoint_path=Path(temp_dir) / "translation.json",
+                    warning=warnings.append,
+                )
+
+        self.assertEqual([cue.text for cue in translated], ["\u0110\u00e3 d\u1ecbch Source 1", "\u0110\u00e3 d\u1ecbch Source 2"])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("checkpoint", warnings[0].lower())
+        self.assertIn("file is locked", warnings[0])
+
     def test_translate_cues_preserves_timing_and_order(self) -> None:
         cues = [
             SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Hello there."),
@@ -33,7 +300,10 @@ class TranslatorTests(unittest.TestCase):
 
         def fake_client(messages, _options):
             self.assertIn("Hello there.", messages[1]["content"])
-            return json.dumps({"translations": ["Xin chao.", "Chao mung quay lai."]})
+            return json.dumps(
+                {"translations": ["Xin ch\u00e0o.", "Ch\u00e0o m\u1eebng quay l\u1ea1i."]},
+                ensure_ascii=False,
+            )
 
         translated = translate_cues(
             cues,
@@ -46,7 +316,7 @@ class TranslatorTests(unittest.TestCase):
             client=fake_client,
         )
 
-        self.assertEqual([cue.text for cue in translated], ["Xin chao.", "Chao mung quay lai."])
+        self.assertEqual([cue.text for cue in translated], ["Xin ch\u00e0o.", "Ch\u00e0o m\u1eebng quay l\u1ea1i."])
         self.assertEqual(translated[0].start_ms, 0)
         self.assertEqual(translated[1].end_ms, 2000)
 
@@ -93,6 +363,257 @@ class TranslatorTests(unittest.TestCase):
 
         self.assertTrue(all("English translation" not in cue.text for cue in translated))
         self.assertEqual(batch_sizes, [20, 20, 1])
+
+    def test_translate_cues_retries_a_short_english_response_for_vietnamese(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=520, text="\u7b49\u4e00\u4e0b")
+        responses = iter([["Wait a second"], ["Ch\u1edd m\u1ed9t ch\u00fat."]])
+        call_count = 0
+
+        def fake_client(_messages, _options):
+            nonlocal call_count
+            call_count += 1
+            return json.dumps({"translations": next(responses)}, ensure_ascii=False)
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="zh",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "Ch\u1edd m\u1ed9t ch\u00fat.")
+        self.assertEqual(call_count, 2)
+
+    def test_translate_cues_retries_short_english_content_words_for_vietnamese(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="\u6311\u6218\u5b8c\u6210")
+        responses = iter([["Challenge completed"], ["Th\u1eed th\u00e1ch \u0111\u00e3 ho\u00e0n th\u00e0nh."]])
+        call_count = 0
+
+        def fake_client(_messages, _options):
+            nonlocal call_count
+            call_count += 1
+            return json.dumps({"translations": next(responses)}, ensure_ascii=False)
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="zh",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "Th\u1eed th\u00e1ch \u0111\u00e3 ho\u00e0n th\u00e0nh.")
+        self.assertEqual(call_count, 2)
+
+    def test_translate_cues_adds_vietnamese_context_to_an_unchanged_title_case_name(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Minecraft Live")
+        responses = iter([["Minecraft Live"], ["S\u1ef1 ki\u1ec7n Minecraft Live"]])
+        call_count = 0
+
+        def fake_client(_messages, _options):
+            nonlocal call_count
+            call_count += 1
+            return json.dumps({"translations": next(responses)}, ensure_ascii=False)
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="auto",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "S\u1ef1 ki\u1ec7n Minecraft Live")
+        self.assertEqual(call_count, 2)
+
+    def test_translate_cues_retries_a_single_common_english_word(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="\u7b49")
+        responses = iter([["Wait"], ["Ch\u1edd."]])
+        call_count = 0
+
+        def fake_client(_messages, _options):
+            nonlocal call_count
+            call_count += 1
+            return json.dumps({"translations": next(responses)}, ensure_ascii=False)
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="zh",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "Ch\u1edd.")
+        self.assertEqual(call_count, 2)
+
+    def test_translate_cues_retries_an_unknown_single_ascii_word(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="\u7206\u70b8")
+        responses = iter([["Explosion"], ["V\u1ee5 n\u1ed5."]])
+        call_count = 0
+
+        def fake_client(_messages, _options):
+            nonlocal call_count
+            call_count += 1
+            return json.dumps({"translations": next(responses)}, ensure_ascii=False)
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="zh",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "V\u1ee5 n\u1ed5.")
+        self.assertEqual(call_count, 2)
+
+    def test_translate_cues_accepts_an_unmarked_vietnamese_phrase(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="\u513f\u5b50")
+        call_count = 0
+
+        def fake_client(_messages, _options):
+            nonlocal call_count
+            call_count += 1
+            return json.dumps({"translations": ["Con trai"]})
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="zh",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "Con trai")
+        self.assertEqual(call_count, 1)
+
+    def test_translate_cues_accepts_another_unmarked_vietnamese_phrase(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="\u7535\u5f71\u5f88\u597d")
+
+        def fake_client(_messages, _options):
+            return json.dumps({"translations": ["Phim hay"]})
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="zh",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "Phim hay")
+
+    def test_translate_cues_retries_an_unchanged_english_command(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Run")
+        responses = iter([["Run"], ["Ch\u1ea1y."]])
+
+        def fake_client(_messages, _options):
+            return json.dumps({"translations": next(responses)}, ensure_ascii=False)
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="en",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "Ch\u1ea1y.")
+
+    def test_translate_cues_retries_short_mixed_english_and_vietnamese(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="\u8fd9\u662f\u4e00\u4e2a\u6d4b\u8bd5")
+        responses = iter([["This is m\u1ed9t test"], ["\u0110\u00e2y l\u00e0 m\u1ed9t b\u00e0i ki\u1ec3m tra."]])
+        call_count = 0
+
+        def fake_client(_messages, _options):
+            nonlocal call_count
+            call_count += 1
+            return json.dumps({"translations": next(responses)}, ensure_ascii=False)
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="zh",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "\u0110\u00e2y l\u00e0 m\u1ed9t b\u00e0i ki\u1ec3m tra.")
+        self.assertEqual(call_count, 2)
+
+    def test_translate_cues_preserves_an_unchanged_single_name(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Minecraft")
+        call_count = 0
+
+        def fake_client(_messages, _options):
+            nonlocal call_count
+            call_count += 1
+            return json.dumps({"translations": ["Minecraft"]})
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="auto",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "Minecraft")
+        self.assertEqual(call_count, 1)
+
+    def test_translate_cues_accepts_vietnamese_with_circumflex_marks(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="\u5feb\u5feb\u5feb")
+
+        def fake_client(_messages, _options):
+            return json.dumps(
+                {"translations": ["Nhanh l\u00ean nhanh l\u00ean nhanh l\u00ean"]},
+                ensure_ascii=False,
+            )
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="zh",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "Nhanh l\u00ean nhanh l\u00ean nhanh l\u00ean")
 
     def test_translate_cues_retries_chinese_returned_instead_of_vietnamese(self) -> None:
         cues = [
@@ -158,6 +679,35 @@ class TranslatorTests(unittest.TestCase):
         )
 
         self.assertEqual(translated[0].text, "\u0110\u01b0\u1ee3c.")
+        self.assertEqual(call_count, 2)
+
+    def test_translate_cues_retries_vietnamese_text_containing_one_han_character(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="\u5c31\u6210\u4e86\u4e00\u6761\u76f4\u7ebf")
+        responses = iter(
+            [
+                ["\u5c31 tr\u1edf th\u00e0nh m\u1ed9t \u0111\u01b0\u1eddng th\u1eb3ng"],
+                ["N\u00f3 tr\u1edf th\u00e0nh m\u1ed9t \u0111\u01b0\u1eddng th\u1eb3ng"],
+            ]
+        )
+        call_count = 0
+
+        def fake_client(_messages, _options):
+            nonlocal call_count
+            call_count += 1
+            return json.dumps({"translations": next(responses)}, ensure_ascii=False)
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="zh",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "N\u00f3 tr\u1edf th\u00e0nh m\u1ed9t \u0111\u01b0\u1eddng th\u1eb3ng")
         self.assertEqual(call_count, 2)
 
     def test_vietnamese_translation_prompt_uses_vietnamese_instructions_and_example(self) -> None:
@@ -311,6 +861,39 @@ class TranslatorTests(unittest.TestCase):
         self.assertEqual(batch_sizes, [5, 2, 1, 1, 3, 1, 2, 1, 1])
         self.assertTrue(all("b\u1ea3n d\u1ecbch ti\u1ebfng Vi\u1ec7t" in cue.text for cue in translated))
 
+    def test_translate_cues_retries_only_the_wrong_cue_from_a_mixed_batch(self) -> None:
+        cues = [
+            SubtitleCue(index=1, start_ms=0, end_ms=1000, text="\u7b2c\u4e00\u53e5"),
+            SubtitleCue(index=2, start_ms=1000, end_ms=2000, text="\u7b2c\u4e8c\u53e5"),
+        ]
+        requested_texts: list[list[str]] = []
+
+        def fake_client(messages, _options):
+            payload = json.loads(messages[1]["content"].rsplit("\n\n", 1)[-1])
+            texts = [item["text"] for item in payload]
+            requested_texts.append(texts)
+            if len(texts) == 2:
+                return json.dumps(
+                    {"translations": ["C\u00e2u \u0111\u1ea7u \u0111\u00e3 d\u1ecbch", "\u8fd8\u662f\u4e2d\u6587"]},
+                    ensure_ascii=False,
+                )
+            return json.dumps({"translations": ["C\u00e2u th\u1ee9 hai \u0111\u00e3 d\u1ecbch"]}, ensure_ascii=False)
+
+        translated = translate_cues(
+            cues,
+            AITranslationOptions(
+                source_language="zh",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+                batch_size=2,
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(requested_texts, [["\u7b2c\u4e00\u53e5", "\u7b2c\u4e8c\u53e5"], ["\u7b2c\u4e8c\u53e5"]])
+        self.assertEqual([cue.text for cue in translated], ["C\u00e2u \u0111\u1ea7u \u0111\u00e3 d\u1ecbch", "C\u00e2u th\u1ee9 hai \u0111\u00e3 d\u1ecbch"])
+
     def test_translate_cues_rejects_a_persistently_wrong_output_language(self) -> None:
         cues = [
             SubtitleCue(index=index, start_ms=index * 1000, end_ms=(index + 1) * 1000, text=f"这是第 {index} 行")
@@ -394,7 +977,7 @@ class TranslatorTests(unittest.TestCase):
             self.assertEqual(options.provider, "deepseek")
             self.assertEqual(options.model, "deepseek-v4-flash")
             self.assertEqual(options.base_url, "https://api.deepseek.com")
-            return json.dumps({"translations": ["Xin chao."]})
+            return json.dumps({"translations": ["Xin ch\u00e0o."]}, ensure_ascii=False)
 
         with patch.dict(os.environ, {}, clear=True):
             with patch("app.env_config._read_windows_environment", return_value=""):
@@ -409,11 +992,14 @@ class TranslatorTests(unittest.TestCase):
                     client=fake_client,
                 )
 
-        self.assertEqual(translated[0].text, "Xin chao.")
+        self.assertEqual(translated[0].text, "Xin ch\u00e0o.")
 
     def test_translate_script_text_preserves_blank_lines(self) -> None:
         def fake_client(_messages, _options):
-            return json.dumps({"translations": ["Xin chao.", "The gioi."]})
+            return json.dumps(
+                {"translations": ["Xin ch\u00e0o.", "Th\u1ebf gi\u1edbi."]},
+                ensure_ascii=False,
+            )
 
         translated = translate_script_text(
             "Hello.\n\nWorld.",
@@ -426,7 +1012,7 @@ class TranslatorTests(unittest.TestCase):
             client=fake_client,
         )
 
-        self.assertEqual(translated, "Xin chao.\n\nThe gioi.")
+        self.assertEqual(translated, "Xin ch\u00e0o.\n\nTh\u1ebf gi\u1edbi.")
 
     def test_default_translation_api_key_reads_windows_user_environment(self) -> None:
         with patch.dict(os.environ, {}, clear=True):

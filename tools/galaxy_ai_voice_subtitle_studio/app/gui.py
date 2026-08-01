@@ -632,6 +632,9 @@ class GalaxyStudioApp:
             draft = prepare_subtitles_from_video(
                 options,
                 progress=lambda message: self.events.put(("log", message)),
+                detailed_progress=lambda stage, completed, total: self.events.put(
+                    ("task_progress", (stage, completed, total))
+                ),
             )
             with self._subtitle_draft_lock:
                 if self._closing:
@@ -819,6 +822,20 @@ class GalaxyStudioApp:
 
             if event == "log":
                 self._append_log(str(payload))
+            elif event == "task_progress":
+                stage, completed, total = payload if isinstance(payload, tuple) else ("Working", 0, 0)
+                completed_value = max(0, int(completed))
+                total_value = max(0, int(total))
+                if total_value:
+                    self.progress.stop()
+                    self.progress.configure(
+                        mode="determinate",
+                        maximum=total_value,
+                        value=min(completed_value, total_value),
+                    )
+                    self.status.set(f"{stage} {completed_value}/{total_value}")
+                else:
+                    self.status.set(str(stage))
             elif event == "voices_loaded":
                 engine_code, voices = payload if isinstance(payload, tuple) else ("", [])
                 if engine_code == self.tts.code and isinstance(voices, list):
@@ -847,6 +864,7 @@ class GalaxyStudioApp:
 
     def _finish_success(self, result: object) -> None:
         self.progress.stop()
+        self.progress.configure(mode="indeterminate", maximum=100, value=0)
         self._set_busy(False)
         self.status.set("Done")
         self.last_result = result if isinstance(result, (GenerationResult, MediaExtractionResult, VideoSubtitleResult)) else None
@@ -894,6 +912,7 @@ class GalaxyStudioApp:
 
     def _finish_error(self, error: object) -> None:
         self.progress.stop()
+        self.progress.configure(mode="indeterminate", maximum=100, value=0)
         self._set_busy(False)
         self.status.set("Error")
         self._append_log(f"Error: {error}")

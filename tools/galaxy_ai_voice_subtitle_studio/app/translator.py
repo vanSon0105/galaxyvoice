@@ -5,9 +5,12 @@ import re
 import unicodedata
 import urllib.error
 import urllib.request
+from concurrent.futures import CancelledError, FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable
 
+from .cache import read_json, stable_digest, write_json_atomic
 from .env_config import first_env
 from .languages import label_from_code
 from .srt import SubtitleCue
@@ -68,11 +71,15 @@ class AITranslationOptions:
     model: str = ""
     base_url: str = ""
     batch_size: int = 20
+    max_workers: int = 1
 
 
 ChatClient = Callable[[list[dict[str, str]], AITranslationOptions], str]
+TranslationProgressCallback = Callable[[int, int], None]
+TranslationWarningCallback = Callable[[str], None]
 
 _TRANSLATION_ATTEMPTS = 2
+_TRANSLATION_CHECKPOINT_VERSION = 1
 _ENGLISH_WORDS = frozenset(
     {
         "a",
@@ -86,30 +93,92 @@ _ENGLISH_WORDS = frozenset(
         "by",
         "can",
         "do",
+        "done",
+        "explosion",
+        "finish",
+        "finished",
         "for",
         "from",
         "have",
+        "hello",
+        "help",
         "i",
         "in",
         "is",
         "it",
         "my",
         "not",
+        "please",
+        "ready",
+        "run",
         "of",
         "on",
         "only",
         "or",
+        "second",
+        "sorry",
+        "start",
+        "stop",
         "that",
         "the",
         "this",
         "to",
         "was",
+        "wait",
         "we",
+        "welcome",
         "with",
         "you",
     }
 )
-_VIETNAMESE_COMBINING_MARKS = frozenset("\u0300\u0301\u0303\u0309\u0323\u0306\u031b")
+_VIETNAMESE_UNMARKED_WORDS = frozenset(
+    {
+        "ai",
+        "anh",
+        "ba",
+        "cho",
+        "con",
+        "em",
+        "gai",
+        "gan",
+        "hay",
+        "khi",
+        "kho",
+        "la",
+        "lo",
+        "mai",
+        "nam",
+        "ngang",
+        "nhanh",
+        "nay",
+        "nghe",
+        "nghi",
+        "nha",
+        "nho",
+        "phim",
+        "qua",
+        "quen",
+        "ra",
+        "sao",
+        "ta",
+        "tai",
+        "thi",
+        "thu",
+        "trai",
+        "tre",
+        "trong",
+        "vui",
+        "xin",
+    }
+)
+_VIETNAMESE_COMBINING_MARKS = frozenset("\u0300\u0301\u0302\u0303\u0309\u0323\u0306\u031b")
+
+
+class _PartialTranslationError(Exception):
+    def __init__(self, translations: dict[int, str], original: Exception) -> None:
+        super().__init__(str(original))
+        self.translations = translations
+        self.original = original
 
 
 def translation_provider_codes() -> list[str]:
@@ -182,6 +251,9 @@ def translate_cues(
     cues: list[SubtitleCue],
     options: AITranslationOptions,
     client: ChatClient | None = None,
+    progress: TranslationProgressCallback | None = None,
+    checkpoint_path: Path | None = None,
+    warning: TranslationWarningCallback | None = None,
 ) -> list[SubtitleCue]:
     if not cues:
         return []
@@ -191,7 +263,14 @@ def translate_cues(
 
     validate_translation_options(options)
     chat_client = client or _chat_completion
-    translated_texts = translate_texts([cue.text for cue in cues], options, client=chat_client)
+    translated_texts = translate_texts(
+        [cue.text for cue in cues],
+        options,
+        client=chat_client,
+        progress=progress,
+        checkpoint_path=checkpoint_path,
+        warning=warning,
+    )
 
     return [
         SubtitleCue(index=cue.index, start_ms=cue.start_ms, end_ms=cue.end_ms, text=translated_text)
@@ -203,19 +282,115 @@ def translate_texts(
     texts: list[str],
     options: AITranslationOptions,
     client: ChatClient,
+    progress: TranslationProgressCallback | None = None,
+    checkpoint_path: Path | None = None,
+    warning: TranslationWarningCallback | None = None,
 ) -> list[str]:
     options = resolve_translation_options(options)
     batch_size = max(1, min(50, int(options.batch_size)))
-    translated: list[str] = []
+    max_workers = max(1, min(6, int(options.max_workers)))
+    checkpoint_id = _translation_checkpoint_id(texts, options)
+    completed = _load_translation_checkpoint(checkpoint_path, checkpoint_id, texts, options)
+    translated: list[str | None] = [completed.get(index) for index in range(len(texts))]
+    if progress is not None:
+        progress(len(completed), len(texts))
 
-    for start in range(0, len(texts), batch_size):
-        batch = texts[start : start + batch_size]
-        translated.extend(_translate_batch(batch, options, client))
+    pending = [(index, text) for index, text in enumerate(texts) if translated[index] is None]
+    batches = [pending[start : start + batch_size] for start in range(0, len(pending), batch_size)]
+    checkpoint_writable = checkpoint_path is not None
 
-    if len(translated) != len(texts):
+    def store_entries(entries: list[tuple[int, str]]) -> None:
+        nonlocal checkpoint_writable
+        if not entries:
+            return
+        for index, translated_text in entries:
+            translated[index] = translated_text
+            completed[index] = translated_text
+        if checkpoint_writable:
+            save_error = _save_translation_checkpoint(checkpoint_path, checkpoint_id, completed)
+            if save_error is not None:
+                checkpoint_writable = False
+                if warning is not None:
+                    warning(f"Could not save translation checkpoint: {save_error}")
+        if progress is not None:
+            progress(len(completed), len(texts))
+
+    def store_batch(batch: list[tuple[int, str]], batch_translations: list[str]) -> None:
+        if len(batch_translations) != len(batch):
+            raise RuntimeError("AI translation returned a different number of subtitle lines.")
+        store_entries(
+            [(index, translated_text) for (index, _text), translated_text in zip(batch, batch_translations)]
+        )
+
+    def store_partial(batch: list[tuple[int, str]], error: _PartialTranslationError) -> None:
+        store_entries(
+            [
+                (batch[local_index][0], translated_text)
+                for local_index, translated_text in sorted(error.translations.items())
+                if 0 <= local_index < len(batch)
+            ]
+        )
+
+    if max_workers == 1 or len(batches) <= 1:
+        for batch in batches:
+            try:
+                batch_translations = _translate_batch([text for _index, text in batch], options, client)
+            except _PartialTranslationError as error:
+                store_partial(batch, error)
+                raise error.original
+            store_batch(batch, batch_translations)
+    else:
+        worker_count = min(max_workers, len(batches))
+        executor = ThreadPoolExecutor(max_workers=worker_count)
+        batch_iterator = iter(batches)
+        futures: dict[Future[list[str]], list[tuple[int, str]]] = {}
+
+        def submit_next_batch() -> bool:
+            try:
+                batch = next(batch_iterator)
+            except StopIteration:
+                return False
+            future = executor.submit(_translate_batch, [text for _index, text in batch], options, client)
+            futures[future] = batch
+            return True
+
+        for _ in range(worker_count):
+            submit_next_batch()
+
+        first_error: Exception | None = None
+        try:
+            while futures:
+                done, _not_done = wait(tuple(futures), return_when=FIRST_COMPLETED)
+                for future in done:
+                    batch = futures.pop(future)
+                    try:
+                        batch_translations = future.result()
+                    except CancelledError:
+                        continue
+                    except _PartialTranslationError as error:
+                        store_partial(batch, error)
+                        if first_error is None:
+                            first_error = error.original
+                    except Exception as error:
+                        if first_error is None:
+                            first_error = error
+                    else:
+                        store_batch(batch, batch_translations)
+
+                if first_error is None:
+                    while len(futures) < worker_count and submit_next_batch():
+                        pass
+                else:
+                    for future in futures:
+                        future.cancel()
+        finally:
+            executor.shutdown(wait=True, cancel_futures=True)
+        if first_error is not None:
+            raise first_error
+
+    if any(text is None for text in translated):
         raise RuntimeError("AI translation returned a different number of subtitle lines.")
-
-    return translated
+    return [str(text) for text in translated]
 
 
 def translate_script_text(
@@ -239,6 +414,99 @@ def translate_script_text(
     return "\n".join(output_lines).strip()
 
 
+def _translation_checkpoint_id(texts: list[str], options: AITranslationOptions) -> str:
+    return stable_digest(
+        {
+            "version": _TRANSLATION_CHECKPOINT_VERSION,
+            **_translation_identity(options),
+            "texts": texts,
+        }
+    )
+
+
+def _translation_identity(options: AITranslationOptions) -> dict[str, str]:
+    return {
+        "source_language": options.source_language,
+        "target_language": options.target_language,
+        "provider": options.provider,
+        "model": options.model,
+        "base_url": options.base_url,
+    }
+
+
+def translation_checkpoint_path(
+    cache_dir: Path,
+    cues: list[SubtitleCue],
+    options: AITranslationOptions,
+) -> Path:
+    resolved_options = resolve_translation_options(options)
+    path_id = stable_digest(
+        {
+            **_translation_identity(resolved_options),
+            "cues": [
+                [cue.index, cue.start_ms, cue.end_ms, cue.text]
+                for cue in cues
+            ],
+        }
+    )
+    return cache_dir / "translations" / f"{path_id}.json"
+
+
+def _load_translation_checkpoint(
+    path: Path | None,
+    checkpoint_id: str,
+    texts: list[str],
+    options: AITranslationOptions,
+) -> dict[int, str]:
+    if path is None:
+        return {}
+    payload = read_json(path)
+    if not isinstance(payload, dict) or payload.get("checkpoint_id") != checkpoint_id:
+        return {}
+    raw_translations = payload.get("translations")
+    if not isinstance(raw_translations, dict):
+        return {}
+
+    translations: dict[int, str] = {}
+    for raw_index, raw_text in raw_translations.items():
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            continue
+        translated_text = raw_text.strip() if isinstance(raw_text, str) else ""
+        if not 0 <= index < len(texts) or not translated_text:
+            continue
+        if _wrong_output_language(
+            [translated_text],
+            options.target_language,
+            source_texts=[texts[index]],
+        ) is not None:
+            continue
+        translations[index] = translated_text
+    return translations
+
+
+def _save_translation_checkpoint(
+    path: Path | None,
+    checkpoint_id: str,
+    translations: dict[int, str],
+) -> OSError | None:
+    if path is None:
+        return None
+    try:
+        write_json_atomic(
+            path,
+            {
+                "version": _TRANSLATION_CHECKPOINT_VERSION,
+                "checkpoint_id": checkpoint_id,
+                "translations": {str(index): text for index, text in sorted(translations.items())},
+            },
+        )
+    except OSError as error:
+        return error
+    return None
+
+
 def _translate_batch(texts: list[str], options: AITranslationOptions, client: ChatClient) -> list[str]:
     source = label_from_code(options.source_language, default=options.source_language or "Auto detect")
     target = label_from_code(options.target_language, default=options.target_language)
@@ -258,25 +526,85 @@ def _translate_batch(texts: list[str], options: AITranslationOptions, client: Ch
             raise RuntimeError(
                 f"AI translation returned {len(translations)} lines for a batch that expected {len(texts)} lines."
             )
-        detected_language = _wrong_output_language(translations, options.target_language)
-        if detected_language is None:
+        detected_languages = [
+            _wrong_output_language(
+                [translation],
+                options.target_language,
+                source_texts=[texts[index]],
+            )
+            for index, translation in enumerate(translations)
+        ]
+        wrong_indexes = [
+            index for index, detected_language in enumerate(detected_languages) if detected_language is not None
+        ]
+        if not wrong_indexes:
             return translations
+        if len(wrong_indexes) < len(texts):
+            partial_translations = {
+                index: translation
+                for index, translation in enumerate(translations)
+                if index not in wrong_indexes
+            }
+            try:
+                corrected = _translate_batch([texts[index] for index in wrong_indexes], options, client)
+            except _PartialTranslationError as error:
+                for nested_index, translated_text in error.translations.items():
+                    if 0 <= nested_index < len(wrong_indexes):
+                        partial_translations[wrong_indexes[nested_index]] = translated_text
+                raise _PartialTranslationError(partial_translations, error.original) from error
+            except Exception as error:
+                raise _PartialTranslationError(partial_translations, error) from error
+            for index, corrected_text in zip(wrong_indexes, corrected):
+                translations[index] = corrected_text
+            return translations
+
+        detected_language = detected_languages[0]
         if detected_language == "Chinese" and len(texts) > 1:
             midpoint = len(texts) // 2
-            return _translate_batch(texts[:midpoint], options, client) + _translate_batch(
-                texts[midpoint:], options, client
-            )
+            return _translate_split_batch(texts, midpoint, options, client)
         wrong_language = detected_language
 
     if len(texts) == 1 and wrong_language == "Chinese" and options.target_language.strip().lower() == "vi":
         direct_translation = _translate_chinese_cue_directly(texts[0], options, client)
-        if _wrong_output_language([direct_translation], options.target_language) is None:
+        if _wrong_output_language(
+            [direct_translation],
+            options.target_language,
+            source_texts=texts,
+        ) is None:
             return [direct_translation]
 
     raise RuntimeError(
         f"AI translation returned {wrong_language or 'another language'} instead of Vietnamese after retrying. "
         "No mixed-language subtitle file was created."
     )
+
+
+def _translate_split_batch(
+    texts: list[str],
+    midpoint: int,
+    options: AITranslationOptions,
+    client: ChatClient,
+) -> list[str]:
+    translated: dict[int, str] = {}
+    first_error: Exception | None = None
+    for offset, subset in ((0, texts[:midpoint]), (midpoint, texts[midpoint:])):
+        try:
+            subset_translations = _translate_batch(subset, options, client)
+        except _PartialTranslationError as error:
+            for local_index, translated_text in error.translations.items():
+                translated[offset + local_index] = translated_text
+            if first_error is None:
+                first_error = error.original
+        except Exception as error:
+            if first_error is None:
+                first_error = error
+        else:
+            for local_index, translated_text in enumerate(subset_translations):
+                translated[offset + local_index] = translated_text
+
+    if first_error is not None:
+        raise _PartialTranslationError(translated, first_error) from first_error
+    return [translated[index] for index in range(len(texts))]
 
 
 def _translation_messages(
@@ -303,7 +631,8 @@ def _translation_messages(
                     "B\u1ea1n l\u00e0 bi\u00ean d\u1ecbch ph\u1ee5 \u0111\u1ec1 chuy\u00ean nghi\u1ec7p. Nhi\u1ec7m v\u1ee5 duy nh\u1ea5t l\u00e0 d\u1ecbch "
                     "t\u1eebng c\u00e2u sang ti\u1ebfng Vi\u1ec7t t\u1ef1 nhi\u00ean. M\u1ecdi ph\u1ea7n t\u1eed trong translations ph\u1ea3i b\u1eb1ng "
                     "ti\u1ebfng Vi\u1ec7t; kh\u00f4ng \u0111\u01b0\u1ee3c tr\u1ea3 nguy\u00ean c\u00e2u b\u1eb1ng ti\u1ebfng Trung ho\u1eb7c ti\u1ebfng Anh. "
-                    "Gi\u1eef t\u00ean ri\u00eang, s\u1ed1, \u00fd ngh\u0129a, gi\u1ecdng \u0111i\u1ec7u v\u00e0 th\u1ee9 t\u1ef1. N\u1ebfu c\u00e2u ngu\u1ed3n nh\u1eadn d\u1ea1ng "
+                    "Gi\u1eef t\u00ean ri\u00eang, s\u1ed1, \u00fd ngh\u0129a, gi\u1ecdng \u0111i\u1ec7u v\u00e0 th\u1ee9 t\u1ef1. N\u1ebfu b\u1ea3n d\u1ecbch ch\u1ec9 c\u00f3 "
+                    "t\u00ean ri\u00eang Latin kh\u00f4ng d\u1ea5u, h\u00e3y th\u00eam ng\u1eef c\u1ea3nh ti\u1ebfng Vi\u1ec7t ng\u1eafn g\u1ecdn. N\u1ebfu c\u00e2u ngu\u1ed3n nh\u1eadn d\u1ea1ng "
                     "ch\u01b0a chu\u1ea9n, h\u00e3y d\u1ecbch theo ngh\u0129a h\u1ee3p l\u00fd nh\u1ea5t. Ch\u1ec9 tr\u1ea3 v\u1ec1 JSON h\u1ee3p l\u1ec7 d\u1ea1ng "
                     "{\"translations\":[\"...\"]}, \u0111\u00fang s\u1ed1 l\u01b0\u1ee3ng v\u00e0 th\u1ee9 t\u1ef1 c\u00e2u."
                 ),
@@ -377,30 +706,65 @@ def _translate_chinese_cue_directly(
     return translations[0]
 
 
-def _wrong_output_language(translations: list[str], target_language: str) -> str | None:
+def _wrong_output_language(
+    translations: list[str],
+    target_language: str,
+    source_texts: list[str] | None = None,
+) -> str | None:
     if target_language.strip().lower() != "vi":
         return None
 
     for translation in translations:
-        han_characters = sum(_is_han(character) for character in translation)
-        alphabetic_characters = sum(character.isalpha() for character in translation)
-        if han_characters >= 1 and han_characters * 2 >= alphabetic_characters:
+        if any(_is_han(character) for character in translation):
             return "Chinese"
 
     combined = " ".join(translations)
-    words = re.findall(r"[a-z]+", combined.lower())
-    if len(words) < 12:
-        return None
-
     normalized = unicodedata.normalize("NFD", combined)
+    latinized = "".join(
+        character
+        for character in normalized
+        if not unicodedata.combining(character)
+    ).replace("\u0111", "d").replace("\u0110", "D")
+    words = re.findall(r"[a-z]+", latinized.lower())
+    original_words = re.findall(r"[^\W\d_]+", combined.lower())
     vietnamese_marks = sum(
         character in _VIETNAMESE_COMBINING_MARKS or character in {"đ", "Đ"}
         for character in normalized
     )
-    english_words = sum(word in _ENGLISH_WORDS for word in words)
+    english_words = sum(word.isascii() and word in _ENGLISH_WORDS for word in original_words)
+    if words and vietnamese_marks == 0:
+        if all(word in _VIETNAMESE_UNMARKED_WORDS for word in words):
+            return None
+        if (
+            len(words) == 1
+            and words[0] not in _ENGLISH_WORDS
+            and len(translations) == 1
+            and source_texts
+            and _is_unchanged_single_name(translations[0], source_texts[0])
+        ):
+            return None
+        return "English"
+    if vietnamese_marks and english_words >= 2:
+        return "English"
+    if len(words) < 12:
+        return None
     if vietnamese_marks < 2 and english_words >= max(4, len(words) // 8):
         return "English"
     return None
+
+
+def _is_unchanged_single_name(translation: str, source_text: str) -> bool:
+    normalized_translation = " ".join(translation.split())
+    if normalized_translation.casefold() != " ".join(source_text.split()).casefold():
+        return False
+    if any(_is_han(character) for character in source_text):
+        return False
+    tokens = re.findall(r"[A-Za-z][A-Za-z0-9'-]*", normalized_translation)
+    return len(tokens) == 1 and (
+        tokens[0].isupper()
+        or tokens[0][0].isupper()
+        or any(character.isdigit() for character in tokens[0])
+    )
 
 
 def _is_han(character: str) -> bool:
@@ -485,6 +849,7 @@ def resolve_translation_options(options: AITranslationOptions) -> AITranslationO
         model=options.model or default_translation_model(provider),
         base_url=options.base_url or default_translation_base_url(provider),
         batch_size=options.batch_size,
+        max_workers=options.max_workers,
     )
 
 

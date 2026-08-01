@@ -9,6 +9,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from .cache import default_cache_dir, file_digest, read_json, stable_digest, write_json_atomic
 from .ffmpeg import ffmpeg_missing_message, find_ffmpeg
 from .media import Runner, _run_command, _run_ffmpeg, build_extract_wav_command
 from .paths import unique_project_dir
@@ -20,13 +21,16 @@ from .translator import (
     default_translation_model,
     default_translation_provider,
     normalize_translation_provider,
+    translation_checkpoint_path,
     translate_cues,
     validate_translation_options,
 )
 
 WHISPER_MODELS = ("tiny", "base", "small", "medium", "large-v3")
+TRANSCRIPTION_CACHE_VERSION = 1
 
 ProgressCallback = Callable[[str], None]
+DetailedProgressCallback = Callable[[str, int, int], None]
 Transcriber = Callable[[Path, str | None, str, ProgressCallback], list[SubtitleCue]]
 CueTranslator = Callable[[list[SubtitleCue], AITranslationOptions], list[SubtitleCue]]
 
@@ -43,6 +47,9 @@ class VideoSubtitleOptions:
     ai_model: str = ""
     ai_base_url: str = ""
     ai_api_key: str = ""
+    cache_dir: Path | None = None
+    translation_batch_size: int = 2
+    translation_workers: int = 6
 
 
 @dataclass(frozen=True)
@@ -106,10 +113,12 @@ def create_subtitles_from_video(
     runner: Runner | None = None,
     transcriber: Transcriber | None = None,
     translator: CueTranslator | None = None,
+    detailed_progress: DetailedProgressCallback | None = None,
 ) -> VideoSubtitleResult:
     draft = prepare_subtitles_from_video(
         options,
         progress=progress,
+        detailed_progress=detailed_progress,
         ffmpeg_path=ffmpeg_path,
         runner=runner,
         transcriber=transcriber,
@@ -133,8 +142,10 @@ def prepare_subtitles_from_video(
     runner: Runner | None = None,
     transcriber: Transcriber | None = None,
     translator: CueTranslator | None = None,
+    detailed_progress: DetailedProgressCallback | None = None,
 ) -> VideoSubtitleDraft:
     report = progress or (lambda _message: None)
+    report_detail = detailed_progress or (lambda _stage, _completed, _total: None)
     video_path = Path(options.video_path).expanduser()
     if not video_path.exists():
         raise FileNotFoundError(f"Video file not found: {video_path}")
@@ -153,6 +164,8 @@ def prepare_subtitles_from_video(
         api_key=options.ai_api_key or default_translation_api_key(ai_provider),
         model=options.ai_model or default_translation_model(ai_provider),
         base_url=options.ai_base_url or default_translation_base_url(ai_provider),
+        batch_size=options.translation_batch_size,
+        max_workers=options.translation_workers,
     )
     if target_language != "none":
         validate_translation_options(ai_options)
@@ -161,6 +174,7 @@ def prepare_subtitles_from_video(
     transcribe = transcriber or transcribe_with_faster_whisper
     translate = translator or translate_cues
     warnings: list[str] = []
+    cache_root: Path | None = None
     workspace = tempfile.TemporaryDirectory(prefix="galaxy_subtitles_")
     audio_path = Path(workspace.name) / "speech.wav"
 
@@ -168,16 +182,62 @@ def prepare_subtitles_from_video(
         report("Extracting speech audio...")
         _run_ffmpeg(build_extract_wav_command(ffmpeg, video_path, audio_path), run)
 
-        report("Transcribing speech...")
-        whisper_language = None if source_language == "auto" else source_language
-        cues = transcribe(audio_path, whisper_language, options.whisper_model, report)
+        cache_enabled = options.cache_dir is not None or transcriber is None
+        transcription_cache_path: Path | None = None
+        cues: list[SubtitleCue] | None = None
+        if cache_enabled:
+            cache_root = Path(options.cache_dir) if options.cache_dir is not None else default_cache_dir()
+            transcription_cache_path = _transcription_cache_path(
+                cache_root,
+                video_path,
+                source_language,
+                options.whisper_model,
+            )
+            cues = _load_transcription_cache(transcription_cache_path)
+        if cues is not None:
+            report(f"Loaded {len(cues)} cues from cached transcription.")
+            report_detail("Transcribing", len(cues), len(cues))
+        else:
+            report("Transcribing speech...")
+            whisper_language = None if source_language == "auto" else source_language
+            cues = transcribe(audio_path, whisper_language, options.whisper_model, report)
+            if cues and transcription_cache_path is not None:
+                try:
+                    _save_transcription_cache(transcription_cache_path, cues)
+                except OSError as error:
+                    warnings.append(f"Could not save transcription cache: {error}")
         if not cues:
             raise RuntimeError("No speech segments were detected in the video.")
 
         translated_cues: list[SubtitleCue] | None = None
         if target_language != "none":
             report("Translating subtitles with AI...")
-            translated_cues = translate(cues, ai_options)
+            report_detail("Translating", 0, len(cues))
+            if translator is None:
+                checkpoint_path = (
+                    translation_checkpoint_path(cache_root, cues, ai_options)
+                    if cache_root is not None
+                    else None
+                )
+                last_reported = -10
+
+                def report_translation_progress(completed: int, total: int) -> None:
+                    nonlocal last_reported
+                    report_detail("Translating", completed, total)
+                    if completed == total or completed == 0 or completed >= last_reported + 10:
+                        report(f"Translated {completed}/{total} cues...")
+                        last_reported = completed
+
+                translated_cues = translate_cues(
+                    cues,
+                    ai_options,
+                    progress=report_translation_progress,
+                    checkpoint_path=checkpoint_path,
+                    warning=warnings.append,
+                )
+            else:
+                translated_cues = translate(cues, ai_options)
+                report_detail("Translating", len(cues), len(cues))
 
         report("Subtitles are ready for review.")
         return VideoSubtitleDraft(
@@ -297,6 +357,72 @@ def _export_srt_text(text: str) -> str:
     return text.rstrip("\r\n") + "\n"
 
 
+def _transcription_cache_path(
+    cache_dir: Path,
+    video_path: Path,
+    source_language: str,
+    whisper_model: str,
+) -> Path:
+    stat = video_path.stat()
+    digest = stable_digest(
+        {
+            "version": TRANSCRIPTION_CACHE_VERSION,
+            "video_path": str(video_path.resolve()),
+            "video_size": stat.st_size,
+            "video_mtime_ns": stat.st_mtime_ns,
+            "video_sha256": file_digest(video_path),
+            "source_language": source_language,
+            "whisper_model": whisper_model,
+        }
+    )
+    return cache_dir / "transcriptions" / f"{digest}.json"
+
+
+def _load_transcription_cache(path: Path) -> list[SubtitleCue] | None:
+    payload = read_json(path)
+    if not isinstance(payload, dict) or payload.get("version") != TRANSCRIPTION_CACHE_VERSION:
+        return None
+    raw_cues = payload.get("cues")
+    if not isinstance(raw_cues, list) or not raw_cues:
+        return None
+
+    cues: list[SubtitleCue] = []
+    try:
+        for raw_cue in raw_cues:
+            if not isinstance(raw_cue, dict):
+                return None
+            cue = SubtitleCue(
+                index=int(raw_cue["index"]),
+                start_ms=int(raw_cue["start_ms"]),
+                end_ms=int(raw_cue["end_ms"]),
+                text=str(raw_cue["text"]).strip(),
+            )
+            if cue.index < 1 or cue.start_ms < 0 or cue.end_ms <= cue.start_ms or not cue.text:
+                return None
+            cues.append(cue)
+    except (KeyError, TypeError, ValueError):
+        return None
+    return cues
+
+
+def _save_transcription_cache(path: Path, cues: list[SubtitleCue]) -> None:
+    write_json_atomic(
+        path,
+        {
+            "version": TRANSCRIPTION_CACHE_VERSION,
+            "cues": [
+                {
+                    "index": cue.index,
+                    "start_ms": cue.start_ms,
+                    "end_ms": cue.end_ms,
+                    "text": cue.text,
+                }
+                for cue in cues
+            ],
+        },
+    )
+
+
 def transcribe_with_faster_whisper(
     audio_path: Path,
     source_language: str | None,
@@ -310,8 +436,43 @@ def transcribe_with_faster_whisper(
             "faster-whisper is not installed. Run: pip install -r requirements-transcription.txt"
         ) from error
 
-    progress(f"Loading Whisper model: {model_size}")
-    model = WhisperModel(model_size, device="cpu", compute_type="int8")
+    device, compute_type = _preferred_whisper_runtime()
+    try:
+        return _transcribe_with_runtime(
+            WhisperModel,
+            audio_path,
+            source_language,
+            model_size,
+            device,
+            compute_type,
+            progress,
+        )
+    except Exception as error:
+        if device != "cuda":
+            raise
+        progress(f"CUDA transcription failed: {error}. Falling back to CPU...")
+        return _transcribe_with_runtime(
+            WhisperModel,
+            audio_path,
+            source_language,
+            model_size,
+            "cpu",
+            "int8",
+            progress,
+        )
+
+
+def _transcribe_with_runtime(
+    whisper_model_class,
+    audio_path: Path,
+    source_language: str | None,
+    model_size: str,
+    device: str,
+    compute_type: str,
+    progress: ProgressCallback,
+) -> list[SubtitleCue]:
+    progress(f"Loading Whisper model: {model_size} ({device.upper()})")
+    model = whisper_model_class(model_size, device=device, compute_type=compute_type)
     segments, _info = model.transcribe(
         str(audio_path),
         language=source_language,
@@ -336,6 +497,17 @@ def transcribe_with_faster_whisper(
             progress(f"Transcribed {index} segments...")
 
     return cues
+
+
+def _preferred_whisper_runtime() -> tuple[str, str]:
+    try:
+        import ctranslate2
+
+        if ctranslate2.get_cuda_device_count() > 0:
+            return "cuda", "float16"
+    except (ImportError, OSError, RuntimeError):
+        pass
+    return "cpu", "int8"
 
 
 def _normalize_language(value: str, auto_value: str) -> str:

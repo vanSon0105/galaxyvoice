@@ -7,11 +7,13 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.ffmpeg import find_ffmpeg, find_ffprobe  # noqa: E402
+from app.processes import managed_media_processes  # noqa: E402
 from app.subtitle_removal import (  # noqa: E402
     AI_INPAINT_MODE,
     BLUR_MODE,
@@ -31,6 +33,50 @@ from app.subtitle_removal import (  # noqa: E402
 
 
 class SubtitleRemovalTests(unittest.TestCase):
+    def test_missing_propainter_fails_before_preparing_video(self) -> None:
+        managed_media_processes.reset()
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mp4"
+            source.write_bytes(b"video")
+            commands: list[list[str]] = []
+
+            def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                commands.append(command)
+                Path(command[-1]).write_bytes(b"generated")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            def probe_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                if "format=duration" in command:
+                    return subprocess.CompletedProcess(command, 0, "12.0\n", "")
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    '{"streams": [{"width": 1280, "height": 720}]}',
+                    "",
+                )
+
+            with (
+                patch(
+                    "app.propainter.resolve_propainter_runtime",
+                    side_effect=RuntimeError("ProPainter is not installed completely."),
+                ),
+                self.assertRaisesRegex(RuntimeError, "not installed"),
+            ):
+                remove_subtitles_from_video(
+                    SubtitleRemovalOptions(
+                        video_path=source,
+                        output_dir=root / "exports",
+                        mode=AI_INPAINT_MODE,
+                    ),
+                    ffmpeg_path="ffmpeg",
+                    ffprobe_path="ffprobe",
+                    runner=runner,
+                    probe_runner=probe_runner,
+                )
+
+            self.assertEqual(commands, [])
+
     def test_ai_inpainting_creates_mask_restores_audio_and_writes_manifest(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

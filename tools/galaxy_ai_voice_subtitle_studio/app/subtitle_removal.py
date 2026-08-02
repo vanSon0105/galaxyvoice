@@ -8,6 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from . import propainter
 from .ffmpeg import ffmpeg_missing_message, find_ffmpeg, find_ffprobe
 from .paths import unique_project_dir
 from .processes import managed_media_processes
@@ -86,6 +87,8 @@ def remove_subtitles_from_video(
         _validate_region(options.region)
     if not 1 <= options.blur_strength <= 100:
         raise ValueError("Blur strength must be between 1 and 100.")
+    if options.mode == AI_INPAINT_MODE and ai_inpainter is None:
+        propainter.resolve_propainter_runtime()
 
     ffmpeg = ffmpeg_path or find_ffmpeg()
     if not ffmpeg:

@@ -454,6 +454,63 @@ class GuiLayoutTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_missing_propainter_offers_installer_before_video_processing(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.removal_video_path.set("clip.mp4")
+            app.removal_mode.set("AI ProPainter")
+            app.propainter_license_accepted.set(True)
+
+            with (
+                patch(
+                    "app.propainter.resolve_propainter_runtime",
+                    side_effect=RuntimeError("ProPainter is not installed completely."),
+                ) as runtime_check,
+                patch("app.gui.messagebox.askyesno", return_value=False) as install_prompt,
+                patch("app.gui.threading.Thread") as thread,
+            ):
+                app.start_remove_subtitles()
+
+            runtime_check.assert_called_once_with()
+            install_prompt.assert_called_once()
+            self.assertIn("cài ProPainter", install_prompt.call_args.args[1])
+            thread.assert_not_called()
+        finally:
+            root.destroy()
+
+    def test_missing_propainter_can_open_installer_from_preflight(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.removal_video_path.set("clip.mp4")
+            app.removal_mode.set("AI ProPainter")
+            app.propainter_license_accepted.set(True)
+
+            with (
+                patch(
+                    "app.propainter.resolve_propainter_runtime",
+                    side_effect=RuntimeError("ProPainter is not installed completely."),
+                ),
+                patch("app.gui.messagebox.askyesno", return_value=True),
+                patch.object(app, "install_propainter") as install,
+                patch("app.gui.threading.Thread") as thread,
+            ):
+                app.start_remove_subtitles()
+
+            install.assert_called_once_with()
+            thread.assert_not_called()
+        finally:
+            root.destroy()
+
     def test_subtitle_removal_success_enables_its_output_button(self) -> None:
         try:
             root = tk.Tk()

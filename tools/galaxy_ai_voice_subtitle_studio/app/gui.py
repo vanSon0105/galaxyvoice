@@ -10,6 +10,7 @@ from dataclasses import replace
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from . import propainter
 from .compute import (
     PROCESSING_DEVICE_LABELS,
     processing_device_code,
@@ -1274,8 +1275,21 @@ class GalaxyStudioApp:
             messagebox.showwarning("Missing video", "Choose a video before processing.")
             return
         mode = self._removal_mode_code()
-        if mode == AI_INPAINT_MODE and not self._confirm_propainter_license():
-            return
+        if mode == AI_INPAINT_MODE:
+            if not self._confirm_propainter_license():
+                return
+            try:
+                propainter.resolve_propainter_runtime()
+            except RuntimeError:
+                install_now = messagebox.askyesno(
+                    "ProPainter chưa được cài",
+                    "Chế độ AI cần cài ProPainter trước khi xử lý video. "
+                    "Mở bộ cài ProPainter ngay?\n\n"
+                    "Sau khi cửa sổ cài đặt báo ProPainter is ready, hãy bấm Xử lý video lại.",
+                )
+                if install_now:
+                    self.install_propainter()
+                return
 
         region_x = self._config_int(self.subtitle_region_x, 5, 0, 99)
         region_y = self._config_int(self.subtitle_region_y, 75, 0, 99)

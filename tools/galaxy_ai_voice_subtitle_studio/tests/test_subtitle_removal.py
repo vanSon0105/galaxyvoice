@@ -185,6 +185,124 @@ class SubtitleRemovalTests(unittest.TestCase):
             self.assertEqual(manifest["ai_profile"], "fast")
             self.assertTrue(any("Fast AI" in warning for warning in result.warnings))
 
+    def test_fast_ai_passes_frame_wise_masks_to_propainter(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mp4"
+            source.write_bytes(b"video")
+            ai_masks: list[tuple[str, bool, list[str]]] = []
+
+            def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                Path(command[-1]).write_bytes(b"generated")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            def probe_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                if "format=duration" in command:
+                    return subprocess.CompletedProcess(command, 0, "12.0\n", "")
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    '{"streams": [{"width": 1280, "height": 720}]}',
+                    "",
+                )
+
+            def mask_generator(video, output_dir, _plan, _progress):
+                self.assertEqual(video.name, "propainter_input.mp4")
+                output_dir.mkdir(parents=True)
+                (output_dir / "00000000.png").write_bytes(b"mask")
+                return output_dir
+
+            def ai_inpainter(video, mask, output_root, _device, _progress):
+                mask_files = [path.name for path in mask.glob("*.png")]
+                ai_masks.append((mask.name, mask.is_dir(), mask_files))
+                generated = output_root / video.stem / "inpaint_out.mp4"
+                generated.parent.mkdir(parents=True)
+                generated.write_bytes(b"ai video")
+                return generated
+
+            remove_subtitles_from_video(
+                SubtitleRemovalOptions(
+                    video_path=source,
+                    output_dir=root / "exports",
+                    mode=FAST_AI_INPAINT_MODE,
+                ),
+                ffmpeg_path="ffmpeg",
+                ffprobe_path="ffprobe",
+                runner=runner,
+                probe_runner=probe_runner,
+                ai_inpainter=ai_inpainter,
+                ai_mask_generator=mask_generator,
+            )
+
+            self.assertEqual(ai_masks, [("masks", True, ["00000000.png"])])
+
+    def test_chunked_ai_builds_masks_from_each_chunk(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mp4"
+            source.write_bytes(b"video")
+            generated_from: list[tuple[str, str]] = []
+            ai_masks: list[tuple[str, str]] = []
+
+            def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                Path(command[-1]).write_bytes(b"generated")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            def probe_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                if "format=duration" in command:
+                    return subprocess.CompletedProcess(command, 0, "45.0\n", "")
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    '{"streams": [{"width": 1280, "height": 720}]}',
+                    "",
+                )
+
+            def mask_generator(video, output_dir, _plan, _progress):
+                generated_from.append((video.name, output_dir.name))
+                output_dir.mkdir(parents=True)
+                (output_dir / "00000000.png").write_bytes(b"mask")
+                return output_dir
+
+            def ai_inpainter(video, mask, output_root, _device, _progress):
+                ai_masks.append((video.name, mask.name))
+                generated = output_root / video.stem / "inpaint_out.mp4"
+                generated.parent.mkdir(parents=True)
+                generated.write_bytes(b"ai video")
+                return generated
+
+            remove_subtitles_from_video(
+                SubtitleRemovalOptions(
+                    video_path=source,
+                    output_dir=root / "exports",
+                    mode=AI_INPAINT_MODE,
+                    processing_device="cpu",
+                ),
+                ffmpeg_path="ffmpeg",
+                ffprobe_path="ffprobe",
+                runner=runner,
+                probe_runner=probe_runner,
+                ai_inpainter=ai_inpainter,
+                ai_mask_generator=mask_generator,
+            )
+
+            self.assertEqual(
+                generated_from,
+                [
+                    ("chunk_0001.mp4", "masks_0001"),
+                    ("chunk_0002.mp4", "masks_0002"),
+                    ("chunk_0003.mp4", "masks_0003"),
+                ],
+            )
+            self.assertEqual(
+                ai_masks,
+                [
+                    ("chunk_0001.mp4", "masks_0001"),
+                    ("chunk_0002.mp4", "masks_0002"),
+                    ("chunk_0003.mp4", "masks_0003"),
+                ],
+            )
+
     def test_long_ai_inpainting_processes_memory_safe_overlapping_chunks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

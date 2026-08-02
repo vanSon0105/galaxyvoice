@@ -328,6 +328,53 @@ def build_inpainting_mask_command(
     )
 
 
+def build_dynamic_subtitle_mask_command(
+    runtime: ProPainterRuntime,
+    video_path: Path,
+    output_dir: Path,
+    plan: InpaintingCropPlan,
+) -> list[str]:
+    worker_path = Path(__file__).with_name("propainter_mask_worker.py")
+    return [
+        str(runtime.python_executable),
+        str(worker_path),
+        "--video",
+        str(video_path),
+        "--output",
+        str(output_dir),
+        "--roi",
+        str(plan.mask_x),
+        str(plan.mask_y),
+        str(plan.mask_width),
+        str(plan.mask_height),
+    ]
+
+
+def generate_dynamic_subtitle_masks(
+    runtime: ProPainterRuntime,
+    video_path: Path,
+    output_dir: Path,
+    plan: InpaintingCropPlan,
+    progress: ProgressCallback,
+) -> Path:
+    managed_media_processes.ensure_running()
+    command = build_dynamic_subtitle_mask_command(runtime, video_path, output_dir, plan)
+    return_code, recent_output = _run_managed_process(
+        command,
+        cwd=runtime.repo_dir,
+        env=None,
+        progress=progress,
+    )
+
+    if return_code != 0:
+        shutil.rmtree(output_dir, ignore_errors=True)
+        detail = "\n".join(recent_output) or f"Subtitle mask worker exited with code {return_code}."
+        raise RuntimeError(detail)
+    if not output_dir.is_dir() or not any(output_dir.glob("*.png")):
+        raise RuntimeError(f"Subtitle mask worker did not create frame masks: {output_dir}")
+    return output_dir
+
+
 def _build_pixel_mask_image_command(
     ffmpeg: str,
     output_path: Path,
@@ -706,11 +753,26 @@ def _run_propainter_process(
     resolved_device: str,
     progress: ProgressCallback,
 ) -> tuple[int, deque[str]]:
-    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
-    process = subprocess.Popen(
+    return _run_managed_process(
         command,
         cwd=runtime.repo_dir,
         env=propainter_environment(resolved_device),
+        progress=progress,
+    )
+
+
+def _run_managed_process(
+    command: list[str],
+    *,
+    cwd: Path,
+    env: Mapping[str, str] | None,
+    progress: ProgressCallback,
+) -> tuple[int, deque[str]]:
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    process = subprocess.Popen(
+        command,
+        cwd=cwd,
+        env=env,
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
@@ -728,9 +790,26 @@ def _run_propainter_process(
                     recent_output.append(message)
                     progress(message)
         return_code = process.wait()
+    except BaseException:
+        _terminate_process(process)
+        raise
     finally:
         managed_media_processes.discard(process)
     return return_code, recent_output
+
+
+def _terminate_process(process: subprocess.Popen[str]) -> None:
+    try:
+        if process.poll() is not None:
+            return
+        process.terminate()
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.wait(timeout=5)
+    except (OSError, subprocess.TimeoutExpired):
+        pass
 
 
 def _is_cuda_out_of_memory(detail: str) -> bool:

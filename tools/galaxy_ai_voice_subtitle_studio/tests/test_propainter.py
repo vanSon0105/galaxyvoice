@@ -20,9 +20,11 @@ from app.propainter import (  # noqa: E402
     ProPainterSession,
     build_chunk_extract_command,
     build_chunk_trim_command,
+    build_dynamic_subtitle_mask_command,
     build_inpainting_input_command,
     build_inpainting_merge_command,
     build_propainter_command,
+    generate_dynamic_subtitle_masks,
     plan_inpainting_crop,
     plan_video_chunks,
     propainter_cuda_available,
@@ -299,6 +301,81 @@ class ProPainterTests(unittest.TestCase):
             (plan.processing_width, plan.processing_height),
             (640, 128),
         )
+
+    def test_dynamic_mask_command_uses_propainter_python_and_processing_roi(self) -> None:
+        runtime = ProPainterRuntime(Path("repo"), Path("venv-python"), Path("inference.py"))
+        plan = plan_inpainting_crop(
+            video_size=(1280, 720),
+            region=(10, 80, 79, 12),
+            profile=FAST_AI_PROFILE,
+        )
+
+        command = build_dynamic_subtitle_mask_command(
+            runtime,
+            Path("processing.mp4"),
+            Path("masks"),
+            plan,
+        )
+
+        self.assertEqual(command[0], "venv-python")
+        self.assertTrue(command[1].endswith("propainter_mask_worker.py"))
+        self.assertEqual(command[command.index("--video") + 1], "processing.mp4")
+        self.assertEqual(command[command.index("--output") + 1], "masks")
+        self.assertEqual(
+            command[command.index("--roi") + 1 :],
+            [
+                str(plan.mask_x),
+                str(plan.mask_y),
+                str(plan.mask_width),
+                str(plan.mask_height),
+            ],
+        )
+
+    def test_dynamic_mask_worker_is_terminated_when_progress_callback_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            runtime = ProPainterRuntime(root, Path("venv-python"), Path("inference.py"))
+            plan = plan_inpainting_crop(
+                video_size=(1280, 720),
+                region=(10, 80, 79, 12),
+                profile=FAST_AI_PROFILE,
+            )
+
+            class FakeProcess:
+                stdout = ["Detecting subtitle glyphs...\n"]
+                terminated = False
+
+                def poll(self):
+                    return None
+
+                def terminate(self):
+                    self.terminated = True
+
+                def wait(self, timeout=None):
+                    return -15 if self.terminated else 0
+
+            process = FakeProcess()
+
+            def failing_progress(_message: str) -> None:
+                raise RuntimeError("progress callback failed")
+
+            with (
+                patch("app.propainter.subprocess.Popen", return_value=process),
+                patch("app.propainter.managed_media_processes.ensure_running"),
+                patch("app.propainter.managed_media_processes.add"),
+                patch("app.propainter.managed_media_processes.discard") as discard,
+                self.assertRaisesRegex(RuntimeError, "progress callback failed"),
+            ):
+                generate_dynamic_subtitle_masks(
+                    runtime,
+                    root / "input.mp4",
+                    root / "masks",
+                    plan,
+                    failing_progress,
+                )
+
+            self.assertTrue(process.terminated)
+            discard.assert_called_once_with(process)
 
     def test_ai_merge_replaces_only_selected_region_in_original_video(self) -> None:
         plan = plan_inpainting_crop(

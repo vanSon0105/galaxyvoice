@@ -15,6 +15,7 @@ from .processes import managed_media_processes
 from .propainter import (
     FAST_CHUNK_SECONDS,
     FAST_AI_PROFILE,
+    InpaintingCropPlan,
     QUALITY_AI_PROFILE,
     build_chunk_extract_command,
     build_chunk_trim_command,
@@ -39,6 +40,7 @@ ProgressCallback = Callable[[str], None]
 Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 Region = tuple[int, int, int, int]
 AIInpainter = Callable[[Path, Path, Path, str, ProgressCallback], Path]
+AIMaskGenerator = Callable[[Path, Path, InpaintingCropPlan, ProgressCallback], Path]
 
 
 @dataclass(frozen=True)
@@ -81,6 +83,7 @@ def remove_subtitles_from_video(
     runner: Runner | None = None,
     probe_runner: Runner | None = None,
     ai_inpainter: AIInpainter | None = None,
+    ai_mask_generator: AIMaskGenerator | None = None,
 ) -> SubtitleRemovalResult:
     report = progress or (lambda _message: None)
     source_path = Path(options.video_path).expanduser()
@@ -93,6 +96,7 @@ def remove_subtitles_from_video(
     if not 1 <= options.blur_strength <= 100:
         raise ValueError("Blur strength must be between 1 and 100.")
     prepared_ai_inpainter = ai_inpainter
+    prepared_ai_mask_generator = ai_mask_generator
     prepared_ai_chunk_seconds: float | None = None
     prepared_ai_processing_size: tuple[int, int] | None = None
     if options.mode in AI_INPAINT_MODES and prepared_ai_inpainter is None:
@@ -118,6 +122,20 @@ def remove_subtitles_from_video(
                 processing_device,
                 callback,
                 session=session,
+            )
+
+        def prepared_ai_mask_generator(
+            video_path: Path,
+            output_dir: Path,
+            crop_plan: InpaintingCropPlan,
+            callback: ProgressCallback,
+        ) -> Path:
+            return propainter.generate_dynamic_subtitle_masks(
+                session.runtime,
+                video_path,
+                output_dir,
+                crop_plan,
+                callback,
             )
 
     ffmpeg = ffmpeg_path or find_ffmpeg()
@@ -179,6 +197,7 @@ def remove_subtitles_from_video(
                 ffprobe_path,
                 probe_runner,
                 prepared_ai_inpainter,
+                prepared_ai_mask_generator,
                 prepared_ai_chunk_seconds,
                 prepared_ai_processing_size,
             )
@@ -199,7 +218,7 @@ def remove_subtitles_from_video(
         )
         if options.mode == FAST_AI_INPAINT_MODE:
             warnings.append(
-                "Fast AI processes a smaller subtitle band and merges only the cleaned region into the original video."
+                "Fast AI detects subtitle glyphs frame by frame, processes a smaller subtitle band, and merges only the cleaned region into the original video."
             )
         if options.processing_device == "cpu":
             warnings.append("ProPainter on CPU is supported but can be extremely slow for long videos.")
@@ -249,6 +268,7 @@ def _run_ai_inpainting(
     ffprobe_path: str | None,
     probe_runner: Runner | None,
     ai_inpainter: AIInpainter,
+    ai_mask_generator: AIMaskGenerator | None,
     chunk_seconds: float | None,
     maximum_processing_size: tuple[int, int] | None,
 ) -> None:
@@ -278,15 +298,16 @@ def _run_ai_inpainting(
         f"{crop_plan.processing_width}x{crop_plan.processing_height} "
         f"({profile})."
     )
-    report("Creating the AI inpainting mask...")
-    _run_ffmpeg(
-        build_inpainting_mask_command(
-            ffmpeg,
-            mask_path,
-            crop_plan,
-        ),
-        runner,
-    )
+    if ai_mask_generator is None:
+        report("Creating the AI inpainting mask...")
+        _run_ffmpeg(
+            build_inpainting_mask_command(
+                ffmpeg,
+                mask_path,
+                crop_plan,
+            ),
+            runner,
+        )
 
     propainter_input = staging_dir / "propainter_input.mp4"
     report("Preparing an MP4 input for ProPainter...")
@@ -307,14 +328,26 @@ def _run_ai_inpainting(
     )
     chunks = plan_video_chunks(video_duration, chunk_seconds=resolved_chunk_seconds)
     if len(chunks) == 1:
+        selected_mask_path = mask_path
+        dynamic_mask_dir = staging_dir / "masks"
+        if ai_mask_generator is not None:
+            report("Detecting subtitle glyphs frame by frame...")
+            selected_mask_path = ai_mask_generator(
+                propainter_input,
+                dynamic_mask_dir,
+                crop_plan,
+                report,
+            )
         report("Running AI video inpainting...")
         inpainted_video = ai_inpainter(
             propainter_input,
-            mask_path,
+            selected_mask_path,
             staging_dir,
             options.processing_device,
             report,
         )
+        if ai_mask_generator is not None:
+            shutil.rmtree(dynamic_mask_dir, ignore_errors=True)
     else:
         report(f"Splitting the video into {len(chunks)} memory-safe AI chunks...")
         trimmed_chunks: list[Path] = []
@@ -326,14 +359,26 @@ def _run_ai_inpainting(
                 runner,
             )
             chunk_output_root = staging_dir / f"result_{index:04}"
+            selected_mask_path = mask_path
+            dynamic_mask_dir = staging_dir / f"masks_{index:04}"
+            if ai_mask_generator is not None:
+                report(f"Detecting subtitle glyphs {index}/{len(chunks)}...")
+                selected_mask_path = ai_mask_generator(
+                    chunk_input,
+                    dynamic_mask_dir,
+                    crop_plan,
+                    report,
+                )
             report(f"Running AI video inpainting {index}/{len(chunks)}...")
             chunk_result = ai_inpainter(
                 chunk_input,
-                mask_path,
+                selected_mask_path,
                 chunk_output_root,
                 options.processing_device,
                 report,
             )
+            if ai_mask_generator is not None:
+                shutil.rmtree(dynamic_mask_dir, ignore_errors=True)
             if not chunk_result.is_file() or chunk_result.stat().st_size == 0:
                 raise RuntimeError(f"ProPainter did not create video chunk {index}: {chunk_result}")
             trimmed_path = staging_dir / f"trimmed_{index:04}.mp4"

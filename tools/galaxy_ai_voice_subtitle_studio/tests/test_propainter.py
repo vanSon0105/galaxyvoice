@@ -14,18 +14,25 @@ sys.path.insert(0, str(ROOT))
 from app.compute import AUTO_DEVICE, CPU_DEVICE, CUDA_DEVICE  # noqa: E402
 from app.processes import managed_media_processes  # noqa: E402
 from app.propainter import (  # noqa: E402
+    FAST_AI_PROFILE,
+    QUALITY_AI_PROFILE,
     ProPainterRuntime,
+    ProPainterSession,
     build_chunk_extract_command,
     build_chunk_trim_command,
-    build_mask_image_command,
-    build_propainter_input_command,
+    build_inpainting_input_command,
+    build_inpainting_merge_command,
     build_propainter_command,
-    build_remux_audio_command,
+    plan_inpainting_crop,
     plan_video_chunks,
     propainter_cuda_available,
+    propainter_cuda_memory_gb,
     propainter_environment,
+    recommended_chunk_seconds,
+    recommended_processing_size,
     resolve_propainter_device,
     resolve_propainter_runtime,
+    run_propainter,
 )
 
 
@@ -46,7 +53,7 @@ class ProPainterTests(unittest.TestCase):
             self.assertEqual(runtime.python_executable, python)
             self.assertEqual(runtime.inference_script, script)
 
-    def test_cuda_command_uses_memory_saving_settings_and_fp16(self) -> None:
+    def test_cuda_command_adapts_quality_settings_to_12gb_and_uses_fp16(self) -> None:
         runtime = ProPainterRuntime(
             repo_dir=Path("ProPainter"),
             python_executable=Path("python.exe"),
@@ -59,12 +66,92 @@ class ProPainterTests(unittest.TestCase):
             Path("mask.png"),
             Path("work"),
             CUDA_DEVICE,
+            gpu_memory_gb=12.0,
+            profile=QUALITY_AI_PROFILE,
         )
 
         self.assertIn("--fp16", command)
-        self.assertEqual(command[command.index("--subvideo_length") + 1], "50")
+        self.assertEqual(command[command.index("--subvideo_length") + 1], "24")
         self.assertEqual(command[command.index("--neighbor_length") + 1], "8")
         self.assertEqual(command[command.index("--ref_stride") + 1], "12")
+
+    def test_fast_ai_uses_lighter_temporal_settings_on_12gb_cuda(self) -> None:
+        runtime = ProPainterRuntime(
+            repo_dir=Path("ProPainter"),
+            python_executable=Path("python.exe"),
+            inference_script=Path("ProPainter/inference_propainter.py"),
+        )
+
+        command = build_propainter_command(
+            runtime,
+            Path("source.mp4"),
+            Path("mask.png"),
+            Path("work"),
+            CUDA_DEVICE,
+            gpu_memory_gb=12.0,
+            profile=FAST_AI_PROFILE,
+        )
+
+        self.assertIn("--fp16", command)
+        self.assertEqual(command[command.index("--subvideo_length") + 1], "40")
+        self.assertEqual(command[command.index("--neighbor_length") + 1], "6")
+        self.assertEqual(command[command.index("--ref_stride") + 1], "15")
+
+    def test_6gb_cuda_uses_smaller_quality_batches_and_context(self) -> None:
+        runtime = ProPainterRuntime(Path("repo"), Path("python"), Path("inference.py"))
+
+        command = build_propainter_command(
+            runtime,
+            Path("source.mp4"),
+            Path("mask.png"),
+            Path("work"),
+            CUDA_DEVICE,
+            gpu_memory_gb=6.0,
+            profile=QUALITY_AI_PROFILE,
+        )
+
+        self.assertEqual(command[command.index("--subvideo_length") + 1], "16")
+        self.assertEqual(command[command.index("--neighbor_length") + 1], "6")
+        self.assertEqual(command[command.index("--ref_stride") + 1], "8")
+        self.assertIn("--fp16", command)
+
+    def test_6gb_cuda_uses_conservative_fast_ai_batches(self) -> None:
+        runtime = ProPainterRuntime(Path("repo"), Path("python"), Path("inference.py"))
+
+        command = build_propainter_command(
+            runtime,
+            Path("source.mp4"),
+            Path("mask.png"),
+            Path("work"),
+            CUDA_DEVICE,
+            gpu_memory_gb=6.0,
+            profile=FAST_AI_PROFILE,
+        )
+
+        self.assertEqual(command[command.index("--subvideo_length") + 1], "24")
+        self.assertEqual(command[command.index("--ref_stride") + 1], "12")
+
+    def test_6gb_cuda_reduces_outer_chunks_and_processing_resolution(self) -> None:
+        runtime = ProPainterRuntime(Path("repo"), Path("python"), Path("inference.py"))
+        fast_session = ProPainterSession(
+            runtime, CUDA_DEVICE, CUDA_DEVICE, 6.0, FAST_AI_PROFILE
+        )
+        quality_session = ProPainterSession(
+            runtime, CUDA_DEVICE, CUDA_DEVICE, 6.0, QUALITY_AI_PROFILE
+        )
+
+        self.assertEqual(recommended_chunk_seconds(fast_session), 15.0)
+        self.assertEqual(recommended_chunk_seconds(quality_session), 12.0)
+        self.assertEqual(recommended_processing_size(fast_session), (480, 240))
+        self.assertEqual(recommended_processing_size(quality_session), (640, 360))
+        plan = plan_inpainting_crop(
+            video_size=(1920, 1080),
+            region=(5, 75, 90, 20),
+            profile=FAST_AI_PROFILE,
+            maximum_processing_size=recommended_processing_size(fast_session),
+        )
+        self.assertLessEqual(plan.processing_width, 480)
+        self.assertLessEqual(plan.processing_height, 240)
 
     def test_cpu_command_does_not_request_fp16(self) -> None:
         runtime = ProPainterRuntime(Path("repo"), Path("python"), Path("inference.py"))
@@ -111,13 +198,136 @@ class ProPainterTests(unittest.TestCase):
         self.assertTrue(available)
         self.assertIn("torch.backends.cudnn.is_available()", run.call_args.args[0][2])
 
-    def test_normalized_input_forces_constant_frame_rate(self) -> None:
-        command = build_propainter_input_command(
+    def test_cuda_memory_probe_uses_currently_free_memory(self) -> None:
+        runtime = ProPainterRuntime(Path("repo"), Path("python"), Path("inference.py"))
+        completed = subprocess.CompletedProcess([], 0, "5.5\n", "")
+        with patch("app.propainter.subprocess.run", return_value=completed) as run:
+            memory = propainter_cuda_memory_gb(runtime)
+
+        self.assertEqual(memory, 5.5)
+        self.assertIn("torch.cuda.mem_get_info()", run.call_args.args[0][2])
+
+    def test_cuda_oom_retries_once_with_the_lowest_memory_profile(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            video = root / "source.mp4"
+            mask = root / "mask.png"
+            output_root = root / "output"
+            video.write_bytes(b"video")
+            mask.write_bytes(b"mask")
+            runtime = ProPainterRuntime(root, Path("python"), Path("inference.py"))
+            session = ProPainterSession(runtime, CUDA_DEVICE, CUDA_DEVICE, 6.0, QUALITY_AI_PROFILE)
+
+            class FakeProcess:
+                def __init__(self, return_code: int, lines: list[str], create_result: bool = False):
+                    self.return_code = return_code
+                    self.stdout = lines
+                    self.create_result = create_result
+
+                def wait(self):
+                    if self.create_result:
+                        result = output_root / video.stem / "inpaint_out.mp4"
+                        result.parent.mkdir(parents=True, exist_ok=True)
+                        result.write_bytes(b"result")
+                    return self.return_code
+
+            processes = [
+                FakeProcess(1, ["torch.OutOfMemoryError: CUDA out of memory\n"]),
+                FakeProcess(0, [], create_result=True),
+            ]
+            with (
+                patch("app.propainter.subprocess.Popen", side_effect=processes) as popen,
+                patch("app.propainter.managed_media_processes.ensure_running"),
+                patch("app.propainter.managed_media_processes.add"),
+                patch("app.propainter.managed_media_processes.discard"),
+            ):
+                result = run_propainter(
+                    video,
+                    mask,
+                    output_root,
+                    CUDA_DEVICE,
+                    lambda _message: None,
+                    session=session,
+                )
+
+            self.assertTrue(result.is_file())
+            self.assertEqual(popen.call_count, 2)
+            first_command = popen.call_args_list[0].args[0]
+            retry_command = popen.call_args_list[1].args[0]
+            self.assertEqual(first_command[first_command.index("--subvideo_length") + 1], "16")
+            self.assertEqual(retry_command[retry_command.index("--subvideo_length") + 1], "16")
+            self.assertEqual(retry_command[retry_command.index("--resize_ratio") + 1], "0.75")
+            self.assertEqual(session.gpu_memory_gb, 0.0)
+
+    def test_fast_ai_crops_and_downscales_only_the_subtitle_band(self) -> None:
+        plan = plan_inpainting_crop(
+            video_size=(1280, 720),
+            region=(5, 75, 90, 20),
+            profile=FAST_AI_PROFILE,
+        )
+
+        self.assertLessEqual(plan.processing_width, 640)
+        self.assertLessEqual(plan.processing_height, 320)
+        self.assertLess(plan.crop_height, 720)
+        self.assertGreater(plan.crop_y, 0)
+
+        command = build_inpainting_input_command(
             "ffmpeg",
             Path("source.mp4"),
-            Path("normalized.mp4"),
+            Path("processing.mp4"),
+            plan,
+        )
+        video_filter = command[command.index("-vf") + 1]
+        self.assertIn(
+            f"crop={plan.crop_width}:{plan.crop_height}:{plan.crop_x}:{plan.crop_y}",
+            video_filter,
+        )
+        self.assertIn(
+            f"scale={plan.processing_width}:{plan.processing_height}",
+            video_filter,
         )
         self.assertEqual(command[command.index("-fps_mode") + 1], "cfr")
+
+    def test_ai_merge_replaces_only_selected_region_in_original_video(self) -> None:
+        plan = plan_inpainting_crop(
+            video_size=(1280, 720),
+            region=(5, 75, 90, 20),
+            profile=QUALITY_AI_PROFILE,
+        )
+
+        command = build_inpainting_merge_command(
+            "ffmpeg",
+            Path("source.mp4"),
+            Path("inpainted_crop.mp4"),
+            Path("final.mp4"),
+            plan,
+            duration_seconds=12.5,
+        )
+
+        filter_graph = command[command.index("-filter_complex") + 1]
+        self.assertIn(
+            f"scale={plan.crop_width}:{plan.crop_height}",
+            filter_graph,
+        )
+        self.assertIn(
+            f"crop={plan.region_width}:{plan.region_height}:"
+            f"{plan.region_x - plan.crop_x}:{plan.region_y - plan.crop_y}",
+            filter_graph,
+        )
+        self.assertIn(f"overlay=x={plan.region_x}:y={plan.region_y}", filter_graph)
+        self.assertEqual(filter_graph.count("setpts=PTS-STARTPTS"), 2)
+        self.assertIn("alphamerge=shortest=1", filter_graph)
+        self.assertIn("boxblur=luma_radius=4", filter_graph)
+        self.assertIn("eof_action=repeat", filter_graph)
+        self.assertNotIn(
+            f"overlay=x={plan.region_x}:y={plan.region_y}:shortest=1",
+            filter_graph,
+        )
+        self.assertIn("0:a?", command)
+        self.assertEqual(
+            command[command.index("-af") + 1],
+            "aresample=async=1:first_pts=0",
+        )
 
     def test_long_videos_are_split_with_overlap_and_retained_once(self) -> None:
         chunks = plan_video_chunks(45.0, chunk_seconds=20.0, overlap_seconds=1.0)
@@ -164,32 +374,6 @@ class ProPainterTests(unittest.TestCase):
         finally:
             managed_media_processes.discard(process)
             managed_media_processes.reset()
-
-    def test_mask_command_draws_a_white_subtitle_region(self) -> None:
-        command = build_mask_image_command(
-            "ffmpeg",
-            Path("mask.png"),
-            video_size=(1920, 1080),
-            region=(5, 75, 90, 18),
-        )
-        video_filter = command[command.index("-vf") + 1]
-        self.assertIn("drawbox=x=96:y=810:w=1728:h=194", video_filter)
-        self.assertEqual(command[-1], "mask.png")
-
-    def test_remux_command_restores_original_audio(self) -> None:
-        command = build_remux_audio_command(
-            "ffmpeg",
-            Path("inpaint_out.mp4"),
-            Path("source.mp4"),
-            Path("final.mp4"),
-            120.5,
-        )
-        self.assertIn("1:a?", command)
-        self.assertIn("aac", command)
-        self.assertNotIn("-shortest", command)
-        self.assertEqual(command[command.index("-t") + 1], "120.500")
-        self.assertEqual(command[-1], "final.mp4")
-
 
 if __name__ == "__main__":
     unittest.main()

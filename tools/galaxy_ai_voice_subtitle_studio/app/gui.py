@@ -23,8 +23,10 @@ from .languages import code_from_label, label_from_code, language_labels
 from .media import MediaExtractionOptions, MediaExtractionResult, extract_audio_from_video
 from .processes import managed_media_processes
 from .subtitle_removal import (
+    AI_INPAINT_MODES,
     AI_INPAINT_MODE,
     BLUR_MODE,
+    FAST_AI_INPAINT_MODE,
     FILL_MODE,
     STRIP_MODE,
     SubtitleRemovalOptions,
@@ -69,6 +71,7 @@ REMOVAL_MODE_LABELS = {
     BLUR_MODE: "Làm mờ vùng phụ đề",
     FILL_MODE: "Xóa thông minh",
     AI_INPAINT_MODE: "AI ProPainter",
+    FAST_AI_INPAINT_MODE: "Fast AI (tối ưu)",
 }
 REMOVAL_MODE_CODES = {label: code for code, label in REMOVAL_MODE_LABELS.items()}
 PREVIEW_WIDTH = 480
@@ -795,7 +798,7 @@ class GalaxyStudioApp:
         self.removal_blur_scale.configure(state="normal" if mode == BLUR_MODE else "disabled")
         if hasattr(self, "propainter_install_button"):
             busy = bool(self.worker and self.worker.is_alive())
-            ai_ready = mode == AI_INPAINT_MODE and not busy
+            ai_ready = mode in AI_INPAINT_MODES and not busy
             self.removal_device_combo.configure(state="readonly" if ai_ready else "disabled")
             install_state = "normal" if ai_ready else "disabled"
             self.propainter_install_button.configure(state=install_state)
@@ -1275,7 +1278,7 @@ class GalaxyStudioApp:
             messagebox.showwarning("Missing video", "Choose a video before processing.")
             return
         mode = self._removal_mode_code()
-        if mode == AI_INPAINT_MODE:
+        if mode in AI_INPAINT_MODES:
             if not self._confirm_propainter_license():
                 return
             try:

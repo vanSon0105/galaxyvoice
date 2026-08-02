@@ -88,6 +88,18 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.voice_processing_device, "auto")
         self.assertEqual(config.removal_processing_device, "auto")
 
+    def test_fast_ai_removal_mode_is_restored(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "config.json"
+            path.write_text(
+                json.dumps({"subtitle_removal_mode": "fast_ai_inpaint"}),
+                encoding="utf-8",
+            )
+
+            config = load_app_config(path)
+
+        self.assertEqual(config.subtitle_removal_mode, "fast_ai_inpaint")
+
     def test_broken_json_returns_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "config.json"

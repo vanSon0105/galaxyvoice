@@ -13,14 +13,17 @@ from .ffmpeg import ffmpeg_missing_message, find_ffmpeg, find_ffprobe
 from .paths import unique_project_dir
 from .processes import managed_media_processes
 from .propainter import (
+    FAST_CHUNK_SECONDS,
+    FAST_AI_PROFILE,
+    QUALITY_AI_PROFILE,
     build_chunk_extract_command,
     build_chunk_trim_command,
     build_concat_command,
-    build_mask_image_command,
-    build_propainter_input_command,
-    build_remux_audio_command,
+    build_inpainting_input_command,
+    build_inpainting_mask_command,
+    build_inpainting_merge_command,
+    plan_inpainting_crop,
     plan_video_chunks,
-    run_propainter,
     write_concat_file,
 )
 
@@ -28,7 +31,9 @@ STRIP_MODE = "strip"
 BLUR_MODE = "blur"
 FILL_MODE = "fill"
 AI_INPAINT_MODE = "ai_inpaint"
-SUBTITLE_REMOVAL_MODES = (STRIP_MODE, BLUR_MODE, FILL_MODE, AI_INPAINT_MODE)
+FAST_AI_INPAINT_MODE = "fast_ai_inpaint"
+AI_INPAINT_MODES = (AI_INPAINT_MODE, FAST_AI_INPAINT_MODE)
+SUBTITLE_REMOVAL_MODES = (STRIP_MODE, BLUR_MODE, FILL_MODE, *AI_INPAINT_MODES)
 
 ProgressCallback = Callable[[str], None]
 Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
@@ -87,8 +92,33 @@ def remove_subtitles_from_video(
         _validate_region(options.region)
     if not 1 <= options.blur_strength <= 100:
         raise ValueError("Blur strength must be between 1 and 100.")
-    if options.mode == AI_INPAINT_MODE and ai_inpainter is None:
-        propainter.resolve_propainter_runtime()
+    prepared_ai_inpainter = ai_inpainter
+    prepared_ai_chunk_seconds: float | None = None
+    prepared_ai_processing_size: tuple[int, int] | None = None
+    if options.mode in AI_INPAINT_MODES and prepared_ai_inpainter is None:
+        profile = _ai_profile_for_mode(options.mode)
+        session = propainter.prepare_propainter_session(
+            options.processing_device,
+            profile=profile,
+        )
+        prepared_ai_chunk_seconds = propainter.recommended_chunk_seconds(session)
+        prepared_ai_processing_size = propainter.recommended_processing_size(session)
+
+        def prepared_ai_inpainter(
+            video_path: Path,
+            mask_path: Path,
+            output_root: Path,
+            processing_device: str,
+            callback: ProgressCallback,
+        ) -> Path:
+            return propainter.run_propainter(
+                video_path,
+                mask_path,
+                output_root,
+                processing_device,
+                callback,
+                session=session,
+            )
 
     ffmpeg = ffmpeg_path or find_ffmpeg()
     if not ffmpeg:
@@ -135,7 +165,9 @@ def remove_subtitles_from_video(
         command = None
 
     try:
-        if options.mode == AI_INPAINT_MODE:
+        if options.mode in AI_INPAINT_MODES:
+            if prepared_ai_inpainter is None:
+                raise RuntimeError("AI inpainter was not prepared.")
             _run_ai_inpainting(
                 ffmpeg,
                 source_path,
@@ -146,7 +178,9 @@ def remove_subtitles_from_video(
                 run,
                 ffprobe_path,
                 probe_runner,
-                ai_inpainter or run_propainter,
+                prepared_ai_inpainter,
+                prepared_ai_chunk_seconds,
+                prepared_ai_processing_size,
             )
         else:
             _run_ffmpeg(command, run)
@@ -159,10 +193,14 @@ def remove_subtitles_from_video(
         warnings.append(
             "Smart fill estimates pixels from the edge of the selected area and may leave artifacts on moving backgrounds."
         )
-    elif options.mode == AI_INPAINT_MODE:
+    elif options.mode in AI_INPAINT_MODES:
         warnings.append(
             "ProPainter code and models are licensed for non-commercial use only under the NTU S-Lab License 1.0."
         )
+        if options.mode == FAST_AI_INPAINT_MODE:
+            warnings.append(
+                "Fast AI processes a smaller subtitle band and merges only the cleaned region into the original video."
+            )
         if options.processing_device == "cpu":
             warnings.append("ProPainter on CPU is supported but can be extremely slow for long videos.")
 
@@ -180,6 +218,11 @@ def remove_subtitles_from_video(
         },
         "blur_strength": options.blur_strength,
         "processing_device": options.processing_device,
+        "ai_profile": (
+            _ai_profile_for_mode(options.mode)
+            if options.mode in AI_INPAINT_MODES
+            else None
+        ),
         "files": {"video": output_path.name},
         "warnings": warnings,
     }
@@ -206,6 +249,8 @@ def _run_ai_inpainting(
     ffprobe_path: str | None,
     probe_runner: Runner | None,
     ai_inpainter: AIInpainter,
+    chunk_seconds: float | None,
+    maximum_processing_size: tuple[int, int] | None,
 ) -> None:
     video_size = probe_video_size(
         source_path,
@@ -220,13 +265,25 @@ def _run_ai_inpainting(
     mask_path = project_dir / "_propainter_mask.png"
     staging_dir = project_dir / "_propainter"
     staging_dir.mkdir(parents=True, exist_ok=True)
+    profile = _ai_profile_for_mode(options.mode)
+    crop_plan = plan_inpainting_crop(
+        video_size=video_size,
+        region=options.region,
+        profile=profile,
+        maximum_processing_size=maximum_processing_size,
+    )
+    report(
+        "AI processing area: "
+        f"{crop_plan.crop_width}x{crop_plan.crop_height} -> "
+        f"{crop_plan.processing_width}x{crop_plan.processing_height} "
+        f"({profile})."
+    )
     report("Creating the AI inpainting mask...")
     _run_ffmpeg(
-        build_mask_image_command(
+        build_inpainting_mask_command(
             ffmpeg,
             mask_path,
-            video_size=video_size,
-            region=options.region,
+            crop_plan,
         ),
         runner,
     )
@@ -234,11 +291,21 @@ def _run_ai_inpainting(
     propainter_input = staging_dir / "propainter_input.mp4"
     report("Preparing an MP4 input for ProPainter...")
     _run_ffmpeg(
-        build_propainter_input_command(ffmpeg, source_path, propainter_input),
+        build_inpainting_input_command(
+            ffmpeg,
+            source_path,
+            propainter_input,
+            crop_plan,
+        ),
         runner,
     )
 
-    chunks = plan_video_chunks(video_duration)
+    resolved_chunk_seconds = chunk_seconds or (
+        FAST_CHUNK_SECONDS
+        if profile == FAST_AI_PROFILE
+        else propainter.DEFAULT_CHUNK_SECONDS
+    )
+    chunks = plan_video_chunks(video_duration, chunk_seconds=resolved_chunk_seconds)
     if len(chunks) == 1:
         report("Running AI video inpainting...")
         inpainted_video = ai_inpainter(
@@ -287,14 +354,15 @@ def _run_ai_inpainting(
     if not inpainted_video.is_file() or inpainted_video.stat().st_size == 0:
         raise RuntimeError(f"ProPainter did not create a video file: {inpainted_video}")
 
-    report("Restoring the original audio...")
+    report("Merging the cleaned subtitle area into the original video...")
     _run_ffmpeg(
-        build_remux_audio_command(
+        build_inpainting_merge_command(
             ffmpeg,
-            inpainted_video,
             source_path,
+            inpainted_video,
             output_path,
-            video_duration,
+            crop_plan,
+            duration_seconds=video_duration,
         ),
         runner,
     )
@@ -586,6 +654,14 @@ def _validate_region(region: Region) -> None:
     x, y, width, height = region
     if x < 0 or y < 0 or width < 1 or height < 1 or x + width > 100 or y + height > 100:
         raise ValueError("The selected subtitle area must fit inside the video.")
+
+
+def _ai_profile_for_mode(mode: str) -> str:
+    if mode == FAST_AI_INPAINT_MODE:
+        return FAST_AI_PROFILE
+    if mode == AI_INPAINT_MODE:
+        return QUALITY_AI_PROFILE
+    raise ValueError(f"Subtitle removal mode is not an AI mode: {mode}")
 
 
 def _ratio(percent: int) -> str:

@@ -143,22 +143,25 @@ Bấm `Generate` sau đó sẽ tạo voice từ nội dung trong tab `Script`. N
 
 ## Xóa phụ đề khỏi video
 
-GUI có hai tab chính: `Voice` giữ nguyên toàn bộ workflow tạo voice/subtitle, còn `Xóa phụ đề` xử lý video đã có phụ đề. Preview có nút `Phát` / `Tạm dừng` và timeline để xem hoặc tua đến đúng đoạn có chữ; kéo khung vàng quanh vùng subtitle rồi chọn một trong bốn chế độ:
+GUI có hai tab chính: `Voice` giữ nguyên toàn bộ workflow tạo voice/subtitle, còn `Xóa phụ đề` xử lý video đã có phụ đề. Preview có nút `Phát` / `Tạm dừng` và timeline để xem hoặc tua đến đúng đoạn có chữ; kéo khung vàng quanh vùng subtitle rồi chọn một trong năm chế độ:
 
 - `Bỏ track phụ đề`: loại bỏ subtitle stream rời và copy các stream còn lại, không encode lại.
 - `Làm mờ vùng phụ đề`: làm mờ vùng đã chọn, phù hợp với nền chuyển động và cho kết quả ổn định.
 - `Xóa thông minh`: dùng `ffprobe` để đọc kích thước video và bộ lọc `delogo` của FFmpeg để nội suy vùng đã chọn từ các pixel xung quanh. Nền đơn giản thường đẹp hơn làm mờ, nhưng có thể để lại vệt trên mặt người hoặc cảnh chuyển động mạnh.
-- `AI ProPainter`: tạo mask từ vùng subtitle, dùng liên kết theo thời gian giữa nhiều frame để dựng lại nền, sau đó ghép audio gốc vào video AI. Chế độ này đẹp hơn trên nền chuyển động nhưng chậm và tốn VRAM.
+- `AI ProPainter`: xử lý vùng subtitle cùng một dải ngữ cảnh ở chất lượng cao, dùng liên kết theo thời gian giữa nhiều frame để dựng lại nền, rồi chỉ ghép vùng đã làm sạch vào video gốc.
+- `Fast AI (tối ưu)`: thu hẹp dải ngữ cảnh và giới hạn input AI ở `640x320`; nhanh hơn, tốn ít VRAM hơn và vẫn giữ nguyên độ phân giải của video ngoài vùng subtitle.
 
-Ba chế độ xử lý phụ đề dính vào hình xuất video MP4 H.264 và giữ audio. Mỗi lần xử lý tạo thư mục project riêng, video có hậu tố `_no_subtitles` và file `subtitle_removal_manifest.json` ghi lại chế độ, vùng chọn và thiết bị. Chế độ, vùng chọn, độ mờ và hai lựa chọn thiết bị được lưu vào `config.json`; video đang chọn và API key vẫn không được lưu.
+Bốn chế độ xử lý phụ đề dính vào hình xuất video MP4 H.264 và giữ audio. Mỗi lần xử lý tạo thư mục project riêng, video có hậu tố `_no_subtitles` và file `subtitle_removal_manifest.json` ghi lại chế độ, vùng chọn và thiết bị. Chế độ, vùng chọn, độ mờ và hai lựa chọn thiết bị được lưu vào `config.json`; video đang chọn và API key vẫn không được lưu.
 
-ProPainter là engine tùy chọn. Chọn `AI ProPainter`, chọn `Tự động`, `CPU (không dùng GPU)` hoặc `NVIDIA GPU rời`, rồi bấm `Cài ProPainter`. Lựa chọn thiết bị trong tab xóa phụ đề chỉ áp dụng cho chế độ AI; ba chế độ FFmpeg còn lại không dùng GPU. Intel/AMD iGPU không chạy được CUDA của ProPainter chính thức nên phải chọn CPU. Bộ cài tạo môi trường Python riêng tại `%LOCALAPPDATA%\GalaxyAIStudio\models\ProPainter`; weights chính thức tự tải ở lần chạy AI đầu tiên. Có thể chạy bộ cài thủ công:
+ProPainter là engine tùy chọn. Chọn `AI ProPainter` hoặc `Fast AI (tối ưu)`, chọn `Tự động`, `CPU (không dùng GPU)` hoặc `NVIDIA GPU rời`, rồi bấm `Cài ProPainter`. Lựa chọn thiết bị trong tab xóa phụ đề chỉ áp dụng cho hai chế độ AI; ba chế độ FFmpeg còn lại không dùng GPU. Intel/AMD iGPU không chạy được CUDA của ProPainter chính thức nên phải chọn CPU. Bộ cài tạo môi trường Python riêng tại `%LOCALAPPDATA%\GalaxyAIStudio\models\ProPainter`; weights chính thức tự tải ở lần chạy AI đầu tiên. Có thể chạy bộ cài thủ công:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install_propainter.ps1 -AcceptNonCommercialLicense -Device auto
 ```
 
-App chuẩn hóa video về CFR để hạn chế lệch audio, chia video dài thành các đoạn 20 giây có overlap rồi ghép lại sau khi inpaint. Cách này giữ RAM trong giới hạn thay vì nạp toàn bộ video dài vào một lần, nhưng mỗi đoạn phải khởi động lượt ProPainter riêng nên sẽ chậm hơn. Khi đóng app, tiến trình ProPainter đang chạy cũng được dừng.
+App crop dải subtitle có thêm ngữ cảnh, chuẩn hóa dải này về CFR và giới hạn input chất lượng cao tối đa ở `960x540`. Video dài được chia thành các đoạn có overlap; Fast AI dùng 30 giây khi còn khoảng 12 GB VRAM, 20 giây ở mức 8 GB và 15 giây ở mức 6 GB. Sau khi inpaint, FFmpeg phóng dải kết quả về đúng kích thước, feather nhẹ đường biên và chỉ ghép hình chữ nhật subtitle vào video gốc. Session AI dùng lại kết quả dò CUDA/VRAM giữa các đoạn để tránh lặp bước khởi tạo phần cứng. Vì vậy độ phân giải và nội dung ngoài vùng được chọn không bị thay bằng bản AI đã thu nhỏ. Khi đóng app, tiến trình ProPainter đang chạy cũng được dừng.
+
+Khi chạy CUDA, app tự đọc VRAM còn trống của card, chừa thêm 512 MB dự phòng, luôn bật FP16 và chọn `subvideo_length` phù hợp. Card khoảng 12 GB dùng mức thận trọng hơn cho AI chất lượng và có thể dùng batch dài hơn ở Fast AI nhờ input nhỏ; card 6-8 GB tự giảm batch, số frame ngữ cảnh, kích thước xử lý và độ dài outer chunk. Nếu CUDA vẫn báo hết bộ nhớ, chunk hiện tại được thử lại một lần bằng profile nhỏ nhất và input thu tiếp xuống 75%; các chunk sau tiếp tục dùng mức thấp. Nếu runtime CUDA chưa được cài đúng, `Tự động` fallback CPU còn lựa chọn `NVIDIA GPU rời` sẽ báo lỗi rõ ràng.
 
 ProPainter chính thức yêu cầu PyTorch và khuyến nghị CUDA; cấu hình tiết kiệm bộ nhớ vẫn cần khoảng 6-7 GB VRAM cho video 640x480 và khoảng 7-8 GB cho 720x480 ở FP16. CPU chạy được nhưng có thể rất chậm với video dài. Quan trọng: code và model ProPainter chỉ được cấp phép cho **mục đích phi thương mại** theo [NTU S-Lab License 1.0](https://github.com/sczhou/ProPainter/blob/main/LICENSE); không dùng chế độ này cho nội dung thương mại nếu chưa có giấy phép riêng từ tác giả. Xem [hướng dẫn và mức VRAM chính thức](https://github.com/sczhou/ProPainter#memory-efficient-inference).
 

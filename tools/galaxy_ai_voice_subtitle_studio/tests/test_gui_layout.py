@@ -16,7 +16,12 @@ from app.gui import GalaxyStudioApp  # noqa: E402
 from app.config import AppConfig, load_app_config, save_app_config  # noqa: E402
 from app.engine import GenerationOptions, GenerationResult  # noqa: E402
 from app.srt import SubtitleCue  # noqa: E402
-from app.subtitle_removal import AI_INPAINT_MODE, BLUR_MODE, SubtitleRemovalResult  # noqa: E402
+from app.subtitle_removal import (  # noqa: E402
+    AI_INPAINT_MODE,
+    BLUR_MODE,
+    FAST_AI_INPAINT_MODE,
+    SubtitleRemovalResult,
+)
 from app.transcription import VideoSubtitleDraft, VideoSubtitleResult  # noqa: E402
 from app.translator import AITranslationOptions  # noqa: E402
 from app.tts import EDGE_ENGINE_LABEL, EdgeTTS, Voice  # noqa: E402
@@ -192,9 +197,13 @@ class GuiLayoutTests(unittest.TestCase):
             self.assertEqual(app.removal_preview_canvas.cget("width"), "480")
             self.assertEqual(app._removal_mode_code(), BLUR_MODE)
             self.assertIn("AI ProPainter", app.removal_mode_combo.cget("values"))
+            self.assertIn("Fast AI (tối ưu)", app.removal_mode_combo.cget("values"))
             self.assertEqual(str(app.voice_device_combo.cget("state")), "readonly")
             self.assertEqual(str(app.removal_device_combo.cget("state")), "disabled")
             app.removal_mode.set("AI ProPainter")
+            app._on_removal_mode_changed()
+            self.assertEqual(str(app.removal_device_combo.cget("state")), "readonly")
+            app.removal_mode.set("Fast AI (tối ưu)")
             app._on_removal_mode_changed()
             self.assertEqual(str(app.removal_device_combo.cget("state")), "readonly")
         finally:
@@ -406,6 +415,31 @@ class GuiLayoutTests(unittest.TestCase):
             self.assertEqual(options.blur_strength, 22)
             self.assertEqual(options.processing_device, "cpu")
             thread.return_value.start.assert_called_once()
+        finally:
+            root.destroy()
+
+    def test_start_fast_ai_builds_fast_mode_for_the_worker(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.removal_video_path.set("clip.mp4")
+            app.removal_mode.set("Fast AI (tối ưu)")
+            app.propainter_license_accepted.set(True)
+
+            with (
+                patch("app.propainter.resolve_propainter_runtime"),
+                patch("app.gui.threading.Thread") as thread,
+                patch.object(app.removal_progress, "start"),
+            ):
+                app.start_remove_subtitles()
+
+            options = thread.call_args.kwargs["args"][0]
+            self.assertEqual(options.mode, FAST_AI_INPAINT_MODE)
+            thread.return_value.start.assert_called_once_with()
         finally:
             root.destroy()
 

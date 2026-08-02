@@ -19,6 +19,7 @@ DEFAULT_OVERLAP_SECONDS = 1.0
 QUALITY_AI_PROFILE = "quality"
 FAST_AI_PROFILE = "fast"
 AI_PROFILES = (QUALITY_AI_PROFILE, FAST_AI_PROFILE)
+MIN_RAFT_PROCESSING_DIMENSION = 128
 
 
 @dataclass(frozen=True)
@@ -837,13 +838,40 @@ def _fit_processing_size(
 ) -> tuple[int, int]:
     source_width, source_height = source_size
     maximum_width, maximum_height = maximum_size
+    maximum_width = max(
+        MIN_RAFT_PROCESSING_DIMENSION,
+        maximum_width // 8 * 8,
+    )
+    maximum_height = max(
+        MIN_RAFT_PROCESSING_DIMENSION,
+        maximum_height // 8 * 8,
+    )
     scale = min(
         1.0,
         maximum_width / source_width,
         maximum_height / source_height,
     )
-    width = max(8, int(source_width * scale) // 8 * 8)
-    height = max(8, int(source_height * scale) // 8 * 8)
+    scaled_width = source_width * scale
+    scaled_height = source_height * scale
+
+    shortest_dimension = min(scaled_width, scaled_height)
+    if shortest_dimension < MIN_RAFT_PROCESSING_DIMENSION:
+        upscale = min(
+            maximum_width / scaled_width,
+            maximum_height / scaled_height,
+            MIN_RAFT_PROCESSING_DIMENSION / shortest_dimension,
+        )
+        scaled_width *= upscale
+        scaled_height *= upscale
+
+    width = max(
+        MIN_RAFT_PROCESSING_DIMENSION,
+        min(maximum_width, int(scaled_width) // 8 * 8),
+    )
+    height = max(
+        MIN_RAFT_PROCESSING_DIMENSION,
+        min(maximum_height, int(scaled_height) // 8 * 8),
+    )
     return width, height
 
 

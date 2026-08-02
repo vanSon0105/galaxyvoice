@@ -288,6 +288,18 @@ class ProPainterTests(unittest.TestCase):
         )
         self.assertEqual(command[command.index("-fps_mode") + 1], "cfr")
 
+    def test_fast_ai_keeps_raft_pyramid_large_enough_for_thin_region(self) -> None:
+        plan = plan_inpainting_crop(
+            video_size=(1280, 720),
+            region=(5, 80, 90, 9),
+            profile=FAST_AI_PROFILE,
+        )
+
+        self.assertEqual(
+            (plan.processing_width, plan.processing_height),
+            (640, 128),
+        )
+
     def test_ai_merge_replaces_only_selected_region_in_original_video(self) -> None:
         plan = plan_inpainting_crop(
             video_size=(1280, 720),

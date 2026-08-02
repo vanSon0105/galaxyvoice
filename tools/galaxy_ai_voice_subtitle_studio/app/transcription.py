@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 from .cache import default_cache_dir, file_digest, read_json, stable_digest, write_json_atomic
+from .compute import AUTO_DEVICE, normalize_processing_device, resolve_whisper_runtime
 from .ffmpeg import ffmpeg_missing_message, find_ffmpeg
 from .media import Runner, _run_command, _run_ffmpeg, build_extract_wav_command
 from .paths import unique_project_dir
@@ -43,6 +44,7 @@ class VideoSubtitleOptions:
     source_language: str = "auto"
     target_language: str = "vi"
     whisper_model: str = "base"
+    processing_device: str = AUTO_DEVICE
     ai_provider: str = ""
     ai_model: str = ""
     ai_base_url: str = ""
@@ -200,7 +202,16 @@ def prepare_subtitles_from_video(
         else:
             report("Transcribing speech...")
             whisper_language = None if source_language == "auto" else source_language
-            cues = transcribe(audio_path, whisper_language, options.whisper_model, report)
+            if transcriber is None:
+                cues = transcribe_with_faster_whisper(
+                    audio_path,
+                    whisper_language,
+                    options.whisper_model,
+                    report,
+                    processing_device=options.processing_device,
+                )
+            else:
+                cues = transcribe(audio_path, whisper_language, options.whisper_model, report)
             if cues and transcription_cache_path is not None:
                 try:
                     _save_transcription_cache(transcription_cache_path, cues)
@@ -428,6 +439,7 @@ def transcribe_with_faster_whisper(
     source_language: str | None,
     model_size: str,
     progress: ProgressCallback,
+    processing_device: str = AUTO_DEVICE,
 ) -> list[SubtitleCue]:
     try:
         from faster_whisper import WhisperModel
@@ -436,7 +448,8 @@ def transcribe_with_faster_whisper(
             "faster-whisper is not installed. Run: pip install -r requirements-transcription.txt"
         ) from error
 
-    device, compute_type = _preferred_whisper_runtime()
+    selected_device = normalize_processing_device(processing_device)
+    device, compute_type = _preferred_whisper_runtime(selected_device)
     try:
         return _transcribe_with_runtime(
             WhisperModel,
@@ -448,7 +461,7 @@ def transcribe_with_faster_whisper(
             progress,
         )
     except Exception as error:
-        if device != "cuda":
+        if device != "cuda" or selected_device != AUTO_DEVICE:
             raise
         progress(f"CUDA transcription failed: {error}. Falling back to CPU...")
         return _transcribe_with_runtime(
@@ -499,15 +512,8 @@ def _transcribe_with_runtime(
     return cues
 
 
-def _preferred_whisper_runtime() -> tuple[str, str]:
-    try:
-        import ctranslate2
-
-        if ctranslate2.get_cuda_device_count() > 0:
-            return "cuda", "float16"
-    except (ImportError, OSError, RuntimeError):
-        pass
-    return "cpu", "int8"
+def _preferred_whisper_runtime(processing_device: str = AUTO_DEVICE) -> tuple[str, str]:
+    return resolve_whisper_runtime(processing_device)
 
 
 def _normalize_language(value: str, auto_value: str) -> str:

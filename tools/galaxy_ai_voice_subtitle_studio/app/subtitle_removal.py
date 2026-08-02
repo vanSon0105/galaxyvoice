@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -9,15 +10,29 @@ from typing import Callable
 
 from .ffmpeg import ffmpeg_missing_message, find_ffmpeg, find_ffprobe
 from .paths import unique_project_dir
+from .processes import managed_media_processes
+from .propainter import (
+    build_chunk_extract_command,
+    build_chunk_trim_command,
+    build_concat_command,
+    build_mask_image_command,
+    build_propainter_input_command,
+    build_remux_audio_command,
+    plan_video_chunks,
+    run_propainter,
+    write_concat_file,
+)
 
 STRIP_MODE = "strip"
 BLUR_MODE = "blur"
 FILL_MODE = "fill"
-SUBTITLE_REMOVAL_MODES = (STRIP_MODE, BLUR_MODE, FILL_MODE)
+AI_INPAINT_MODE = "ai_inpaint"
+SUBTITLE_REMOVAL_MODES = (STRIP_MODE, BLUR_MODE, FILL_MODE, AI_INPAINT_MODE)
 
 ProgressCallback = Callable[[str], None]
 Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 Region = tuple[int, int, int, int]
+AIInpainter = Callable[[Path, Path, Path, str, ProgressCallback], Path]
 
 
 @dataclass(frozen=True)
@@ -31,6 +46,7 @@ class SubtitleRemovalOptions:
     region_width: int = 90
     region_height: int = 20
     blur_strength: int = 18
+    processing_device: str = "auto"
 
     @property
     def region(self) -> Region:
@@ -58,6 +74,7 @@ def remove_subtitles_from_video(
     ffprobe_path: str | None = None,
     runner: Runner | None = None,
     probe_runner: Runner | None = None,
+    ai_inpainter: AIInpainter | None = None,
 ) -> SubtitleRemovalResult:
     report = progress or (lambda _message: None)
     source_path = Path(options.video_path).expanduser()
@@ -97,7 +114,7 @@ def remove_subtitles_from_video(
             options.region,
             options.blur_strength,
         )
-    else:
+    elif options.mode == FILL_MODE:
         report("Filling the selected subtitle area...")
         video_size = probe_video_size(
             source_path,
@@ -111,9 +128,25 @@ def remove_subtitles_from_video(
             options.region,
             video_size,
         )
+    else:
+        command = None
 
     try:
-        _run_ffmpeg(command, run)
+        if options.mode == AI_INPAINT_MODE:
+            _run_ai_inpainting(
+                ffmpeg,
+                source_path,
+                output_path,
+                project_dir,
+                options,
+                report,
+                run,
+                ffprobe_path,
+                probe_runner,
+                ai_inpainter or run_propainter,
+            )
+        else:
+            _run_ffmpeg(command, run)
     except Exception:
         _cleanup_failed_project(project_dir, output_path, manifest_path)
         raise
@@ -123,6 +156,12 @@ def remove_subtitles_from_video(
         warnings.append(
             "Smart fill estimates pixels from the edge of the selected area and may leave artifacts on moving backgrounds."
         )
+    elif options.mode == AI_INPAINT_MODE:
+        warnings.append(
+            "ProPainter code and models are licensed for non-commercial use only under the NTU S-Lab License 1.0."
+        )
+        if options.processing_device == "cpu":
+            warnings.append("ProPainter on CPU is supported but can be extremely slow for long videos.")
 
     manifest = {
         "app": "Galaxy AI Voice & Subtitle Studio",
@@ -137,6 +176,7 @@ def remove_subtitles_from_video(
             "height": options.region_height,
         },
         "blur_strength": options.blur_strength,
+        "processing_device": options.processing_device,
         "files": {"video": output_path.name},
         "warnings": warnings,
     }
@@ -150,6 +190,116 @@ def remove_subtitles_from_video(
         mode=options.mode,
         warnings=warnings,
     )
+
+
+def _run_ai_inpainting(
+    ffmpeg: str,
+    source_path: Path,
+    output_path: Path,
+    project_dir: Path,
+    options: SubtitleRemovalOptions,
+    report: ProgressCallback,
+    runner: Runner,
+    ffprobe_path: str | None,
+    probe_runner: Runner | None,
+    ai_inpainter: AIInpainter,
+) -> None:
+    video_size = probe_video_size(
+        source_path,
+        ffprobe_path=ffprobe_path,
+        runner=probe_runner,
+    )
+    video_duration = probe_video_duration(
+        source_path,
+        ffprobe_path=ffprobe_path,
+        runner=probe_runner,
+    )
+    mask_path = project_dir / "_propainter_mask.png"
+    staging_dir = project_dir / "_propainter"
+    staging_dir.mkdir(parents=True, exist_ok=True)
+    report("Creating the AI inpainting mask...")
+    _run_ffmpeg(
+        build_mask_image_command(
+            ffmpeg,
+            mask_path,
+            video_size=video_size,
+            region=options.region,
+        ),
+        runner,
+    )
+
+    propainter_input = staging_dir / "propainter_input.mp4"
+    report("Preparing an MP4 input for ProPainter...")
+    _run_ffmpeg(
+        build_propainter_input_command(ffmpeg, source_path, propainter_input),
+        runner,
+    )
+
+    chunks = plan_video_chunks(video_duration)
+    if len(chunks) == 1:
+        report("Running AI video inpainting...")
+        inpainted_video = ai_inpainter(
+            propainter_input,
+            mask_path,
+            staging_dir,
+            options.processing_device,
+            report,
+        )
+    else:
+        report(f"Splitting the video into {len(chunks)} memory-safe AI chunks...")
+        trimmed_chunks: list[Path] = []
+        for index, chunk in enumerate(chunks, start=1):
+            report(f"Preparing AI chunk {index}/{len(chunks)}...")
+            chunk_input = staging_dir / f"chunk_{index:04}.mp4"
+            _run_ffmpeg(
+                build_chunk_extract_command(ffmpeg, propainter_input, chunk_input, chunk),
+                runner,
+            )
+            chunk_output_root = staging_dir / f"result_{index:04}"
+            report(f"Running AI video inpainting {index}/{len(chunks)}...")
+            chunk_result = ai_inpainter(
+                chunk_input,
+                mask_path,
+                chunk_output_root,
+                options.processing_device,
+                report,
+            )
+            if not chunk_result.is_file() or chunk_result.stat().st_size == 0:
+                raise RuntimeError(f"ProPainter did not create video chunk {index}: {chunk_result}")
+            trimmed_path = staging_dir / f"trimmed_{index:04}.mp4"
+            _run_ffmpeg(
+                build_chunk_trim_command(ffmpeg, chunk_result, trimmed_path, chunk),
+                runner,
+            )
+            trimmed_chunks.append(trimmed_path)
+            chunk_input.unlink(missing_ok=True)
+            shutil.rmtree(chunk_output_root, ignore_errors=True)
+
+        concat_path = staging_dir / "chunks.ffconcat"
+        write_concat_file(trimmed_chunks, concat_path)
+        inpainted_video = staging_dir / "inpainted_combined.mp4"
+        report("Joining the processed AI chunks...")
+        _run_ffmpeg(build_concat_command(ffmpeg, concat_path, inpainted_video), runner)
+
+    if not inpainted_video.is_file() or inpainted_video.stat().st_size == 0:
+        raise RuntimeError(f"ProPainter did not create a video file: {inpainted_video}")
+
+    report("Restoring the original audio...")
+    _run_ffmpeg(
+        build_remux_audio_command(
+            ffmpeg,
+            inpainted_video,
+            source_path,
+            output_path,
+            video_duration,
+        ),
+        runner,
+    )
+    try:
+        mask_path.unlink(missing_ok=True)
+        shutil.rmtree(staging_dir)
+    except OSError:
+        pass
 
 
 def create_video_preview(
@@ -486,10 +636,7 @@ def _cleanup_failed_project(project_dir: Path, output_path: Path, manifest_path:
             path.unlink(missing_ok=True)
         except OSError:
             pass
-    try:
-        project_dir.rmdir()
-    except OSError:
-        pass
+    shutil.rmtree(project_dir, ignore_errors=True)
 
 
 def _run_ffmpeg(command: list[str], runner: Runner) -> None:
@@ -504,4 +651,17 @@ def _run_ffmpeg(command: list[str], runner: Runner) -> None:
 
 
 def _run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, capture_output=True, text=True, check=False)
+    managed_media_processes.ensure_running()
+    process = subprocess.Popen(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    managed_media_processes.add(process)
+    try:
+        stdout, stderr = process.communicate()
+    finally:
+        managed_media_processes.discard(process)
+    return subprocess.CompletedProcess(command, process.returncode, stdout, stderr)

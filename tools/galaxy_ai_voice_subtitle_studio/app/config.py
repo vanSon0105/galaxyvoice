@@ -8,13 +8,14 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .compute import AUTO_DEVICE, normalize_processing_device
 from .subtitle_removal import BLUR_MODE, SUBTITLE_REMOVAL_MODES
 from .transcription import WHISPER_MODELS
 from .translator import translation_provider_codes
 from .tts import tts_engine_codes
 
 
-CONFIG_VERSION = 1
+CONFIG_VERSION = 2
 
 
 @dataclass(frozen=True)
@@ -34,6 +35,7 @@ class AppConfig:
     video_source_language: str = "auto"
     video_target_language: str = "vi"
     whisper_model: str = "base"
+    voice_processing_device: str = AUTO_DEVICE
     ai_provider: str = ""
     ai_model: str = ""
     ai_base_url: str = ""
@@ -43,6 +45,8 @@ class AppConfig:
     subtitle_region_width: int = 90
     subtitle_region_height: int = 20
     subtitle_blur_strength: int = 18
+    removal_processing_device: str = AUTO_DEVICE
+    propainter_license_accepted: bool = False
 
 
 def default_config_path() -> Path:
@@ -115,6 +119,9 @@ def load_app_config(path: Path | None = None) -> AppConfig:
             payload.get("video_target_language"), defaults.video_target_language
         ).lower(),
         whisper_model=whisper_model,
+        voice_processing_device=normalize_processing_device(
+            _string(payload.get("voice_processing_device"), defaults.voice_processing_device)
+        ),
         ai_provider=provider,
         ai_model=_string(payload.get("ai_model"), defaults.ai_model),
         ai_base_url=_string(payload.get("ai_base_url"), defaults.ai_base_url),
@@ -125,6 +132,12 @@ def load_app_config(path: Path | None = None) -> AppConfig:
         subtitle_region_height=subtitle_region_height,
         subtitle_blur_strength=_integer(
             payload.get("subtitle_blur_strength"), defaults.subtitle_blur_strength, 1, 100
+        ),
+        removal_processing_device=normalize_processing_device(
+            _string(payload.get("removal_processing_device"), defaults.removal_processing_device)
+        ),
+        propainter_license_accepted=_boolean(
+            payload.get("propainter_license_accepted"), defaults.propainter_license_accepted
         ),
     )
 

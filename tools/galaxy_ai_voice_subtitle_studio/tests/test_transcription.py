@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.cache import stable_digest  # noqa: E402
+from app.compute import CPU_DEVICE, CUDA_DEVICE  # noqa: E402
 from app.srt import SubtitleCue  # noqa: E402
 from app.transcription import (  # noqa: E402
     VideoSubtitleDraft,
@@ -45,6 +46,46 @@ def _draft_for_export(audio_path: Path) -> VideoSubtitleDraft:
 
 
 class TranscriptionTests(unittest.TestCase):
+    def test_faster_whisper_honors_explicit_cpu_selection(self) -> None:
+        model_calls: list[tuple[str, str, str]] = []
+
+        class FakeWhisperModel:
+            def __init__(self, model_size: str, device: str, compute_type: str) -> None:
+                model_calls.append((model_size, device, compute_type))
+
+            def transcribe(self, *_args, **_kwargs):
+                return iter(()), object()
+
+        modules = {
+            "ctranslate2": types.SimpleNamespace(get_cuda_device_count=lambda: 1),
+            "faster_whisper": types.SimpleNamespace(WhisperModel=FakeWhisperModel),
+        }
+        with patch.dict(sys.modules, modules):
+            transcribe_with_faster_whisper(
+                Path("speech.wav"),
+                None,
+                "base",
+                lambda _message: None,
+                processing_device=CPU_DEVICE,
+            )
+
+        self.assertEqual(model_calls, [("base", "cpu", "int8")])
+
+    def test_faster_whisper_rejects_explicit_cuda_when_unavailable(self) -> None:
+        modules = {
+            "ctranslate2": types.SimpleNamespace(get_cuda_device_count=lambda: 0),
+            "faster_whisper": types.SimpleNamespace(WhisperModel=object),
+        }
+        with patch.dict(sys.modules, modules):
+            with self.assertRaisesRegex(RuntimeError, "NVIDIA GPU"):
+                transcribe_with_faster_whisper(
+                    Path("speech.wav"),
+                    None,
+                    "base",
+                    lambda _message: None,
+                    processing_device=CUDA_DEVICE,
+                )
+
     def test_faster_whisper_uses_cuda_when_available(self) -> None:
         model_calls: list[tuple[str, str, str]] = []
 

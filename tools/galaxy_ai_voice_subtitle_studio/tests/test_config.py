@@ -30,6 +30,7 @@ class ConfigTests(unittest.TestCase):
             video_source_language="en",
             video_target_language="vi",
             whisper_model="small",
+            voice_processing_device="cpu",
             ai_provider="deepseek",
             ai_model="deepseek-v4-flash",
             ai_base_url="https://api.deepseek.com",
@@ -39,6 +40,8 @@ class ConfigTests(unittest.TestCase):
             subtitle_region_width=84,
             subtitle_region_height=22,
             subtitle_blur_strength=24,
+            removal_processing_device="cuda",
+            propainter_license_accepted=True,
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -61,6 +64,8 @@ class ConfigTests(unittest.TestCase):
             "subtitle_region_width": 0,
             "subtitle_region_height": 500,
             "subtitle_blur_strength": 999,
+            "voice_processing_device": "intel",
+            "removal_processing_device": "amd",
         }
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -80,6 +85,8 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.subtitle_region_width, 1)
         self.assertEqual(config.subtitle_region_height, 1)
         self.assertEqual(config.subtitle_blur_strength, 100)
+        self.assertEqual(config.voice_processing_device, "auto")
+        self.assertEqual(config.removal_processing_device, "auto")
 
     def test_broken_json_returns_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

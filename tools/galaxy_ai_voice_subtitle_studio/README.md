@@ -47,7 +47,7 @@ App tự đọc và lưu cấu hình người dùng tại:
 config.json
 ```
 
-File nằm cạnh `run.py` và được cập nhật sau khi thay đổi output folder, engine/voice, speed, volume, pause, tùy chọn export, ngôn ngữ, Whisper hoặc AI provider/model/base URL. `config.json` được Git bỏ qua để mỗi máy giữ cấu hình riêng.
+File nằm cạnh `run.py` và được cập nhật sau khi thay đổi output folder, engine/voice, speed, volume, pause, tùy chọn export, ngôn ngữ, Whisper, thiết bị xử lý hoặc AI provider/model/base URL. `config.json` được Git bỏ qua để mỗi máy giữ cấu hình riêng.
 
 API key, nội dung Script, project name và video đang chọn không được ghi vào file cấu hình. API key tiếp tục được đọc từ ô nhập hoặc biến môi trường.
 
@@ -137,19 +137,30 @@ App lưu cache transcription và checkpoint dịch tại `%LOCALAPPDATA%\GalaxyA
 
 DeepSeek dịch các batch nhỏ song song và luôn ghép kết quả theo index gốc. Thanh tiến độ hiển thị số cue đã dịch, ví dụ `Translating 240/768`. Batch nào trả sai ngôn ngữ mới được chia nhỏ và chạy fallback riêng, nên các batch đúng không bị làm lại.
 
-Whisper tự ưu tiên NVIDIA CUDA với `float16` khi CTranslate2 phát hiện GPU tương thích. Nếu CUDA không khởi tạo được, app ghi cảnh báo vào log rồi tự chạy lại bằng CPU `int8`.
+Mục `Thiết bị xử lý` trong tab Voice điều khiển riêng bước Whisper: `Tự động` ưu tiên NVIDIA CUDA `float16` rồi fallback CPU `int8`, `CPU (không dùng GPU)` luôn ép chạy CPU, còn `NVIDIA GPU rời` báo lỗi nếu máy không có CUDA thay vì âm thầm đổi thiết bị. Edge TTS và dịch cloud không dùng GPU cục bộ.
 
 Bấm `Generate` sau đó sẽ tạo voice từ nội dung trong tab `Script`. Nếu script được tạo từ video và bạn đổi `Translate to` trước khi generate, app sẽ dịch script sang ngôn ngữ mới rồi mới tạo voice. Nếu máy có voice Windows/SAPI trùng ngôn ngữ đã chọn, app sẽ tự chọn voice đó; nếu không, hãy cài hoặc chọn voice phù hợp thủ công.
 
 ## Xóa phụ đề khỏi video
 
-GUI có hai tab chính: `Voice` giữ nguyên toàn bộ workflow tạo voice/subtitle, còn `Xóa phụ đề` xử lý video đã có phụ đề. Preview có nút `Phát` / `Tạm dừng` và timeline để xem hoặc tua đến đúng đoạn có chữ; kéo khung vàng quanh vùng subtitle rồi chọn một trong ba chế độ:
+GUI có hai tab chính: `Voice` giữ nguyên toàn bộ workflow tạo voice/subtitle, còn `Xóa phụ đề` xử lý video đã có phụ đề. Preview có nút `Phát` / `Tạm dừng` và timeline để xem hoặc tua đến đúng đoạn có chữ; kéo khung vàng quanh vùng subtitle rồi chọn một trong bốn chế độ:
 
 - `Bỏ track phụ đề`: loại bỏ subtitle stream rời và copy các stream còn lại, không encode lại.
 - `Làm mờ vùng phụ đề`: làm mờ vùng đã chọn, phù hợp với nền chuyển động và cho kết quả ổn định.
 - `Xóa thông minh`: dùng `ffprobe` để đọc kích thước video và bộ lọc `delogo` của FFmpeg để nội suy vùng đã chọn từ các pixel xung quanh. Nền đơn giản thường đẹp hơn làm mờ, nhưng có thể để lại vệt trên mặt người hoặc cảnh chuyển động mạnh.
+- `AI ProPainter`: tạo mask từ vùng subtitle, dùng liên kết theo thời gian giữa nhiều frame để dựng lại nền, sau đó ghép audio gốc vào video AI. Chế độ này đẹp hơn trên nền chuyển động nhưng chậm và tốn VRAM.
 
-Hai chế độ xử lý phụ đề dính vào hình xuất video MP4 H.264 và giữ nguyên stream audio. Mỗi lần xử lý tạo thư mục project riêng, video có hậu tố `_no_subtitles` và file `subtitle_removal_manifest.json` ghi lại chế độ cùng vùng đã chọn. Chế độ, vùng chọn và độ mờ được lưu vào `config.json`; video đang chọn và API key vẫn không được lưu.
+Ba chế độ xử lý phụ đề dính vào hình xuất video MP4 H.264 và giữ audio. Mỗi lần xử lý tạo thư mục project riêng, video có hậu tố `_no_subtitles` và file `subtitle_removal_manifest.json` ghi lại chế độ, vùng chọn và thiết bị. Chế độ, vùng chọn, độ mờ và hai lựa chọn thiết bị được lưu vào `config.json`; video đang chọn và API key vẫn không được lưu.
+
+ProPainter là engine tùy chọn. Chọn `AI ProPainter`, chọn `Tự động`, `CPU (không dùng GPU)` hoặc `NVIDIA GPU rời`, rồi bấm `Cài ProPainter`. Lựa chọn thiết bị trong tab xóa phụ đề chỉ áp dụng cho chế độ AI; ba chế độ FFmpeg còn lại không dùng GPU. Intel/AMD iGPU không chạy được CUDA của ProPainter chính thức nên phải chọn CPU. Bộ cài tạo môi trường Python riêng tại `%LOCALAPPDATA%\GalaxyAIStudio\models\ProPainter`; weights chính thức tự tải ở lần chạy AI đầu tiên. Có thể chạy bộ cài thủ công:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install_propainter.ps1 -AcceptNonCommercialLicense -Device auto
+```
+
+App chuẩn hóa video về CFR để hạn chế lệch audio, chia video dài thành các đoạn 20 giây có overlap rồi ghép lại sau khi inpaint. Cách này giữ RAM trong giới hạn thay vì nạp toàn bộ video dài vào một lần, nhưng mỗi đoạn phải khởi động lượt ProPainter riêng nên sẽ chậm hơn. Khi đóng app, tiến trình ProPainter đang chạy cũng được dừng.
+
+ProPainter chính thức yêu cầu PyTorch và khuyến nghị CUDA; cấu hình tiết kiệm bộ nhớ vẫn cần khoảng 6-7 GB VRAM cho video 640x480 và khoảng 7-8 GB cho 720x480 ở FP16. CPU chạy được nhưng có thể rất chậm với video dài. Quan trọng: code và model ProPainter chỉ được cấp phép cho **mục đích phi thương mại** theo [NTU S-Lab License 1.0](https://github.com/sczhou/ProPainter/blob/main/LICENSE); không dùng chế độ này cho nội dung thương mại nếu chưa có giấy phép riêng từ tác giả. Xem [hướng dẫn và mức VRAM chính thức](https://github.com/sczhou/ProPainter#memory-efficient-inference).
 
 ## Output
 

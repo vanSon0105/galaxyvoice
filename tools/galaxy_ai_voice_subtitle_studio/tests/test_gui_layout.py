@@ -16,7 +16,7 @@ from app.gui import GalaxyStudioApp  # noqa: E402
 from app.config import AppConfig, load_app_config, save_app_config  # noqa: E402
 from app.engine import GenerationOptions, GenerationResult  # noqa: E402
 from app.srt import SubtitleCue  # noqa: E402
-from app.subtitle_removal import BLUR_MODE, SubtitleRemovalResult  # noqa: E402
+from app.subtitle_removal import AI_INPAINT_MODE, BLUR_MODE, SubtitleRemovalResult  # noqa: E402
 from app.transcription import VideoSubtitleDraft, VideoSubtitleResult  # noqa: E402
 from app.translator import AITranslationOptions  # noqa: E402
 from app.tts import EDGE_ENGINE_LABEL, EdgeTTS, Voice  # noqa: E402
@@ -53,6 +53,9 @@ class GuiLayoutTests(unittest.TestCase):
                         subtitle_removal_mode="fill",
                         subtitle_region_y=68,
                         subtitle_blur_strength=26,
+                        voice_processing_device="cpu",
+                        removal_processing_device="cuda",
+                        propainter_license_accepted=True,
                     ),
                     config_path,
                 )
@@ -68,6 +71,8 @@ class GuiLayoutTests(unittest.TestCase):
                 self.assertEqual(app._removal_mode_code(), "fill")
                 self.assertEqual(app.subtitle_region_y.get(), 68)
                 self.assertEqual(app.subtitle_blur_strength.get(), 26)
+                self.assertEqual(app.voice_processing_device.get(), "CPU (không dùng GPU)")
+                self.assertEqual(app.removal_processing_device.get(), "NVIDIA GPU rời")
 
                 app.output_dir.set(r"D:\New Output")
                 app.ai_api_key.set("must-not-be-saved")
@@ -80,6 +85,9 @@ class GuiLayoutTests(unittest.TestCase):
                 self.assertEqual(saved.subtitle_removal_mode, "fill")
                 self.assertEqual(saved.subtitle_region_y, 68)
                 self.assertEqual(saved.subtitle_blur_strength, 26)
+                self.assertEqual(saved.voice_processing_device, "cpu")
+                self.assertEqual(saved.removal_processing_device, "cuda")
+                self.assertTrue(saved.propainter_license_accepted)
                 self.assertNotIn("must-not-be-saved", config_path.read_text(encoding="utf-8"))
         finally:
             root.destroy()
@@ -183,8 +191,25 @@ class GuiLayoutTests(unittest.TestCase):
             self.assertEqual(labels, ["Voice", "Xóa phụ đề"])
             self.assertEqual(app.removal_preview_canvas.cget("width"), "480")
             self.assertEqual(app._removal_mode_code(), BLUR_MODE)
+            self.assertIn("AI ProPainter", app.removal_mode_combo.cget("values"))
+            self.assertEqual(str(app.voice_device_combo.cget("state")), "readonly")
+            self.assertEqual(str(app.removal_device_combo.cget("state")), "disabled")
+            app.removal_mode.set("AI ProPainter")
+            app._on_removal_mode_changed()
+            self.assertEqual(str(app.removal_device_combo.cget("state")), "readonly")
         finally:
             root.destroy()
+
+    def test_closing_app_terminates_active_media_processes(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        app = GalaxyStudioApp(root, config_path=self.config_path)
+        with patch("app.gui.managed_media_processes.terminate_all") as terminate:
+            root.destroy()
+        terminate.assert_called_once_with()
 
     def test_subtitle_removal_tab_fits_at_minimum_window_size(self) -> None:
         try:
@@ -210,6 +235,12 @@ class GuiLayoutTests(unittest.TestCase):
             self.assertIsNotNone(controls_panel)
             controls_right = controls_panel.winfo_x() + controls_panel.winfo_width()
             self.assertLessEqual(controls_right, app.removal_tab.winfo_width())
+            device_row = app.removal_device_combo.master
+            device_right = max(
+                child.winfo_x() + child.winfo_width()
+                for child in device_row.winfo_children()
+            )
+            self.assertLessEqual(device_right, device_row.winfo_width())
         finally:
             root.destroy()
 
@@ -358,6 +389,7 @@ class GuiLayoutTests(unittest.TestCase):
             app.removal_project_name.set("clean-clip")
             app.subtitle_region_y.set(72)
             app.subtitle_blur_strength.set(22)
+            app.removal_processing_device.set("CPU (không dùng GPU)")
 
             with (
                 patch("app.gui.threading.Thread") as thread,
@@ -372,7 +404,53 @@ class GuiLayoutTests(unittest.TestCase):
             self.assertEqual(options.mode, BLUR_MODE)
             self.assertEqual(options.region_y, 72)
             self.assertEqual(options.blur_strength, 22)
+            self.assertEqual(options.processing_device, "cpu")
             thread.return_value.start.assert_called_once()
+        finally:
+            root.destroy()
+
+    def test_start_video_subtitles_passes_selected_processing_device(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.video_path.set("clip.mp4")
+            app.voice_processing_device.set("CPU (không dùng GPU)")
+
+            with (
+                patch("app.gui.threading.Thread") as thread,
+                patch.object(app.progress, "start"),
+            ):
+                app.start_create_video_subtitles()
+
+            options = thread.call_args.kwargs["args"][0]
+            self.assertEqual(options.processing_device, "cpu")
+            thread.return_value.start.assert_called_once_with()
+        finally:
+            root.destroy()
+
+    def test_ai_inpainting_requires_noncommercial_license_acceptance(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.removal_video_path.set("clip.mp4")
+            app.removal_mode.set("AI ProPainter")
+
+            with (
+                patch("app.gui.messagebox.askyesno", return_value=False) as confirm,
+                patch("app.gui.threading.Thread") as thread,
+            ):
+                app.start_remove_subtitles()
+
+            confirm.assert_called_once()
+            thread.assert_not_called()
         finally:
             root.destroy()
 

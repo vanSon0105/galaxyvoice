@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -10,7 +11,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
+from app.ffmpeg import find_ffmpeg, find_ffprobe  # noqa: E402
 from app.subtitle_removal import (  # noqa: E402
+    AI_INPAINT_MODE,
     BLUR_MODE,
     FILL_MODE,
     STRIP_MODE,
@@ -28,6 +31,188 @@ from app.subtitle_removal import (  # noqa: E402
 
 
 class SubtitleRemovalTests(unittest.TestCase):
+    def test_ai_inpainting_creates_mask_restores_audio_and_writes_manifest(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mp4"
+            source.write_bytes(b"video")
+            commands: list[list[str]] = []
+            ai_calls: list[tuple[Path, Path, Path, str]] = []
+
+            def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                commands.append(command)
+                Path(command[-1]).write_bytes(b"generated")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            def probe_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                if "format=duration" in command:
+                    return subprocess.CompletedProcess(command, 0, "12.0\n", "")
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    '{"streams": [{"width": 1280, "height": 720}]}',
+                    "",
+                )
+
+            def ai_inpainter(video, mask, output_root, device, _progress):
+                ai_calls.append((video, mask, output_root, device))
+                generated = output_root / video.stem / "inpaint_out.mp4"
+                generated.parent.mkdir(parents=True)
+                generated.write_bytes(b"ai video")
+                return generated
+
+            result = remove_subtitles_from_video(
+                SubtitleRemovalOptions(
+                    video_path=source,
+                    output_dir=root / "exports",
+                    project_name="AI Clean",
+                    mode=AI_INPAINT_MODE,
+                    processing_device="cpu",
+                ),
+                ffmpeg_path="ffmpeg",
+                ffprobe_path="ffprobe",
+                runner=runner,
+                probe_runner=probe_runner,
+                ai_inpainter=ai_inpainter,
+            )
+
+            self.assertEqual(len(ai_calls), 1)
+            self.assertEqual(ai_calls[0][3], "cpu")
+            self.assertEqual(len(commands), 3)
+            self.assertIn("drawbox=", commands[0][commands[0].index("-vf") + 1])
+            self.assertIn("libx264", commands[1])
+            self.assertIn("1:a?", commands[2])
+            manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["mode"], AI_INPAINT_MODE)
+            self.assertEqual(manifest["processing_device"], "cpu")
+            self.assertTrue(any("non-commercial" in warning.lower() for warning in result.warnings))
+
+    def test_long_ai_inpainting_processes_memory_safe_overlapping_chunks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mp4"
+            source.write_bytes(b"video")
+            commands: list[list[str]] = []
+            ai_inputs: list[Path] = []
+
+            def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                commands.append(command)
+                Path(command[-1]).write_bytes(b"generated")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            def probe_runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                if "format=duration" in command:
+                    return subprocess.CompletedProcess(command, 0, "45.0\n", "")
+                return subprocess.CompletedProcess(
+                    command,
+                    0,
+                    '{"streams": [{"width": 1280, "height": 720}]}',
+                    "",
+                )
+
+            def ai_inpainter(video, _mask, output_root, _device, _progress):
+                ai_inputs.append(video)
+                generated = output_root / video.stem / "inpaint_out.mp4"
+                generated.parent.mkdir(parents=True)
+                generated.write_bytes(b"ai video")
+                return generated
+
+            result = remove_subtitles_from_video(
+                SubtitleRemovalOptions(
+                    video_path=source,
+                    output_dir=root / "exports",
+                    mode=AI_INPAINT_MODE,
+                    processing_device="cpu",
+                ),
+                ffmpeg_path="ffmpeg",
+                ffprobe_path="ffprobe",
+                runner=runner,
+                probe_runner=probe_runner,
+                ai_inpainter=ai_inpainter,
+            )
+
+            self.assertEqual([path.name for path in ai_inputs], [
+                "chunk_0001.mp4",
+                "chunk_0002.mp4",
+                "chunk_0003.mp4",
+            ])
+            concat_commands = [command for command in commands if "concat" in command]
+            self.assertEqual(len(concat_commands), 1)
+            self.assertTrue(result.video_path.is_file())
+            self.assertFalse((result.project_dir / "_propainter").exists())
+
+    def test_real_ffmpeg_ai_pipeline_preserves_video_and_audio(self) -> None:
+        ffmpeg = find_ffmpeg()
+        ffprobe = find_ffprobe()
+        if not ffmpeg or not ffprobe:
+            self.skipTest("Bundled FFmpeg is unavailable.")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mp4"
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=160x90:rate=12:duration=2",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:sample_rate=44100:duration=1",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    "-c:a",
+                    "aac",
+                    str(source),
+                ],
+                check=True,
+            )
+
+            def ai_inpainter(video, _mask, output_root, _device, _progress):
+                generated = output_root / video.stem / "inpaint_out.mp4"
+                generated.parent.mkdir(parents=True)
+                shutil.copy2(video, generated)
+                return generated
+
+            result = remove_subtitles_from_video(
+                SubtitleRemovalOptions(
+                    video_path=source,
+                    output_dir=root / "exports",
+                    mode=AI_INPAINT_MODE,
+                    processing_device="cpu",
+                ),
+                ffmpeg_path=ffmpeg,
+                ffprobe_path=ffprobe,
+                ai_inpainter=ai_inpainter,
+            )
+            completed = subprocess.run(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "stream=codec_type:format=duration",
+                    "-of",
+                    "json",
+                    str(result.video_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            payload = json.loads(completed.stdout)
+            stream_types = {stream["codec_type"] for stream in payload["streams"]}
+            self.assertEqual(stream_types, {"video", "audio"})
+            self.assertAlmostEqual(float(payload["format"]["duration"]), 2.0, delta=0.2)
+
     def test_strip_command_removes_subtitle_streams_without_reencoding(self) -> None:
         command = build_strip_subtitles_command(
             "ffmpeg",

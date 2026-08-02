@@ -10,12 +10,19 @@ from dataclasses import replace
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+from .compute import (
+    PROCESSING_DEVICE_LABELS,
+    processing_device_code,
+    processing_device_label,
+)
 from .config import AppConfig, default_config_path, load_app_config, save_app_config
 from .engine import GenerationOptions, GenerationResult, generate_package
 from .ffmpeg import find_ffmpeg, find_ffplay
 from .languages import code_from_label, label_from_code, language_labels
 from .media import MediaExtractionOptions, MediaExtractionResult, extract_audio_from_video
+from .processes import managed_media_processes
 from .subtitle_removal import (
+    AI_INPAINT_MODE,
     BLUR_MODE,
     FILL_MODE,
     STRIP_MODE,
@@ -60,6 +67,7 @@ REMOVAL_MODE_LABELS = {
     STRIP_MODE: "Bỏ track phụ đề",
     BLUR_MODE: "Làm mờ vùng phụ đề",
     FILL_MODE: "Xóa thông minh",
+    AI_INPAINT_MODE: "AI ProPainter",
 }
 REMOVAL_MODE_CODES = {label: code for code, label in REMOVAL_MODE_LABELS.items()}
 PREVIEW_WIDTH = 480
@@ -69,6 +77,7 @@ PREVIEW_FPS = 12
 
 class GalaxyStudioApp:
     def __init__(self, root: tk.Tk, config_path: Path | None = None) -> None:
+        managed_media_processes.reset()
         self.root = root
         self.root.title("Galaxy AI Voice & Subtitle Studio")
         self.root.geometry("1120x720")
@@ -133,6 +142,9 @@ class GalaxyStudioApp:
             value=label_from_code(saved_config.video_target_language, default=label_from_code("vi"))
         )
         self.whisper_model = tk.StringVar(value=saved_config.whisper_model)
+        self.voice_processing_device = tk.StringVar(
+            value=processing_device_label(saved_config.voice_processing_device)
+        )
         provider = saved_config.ai_provider or default_translation_provider()
         self.ai_provider = tk.StringVar(value=translation_provider_label(provider))
         self.ai_model = tk.StringVar(value=saved_config.ai_model or default_translation_model(provider))
@@ -148,6 +160,12 @@ class GalaxyStudioApp:
         self.subtitle_region_width = tk.IntVar(value=saved_config.subtitle_region_width)
         self.subtitle_region_height = tk.IntVar(value=saved_config.subtitle_region_height)
         self.subtitle_blur_strength = tk.IntVar(value=saved_config.subtitle_blur_strength)
+        self.removal_processing_device = tk.StringVar(
+            value=processing_device_label(saved_config.removal_processing_device)
+        )
+        self.propainter_license_accepted = tk.BooleanVar(
+            value=saved_config.propainter_license_accepted
+        )
         self.removal_timeline_position = tk.DoubleVar(value=0.0)
         self.removal_time_text = tk.StringVar(value="00:00 / 00:00")
         self.removal_duration_seconds = 0.0
@@ -415,8 +433,28 @@ class GalaxyStudioApp:
         self.removal_mode_combo.grid(row=7, column=0, sticky="ew")
         self.removal_mode_combo.bind("<<ComboboxSelected>>", self._on_removal_mode_changed)
 
+        device_row = ttk.Frame(controls, style="Surface.TFrame")
+        device_row.grid(row=8, column=0, sticky="ew", pady=(12, 0))
+        device_row.columnconfigure(0, weight=1)
+        ttk.Label(device_row, text="Thiết bị xử lý", style="Panel.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 2)
+        )
+        self.removal_device_combo = ttk.Combobox(
+            device_row,
+            textvariable=self.removal_processing_device,
+            values=tuple(PROCESSING_DEVICE_LABELS.values()),
+            state="readonly",
+        )
+        self.removal_device_combo.grid(row=1, column=0, sticky="ew", padx=(0, 6))
+        self.propainter_install_button = ttk.Button(
+            device_row,
+            text="Cài ProPainter",
+            command=self.install_propainter,
+        )
+        self.propainter_install_button.grid(row=1, column=1, sticky="e")
+
         region = ttk.Frame(controls, style="Surface.TFrame")
-        region.grid(row=8, column=0, sticky="ew", pady=(14, 0))
+        region.grid(row=9, column=0, sticky="ew", pady=(14, 0))
         region.columnconfigure(1, weight=1)
         region.columnconfigure(3, weight=1)
         ttk.Label(region, text="Vùng phụ đề (%)", style="Section.TLabel").grid(
@@ -447,7 +485,7 @@ class GalaxyStudioApp:
             self.removal_region_widgets.append(spinbox)
 
         blur_row = ttk.Frame(controls, style="Surface.TFrame")
-        blur_row.grid(row=9, column=0, sticky="ew", pady=(12, 0))
+        blur_row.grid(row=10, column=0, sticky="ew", pady=(12, 0))
         blur_row.columnconfigure(1, weight=1)
         ttk.Label(blur_row, text="Độ mờ", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
         self.removal_blur_scale = ttk.Scale(
@@ -468,7 +506,7 @@ class GalaxyStudioApp:
         ).grid(row=0, column=2, sticky="e")
 
         action_row = ttk.Frame(controls, style="Surface.TFrame")
-        action_row.grid(row=10, column=0, sticky="ew", pady=(18, 0))
+        action_row.grid(row=11, column=0, sticky="ew", pady=(18, 0))
         action_row.columnconfigure(0, weight=1)
         action_row.columnconfigure(1, weight=1)
         self.removal_preview_button = ttk.Button(
@@ -491,9 +529,9 @@ class GalaxyStudioApp:
             command=self.open_output,
             state="disabled",
         )
-        self.removal_open_button.grid(row=11, column=0, sticky="ew", pady=(8, 0))
+        self.removal_open_button.grid(row=12, column=0, sticky="ew", pady=(8, 0))
         self.removal_progress = ttk.Progressbar(controls, mode="indeterminate")
-        self.removal_progress.grid(row=12, column=0, sticky="ew", pady=(12, 0))
+        self.removal_progress.grid(row=13, column=0, sticky="ew", pady=(12, 0))
         self._on_removal_mode_changed()
 
     def _build_text_tab(
@@ -661,6 +699,17 @@ class GalaxyStudioApp:
         self.ai_provider_combo.grid(row=1, column=1, sticky="ew", pady=(2, 0), padx=(8, 0))
         self.ai_provider_combo.bind("<<ComboboxSelected>>", self._on_ai_provider_changed)
 
+        ttk.Label(model_row, text="Thiết bị xử lý", style="Panel.TLabel").grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(10, 2)
+        )
+        self.voice_device_combo = ttk.Combobox(
+            model_row,
+            textvariable=self.voice_processing_device,
+            values=tuple(PROCESSING_DEVICE_LABELS.values()),
+            state="readonly",
+        )
+        self.voice_device_combo.grid(row=3, column=0, columnspan=2, sticky="ew")
+
         ttk.Label(video, text="AI model", style="Panel.TLabel").grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 2))
         ttk.Entry(video, textvariable=self.ai_model).grid(row=6, column=0, columnspan=2, sticky="ew")
         ttk.Label(video, text="AI base URL", style="Panel.TLabel").grid(row=7, column=0, columnspan=2, sticky="w", pady=(10, 2))
@@ -743,6 +792,12 @@ class GalaxyStudioApp:
         for widget in self.removal_region_widgets[:-1]:
             widget.configure(state=region_state)
         self.removal_blur_scale.configure(state="normal" if mode == BLUR_MODE else "disabled")
+        if hasattr(self, "propainter_install_button"):
+            busy = bool(self.worker and self.worker.is_alive())
+            ai_ready = mode == AI_INPAINT_MODE and not busy
+            self.removal_device_combo.configure(state="readonly" if ai_ready else "disabled")
+            install_state = "normal" if ai_ready else "disabled"
+            self.propainter_install_button.configure(state=install_state)
         self._draw_removal_region()
 
     def _removal_mode_code(self) -> str:
@@ -1168,6 +1223,48 @@ class GalaxyStudioApp:
         if self.main_notebook.select() != str(self.removal_tab):
             self._stop_removal_playback()
 
+    def _confirm_propainter_license(self) -> bool:
+        if self.propainter_license_accepted.get():
+            return True
+        accepted = messagebox.askyesno(
+            "Giấy phép ProPainter",
+            "ProPainter chỉ được cấp phép cho mục đích phi thương mại theo NTU S-Lab License 1.0. "
+            "Bạn xác nhận chỉ sử dụng chế độ này trong phạm vi giấy phép?",
+        )
+        if accepted:
+            self.propainter_license_accepted.set(True)
+        return accepted
+
+    def install_propainter(self) -> None:
+        if not self._confirm_propainter_license():
+            return
+        installer = Path(__file__).resolve().parents[1] / "install_propainter.ps1"
+        if not installer.is_file():
+            messagebox.showerror("Installer missing", f"Could not find: {installer}")
+            return
+        device = processing_device_code(self.removal_processing_device.get())
+        command = [
+            "powershell",
+            "-NoExit",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+            str(installer),
+            "-AcceptNonCommercialLicense",
+            "-Device",
+            device,
+        ]
+        try:
+            subprocess.Popen(
+                command,
+                cwd=installer.parent,
+                creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+            )
+        except OSError as error:
+            messagebox.showerror("Could not start installer", str(error))
+            return
+        self._append_log("Opened the ProPainter installer in a separate window.")
+
     def start_remove_subtitles(self) -> None:
         if self.worker and self.worker.is_alive():
             return
@@ -1175,6 +1272,9 @@ class GalaxyStudioApp:
         video = self.removal_video_path.get().strip()
         if not video:
             messagebox.showwarning("Missing video", "Choose a video before processing.")
+            return
+        mode = self._removal_mode_code()
+        if mode == AI_INPAINT_MODE and not self._confirm_propainter_license():
             return
 
         region_x = self._config_int(self.subtitle_region_x, 5, 0, 99)
@@ -1191,12 +1291,13 @@ class GalaxyStudioApp:
             video_path=Path(video).expanduser(),
             output_dir=Path(self.output_dir.get()).expanduser(),
             project_name=self.removal_project_name.get(),
-            mode=self._removal_mode_code(),
+            mode=mode,
             region_x=region_x,
             region_y=region_y,
             region_width=region_width,
             region_height=region_height,
             blur_strength=self._config_int(self.subtitle_blur_strength, 18, 1, 100),
+            processing_device=processing_device_code(self.removal_processing_device.get()),
         )
 
         self.last_result = None
@@ -1392,6 +1493,7 @@ class GalaxyStudioApp:
             source_language=code_from_label(self.video_source_language.get(), default="auto"),
             target_language=code_from_label(self.video_target_language.get(), default="vi"),
             whisper_model=self.whisper_model.get(),
+            processing_device=processing_device_code(self.voice_processing_device.get()),
             ai_provider=translation_provider_code(self.ai_provider.get()),
             ai_model=self.ai_model.get(),
             ai_base_url=self.ai_base_url.get(),
@@ -1515,6 +1617,7 @@ class GalaxyStudioApp:
             self.video_source_language,
             self.video_target_language,
             self.whisper_model,
+            self.voice_processing_device,
             self.ai_provider,
             self.ai_model,
             self.ai_base_url,
@@ -1524,6 +1627,8 @@ class GalaxyStudioApp:
             self.subtitle_region_width,
             self.subtitle_region_height,
             self.subtitle_blur_strength,
+            self.removal_processing_device,
+            self.propainter_license_accepted,
         )
         for variable in variables:
             variable.trace_add("write", self._schedule_config_save)
@@ -1576,6 +1681,7 @@ class GalaxyStudioApp:
             video_source_language=code_from_label(self.video_source_language.get(), default="auto"),
             video_target_language=code_from_label(self.video_target_language.get(), default="vi"),
             whisper_model=self.whisper_model.get().strip(),
+            voice_processing_device=processing_device_code(self.voice_processing_device.get()),
             ai_provider=translation_provider_code(self.ai_provider.get()),
             ai_model=self.ai_model.get().strip(),
             ai_base_url=self.ai_base_url.get().strip(),
@@ -1591,6 +1697,8 @@ class GalaxyStudioApp:
                 100 - region_y,
             ),
             subtitle_blur_strength=self._config_int(self.subtitle_blur_strength, 18, 1, 100),
+            removal_processing_device=processing_device_code(self.removal_processing_device.get()),
+            propainter_license_accepted=bool(self.propainter_license_accepted.get()),
         )
         try:
             save_app_config(config, self.config_path)
@@ -1892,9 +2000,13 @@ class GalaxyStudioApp:
         self.refresh_voices_button.configure(state="disabled" if busy or voice_refreshing else "normal")
         self.tts_engine_combo.configure(state="disabled" if busy else "readonly")
         self.voice_combo.configure(state="disabled" if busy else "readonly")
+        self.voice_device_combo.configure(state="disabled" if busy else "readonly")
         self.removal_preview_button.configure(state=state)
         self.removal_process_button.configure(state=state)
         self.removal_mode_combo.configure(state="disabled" if busy else "readonly")
+        self.removal_device_combo.configure(state="disabled" if busy else "readonly")
+        if busy:
+            self.propainter_install_button.configure(state="disabled")
         playback_state = "normal" if not busy and self.removal_duration_seconds > 0 else "disabled"
         self.removal_play_button.configure(state=playback_state)
         self.removal_timeline.configure(state=playback_state)
@@ -1933,6 +2045,7 @@ class GalaxyStudioApp:
             return
 
         self._stop_removal_playback(update_ui=False)
+        managed_media_processes.terminate_all()
 
         with self._subtitle_draft_lock:
             self._closing = True

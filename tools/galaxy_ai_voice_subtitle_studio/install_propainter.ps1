@@ -34,10 +34,17 @@ function Find-CompatiblePython {
     $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
     if ($launcher) {
         foreach ($version in @("3.12", "3.11", "3.10")) {
-            & $launcher.Source "-$version" -c "import sys; print(sys.executable)" 2>$null
-            if ($LASTEXITCODE -eq 0) {
-                $path = & $launcher.Source "-$version" -c "import sys; print(sys.executable)"
-                return $path.Trim()
+            $previousPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = "SilentlyContinue"
+                $path = & $launcher.Source "-$version" -c "import sys; print(sys.executable)" 2>$null
+                $probeExitCode = $LASTEXITCODE
+            }
+            finally {
+                $ErrorActionPreference = $previousPreference
+            }
+            if ($probeExitCode -eq 0 -and $path) {
+                return ([string]$path).Trim()
             }
         }
     }

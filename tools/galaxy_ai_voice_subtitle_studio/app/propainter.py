@@ -405,7 +405,7 @@ def build_inpainting_merge_command(
     relative_y = plan.region_y - plan.crop_y
     clean_filter = (
         f"[1:v:0]setpts=PTS-STARTPTS,scale={plan.crop_width}:{plan.crop_height}:flags=lanczos,"
-        f"crop={plan.region_width}:{plan.region_height}:{relative_x}:{relative_y},"
+        f"crop={plan.region_width}:{plan.region_height}:{relative_x}:{relative_y}:exact=1,"
         "setsar=1[clean];"
         "[0:v:0]setpts=PTS-STARTPTS[base];"
     )

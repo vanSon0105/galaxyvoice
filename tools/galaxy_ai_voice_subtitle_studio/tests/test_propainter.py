@@ -323,7 +323,7 @@ class ProPainterTests(unittest.TestCase):
         )
         self.assertIn(
             f"crop={plan.region_width}:{plan.region_height}:"
-            f"{plan.region_x - plan.crop_x}:{plan.region_y - plan.crop_y}",
+            f"{plan.region_x - plan.crop_x}:{plan.region_y - plan.crop_y}:exact=1",
             filter_graph,
         )
         self.assertIn(f"overlay=x={plan.region_x}:y={plan.region_y}", filter_graph)

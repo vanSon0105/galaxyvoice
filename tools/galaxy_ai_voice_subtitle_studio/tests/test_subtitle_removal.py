@@ -361,6 +361,59 @@ class SubtitleRemovalTests(unittest.TestCase):
                 self.assertAlmostEqual(float(stream["start_time"]), 0.0, delta=0.05)
             self.assertAlmostEqual(float(payload["format"]["duration"]), 2.0, delta=0.2)
 
+    def test_real_ffmpeg_ai_merge_supports_odd_sized_regions(self) -> None:
+        ffmpeg = find_ffmpeg()
+        ffprobe = find_ffprobe()
+        if not ffmpeg or not ffprobe:
+            self.skipTest("Bundled FFmpeg is unavailable.")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mp4"
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=1280x720:rate=2:duration=0.5",
+                    "-c:v",
+                    "libx264",
+                    "-pix_fmt",
+                    "yuv420p",
+                    str(source),
+                ],
+                check=True,
+            )
+
+            def ai_inpainter(video, _mask, output_root, _device, _progress):
+                generated = output_root / video.stem / "inpaint_out.mp4"
+                generated.parent.mkdir(parents=True)
+                shutil.copy2(video, generated)
+                return generated
+
+            result = remove_subtitles_from_video(
+                SubtitleRemovalOptions(
+                    video_path=source,
+                    output_dir=root / "exports",
+                    mode=FAST_AI_INPAINT_MODE,
+                    region_x=10,
+                    region_y=80,
+                    region_width=79,
+                    region_height=9,
+                ),
+                ffmpeg_path=ffmpeg,
+                ffprobe_path=ffprobe,
+                ai_inpainter=ai_inpainter,
+            )
+
+            self.assertTrue(result.video_path.is_file())
+            self.assertGreater(result.video_path.stat().st_size, 0)
+
     def test_real_ffmpeg_ai_pipeline_supports_video_without_audio(self) -> None:
         ffmpeg = find_ffmpeg()
         ffprobe = find_ffprobe()

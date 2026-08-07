@@ -55,6 +55,7 @@ from .translator import (
     translation_provider_code,
     translation_provider_label,
     translation_provider_labels,
+    translation_provider_models,
 )
 from .tts import (
     EdgeTTS,
@@ -715,7 +716,12 @@ class GalaxyStudioApp:
         self.voice_device_combo.grid(row=3, column=0, columnspan=2, sticky="ew")
 
         ttk.Label(video, text="AI model", style="Panel.TLabel").grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 2))
-        ttk.Entry(video, textvariable=self.ai_model).grid(row=6, column=0, columnspan=2, sticky="ew")
+        self.ai_model_combo = ttk.Combobox(
+            video,
+            textvariable=self.ai_model,
+            values=translation_provider_models(translation_provider_code(self.ai_provider.get())),
+        )
+        self.ai_model_combo.grid(row=6, column=0, columnspan=2, sticky="ew")
         ttk.Label(video, text="AI base URL", style="Panel.TLabel").grid(row=7, column=0, columnspan=2, sticky="w", pady=(10, 2))
         ttk.Entry(video, textvariable=self.ai_base_url).grid(row=8, column=0, columnspan=2, sticky="ew")
         ttk.Label(video, text="AI API key", style="Panel.TLabel").grid(row=9, column=0, columnspan=2, sticky="w", pady=(10, 2))
@@ -1617,6 +1623,7 @@ class GalaxyStudioApp:
         self.ai_model.set(default_translation_model(provider))
         self.ai_base_url.set(default_translation_base_url(provider))
         self.ai_api_key.set(default_translation_api_key(provider))
+        self.ai_model_combo.configure(values=translation_provider_models(provider))
 
     def _bind_config_traces(self) -> None:
         variables: tuple[tk.Variable, ...] = (

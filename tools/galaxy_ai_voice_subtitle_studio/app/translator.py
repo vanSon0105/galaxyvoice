@@ -22,6 +22,8 @@ DEFAULT_TRANSLATION_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_TRANSLATION_MODEL = "gpt-4o-mini"
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
+DEEPSEEK_MODELS = ("deepseek-v4-flash", "deepseek-v4-pro")
+OPENAI_MODELS = ("gpt-4o-mini", "gpt-4o", "gpt-4.1")
 
 
 @dataclass(frozen=True)
@@ -33,6 +35,7 @@ class TranslationProvider:
     api_key_env_names: tuple[str, ...]
     model_env_names: tuple[str, ...]
     base_url_env_names: tuple[str, ...]
+    models: tuple[str, ...] = ()
 
 
 TRANSLATION_PROVIDERS: dict[str, TranslationProvider] = {
@@ -49,6 +52,7 @@ TRANSLATION_PROVIDERS: dict[str, TranslationProvider] = {
         ),
         model_env_names=("GALAXY_OPENAI_MODEL", "GALAXY_TRANSLATION_MODEL", "OPENAI_MODEL"),
         base_url_env_names=("GALAXY_OPENAI_BASE_URL", "GALAXY_TRANSLATION_BASE_URL", "OPENAI_BASE_URL"),
+        models=OPENAI_MODELS,
     ),
     DEEPSEEK_TRANSLATION_PROVIDER: TranslationProvider(
         code=DEEPSEEK_TRANSLATION_PROVIDER,
@@ -58,6 +62,7 @@ TRANSLATION_PROVIDERS: dict[str, TranslationProvider] = {
         api_key_env_names=("GALAXY_DEEPSEEK_API_KEY", "DEEPSEEK_API_KEY"),
         model_env_names=("GALAXY_DEEPSEEK_MODEL", "DEEPSEEK_MODEL"),
         base_url_env_names=("GALAXY_DEEPSEEK_BASE_URL", "DEEPSEEK_BASE_URL"),
+        models=DEEPSEEK_MODELS,
     ),
 }
 
@@ -191,6 +196,10 @@ def translation_provider_labels() -> list[str]:
 
 def translation_provider_label(provider: str) -> str:
     return _provider_defaults(provider).label
+
+
+def translation_provider_models(provider: str) -> tuple[str, ...]:
+    return _provider_defaults(provider).models
 
 
 def translation_provider_code(label_or_code: str) -> str:
@@ -334,7 +343,9 @@ def translate_texts(
     if max_workers == 1 or len(batches) <= 1:
         for batch in batches:
             try:
-                batch_translations = _translate_batch([text for _index, text in batch], options, client)
+                batch_translations = _translate_batch(
+                    [text for _index, text in batch], options, client, warning=warning,
+                )
             except _PartialTranslationError as error:
                 store_partial(batch, error)
                 raise error.original
@@ -350,7 +361,9 @@ def translate_texts(
                 batch = next(batch_iterator)
             except StopIteration:
                 return False
-            future = executor.submit(_translate_batch, [text for _index, text in batch], options, client)
+            future = executor.submit(
+                _translate_batch, [text for _index, text in batch], options, client, warning,
+            )
             futures[future] = batch
             return True
 
@@ -507,7 +520,12 @@ def _save_translation_checkpoint(
     return None
 
 
-def _translate_batch(texts: list[str], options: AITranslationOptions, client: ChatClient) -> list[str]:
+def _translate_batch(
+    texts: list[str],
+    options: AITranslationOptions,
+    client: ChatClient,
+    warning: TranslationWarningCallback | None = None,
+) -> list[str]:
     source = label_from_code(options.source_language, default=options.source_language or "Auto detect")
     target = label_from_code(options.target_language, default=options.target_language)
     payload = [{"index": index, "text": text} for index, text in enumerate(texts, start=1)]
@@ -521,11 +539,24 @@ def _translate_batch(texts: list[str], options: AITranslationOptions, client: Ch
             wrong_language=wrong_language if attempt else "",
         )
         raw = client(messages, options)
-        translations = _extract_translations(raw)
+        try:
+            translations = _extract_translations(raw)
+        except json.JSONDecodeError:
+            # AI returned malformed JSON — retry with a format hint
+            wrong_language = "malformed JSON" if attempt else ""
+            if attempt == _TRANSLATION_ATTEMPTS - 1:
+                _JUNK_JSON_WARNING = (
+                    "AI returned malformed JSON that could not be repaired. "
+                    "Review these lines in Sub dịch before exporting."
+                )
+                if warning is not None:
+                    warning(_JUNK_JSON_WARNING)
+                return texts
+            continue
         if len(translations) != len(texts):
             if len(texts) > 1:
                 midpoint = len(texts) // 2
-                return _translate_split_batch(texts, midpoint, options, client)
+                return _translate_split_batch(texts, midpoint, options, client, warning=warning)
             raise RuntimeError(
                 f"AI translation returned {len(translations)} lines for a batch that expected {len(texts)} lines."
             )
@@ -549,7 +580,9 @@ def _translate_batch(texts: list[str], options: AITranslationOptions, client: Ch
                 if index not in wrong_indexes
             }
             try:
-                corrected = _translate_batch([texts[index] for index in wrong_indexes], options, client)
+                corrected = _translate_batch(
+                    [texts[index] for index in wrong_indexes], options, client, warning=warning,
+                )
             except _PartialTranslationError as error:
                 for nested_index, translated_text in error.translations.items():
                     if 0 <= nested_index < len(wrong_indexes):
@@ -564,7 +597,7 @@ def _translate_batch(texts: list[str], options: AITranslationOptions, client: Ch
         detected_language = detected_languages[0]
         if detected_language == "Chinese" and len(texts) > 1:
             midpoint = len(texts) // 2
-            return _translate_split_batch(texts, midpoint, options, client)
+            return _translate_split_batch(texts, midpoint, options, client, warning=warning)
         wrong_language = detected_language
 
     if len(texts) == 1 and wrong_language == "Chinese" and options.target_language.strip().lower() == "vi":
@@ -576,10 +609,12 @@ def _translate_batch(texts: list[str], options: AITranslationOptions, client: Ch
         ) is None:
             return [direct_translation]
 
-    raise RuntimeError(
-        f"AI translation returned {wrong_language or 'another language'} instead of Vietnamese after retrying. "
-        "No mixed-language subtitle file was created."
-    )
+    if warning is not None:
+        warning(
+            f"AI continued to return {wrong_language or 'another language'} after retrying. "
+            "Review these lines in Sub dịch before exporting."
+        )
+    return translations
 
 
 def _translate_split_batch(
@@ -587,12 +622,13 @@ def _translate_split_batch(
     midpoint: int,
     options: AITranslationOptions,
     client: ChatClient,
+    warning: TranslationWarningCallback | None = None,
 ) -> list[str]:
     translated: dict[int, str] = {}
     first_error: Exception | None = None
     for offset, subset in ((0, texts[:midpoint]), (midpoint, texts[midpoint:])):
         try:
-            subset_translations = _translate_batch(subset, options, client)
+            subset_translations = _translate_batch(subset, options, client, warning=warning)
         except _PartialTranslationError as error:
             for local_index, translated_text in error.translations.items():
                 translated[offset + local_index] = translated_text
@@ -621,12 +657,7 @@ def _translation_messages(
         source_description = (
             "t\u1ef1 nh\u1eadn di\u1ec7n" if source.lower() == "auto detect" else source
         )
-        retry_instruction = (
-            f"Ph\u1ea3n h\u1ed3i tr\u01b0\u1edbc v\u1eabn \u0111\u01b0\u1ee3c vi\u1ebft b\u1eb1ng {wrong_language}, kh\u00f4ng ph\u1ea3i ti\u1ebfng Vi\u1ec7t. "
-            "H\u00e3y d\u1ecbch l\u1ea1i ho\u00e0n to\u00e0n.\n"
-            if wrong_language
-            else ""
-        )
+        retry_instruction = _build_retry_instruction(wrong_language, target, target_language)
         return [
             {
                 "role": "system",
@@ -653,12 +684,7 @@ def _translation_messages(
             },
         ]
 
-    retry_instruction = (
-        f"The previous response was written in {wrong_language}, not {target}. "
-        f"Translate it into {target} now.\n"
-        if wrong_language
-        else ""
-    )
+    retry_instruction = _build_retry_instruction(wrong_language, target, target_language)
     return [
         {
             "role": "system",
@@ -682,6 +708,36 @@ def _translation_messages(
             ),
         },
     ]
+
+
+def _build_retry_instruction(
+    wrong_language: str,
+    target: str,
+    target_language: str,
+) -> str:
+    if not wrong_language:
+        return ""
+    if wrong_language == "malformed JSON":
+        if target_language.strip().lower() == "vi":
+            return (
+                "Phản hồi trước KHÔNG phải JSON hợp lệ. "
+                "Hãy trả về CHÍNH XÁC định dạng {\"translations\":[\"...\"]}, "
+                "đảm bảo dùng dấu ngoặc kép và không có dấu phẩy thừa.\n"
+            )
+        return (
+            "Your previous response was NOT valid JSON. "
+            "Return EXACTLY this format: {\"translations\":[\"...\"]}. "
+            "Use double quotes, no trailing commas.\n"
+        )
+    if target_language.strip().lower() == "vi":
+        return (
+            f"Phản hồi trước vẫn được viết bằng {wrong_language}, không phải tiếng Việt. "
+            "Hãy dịch lại hoàn toàn.\n"
+        )
+    return (
+        f"The previous response was written in {wrong_language}, not {target}. "
+        f"Translate it into {target} now.\n"
+    )
 
 
 def _translate_chinese_cue_directly(
@@ -747,7 +803,7 @@ def _wrong_output_language(
         ):
             return None
         return "English"
-    if vietnamese_marks and english_words >= 2:
+    if vietnamese_marks and english_words >= max(5, len(words) // 3):
         return "English"
     if len(words) < 12:
         return None
@@ -786,12 +842,34 @@ def _extract_translations(raw: str) -> list[str]:
         if cleaned.lower().startswith("json"):
             cleaned = cleaned[4:].strip()
 
-    data = json.loads(cleaned)
+    try:
+        data = json.loads(cleaned)
+    except json.JSONDecodeError:
+        data = _salvage_json_translations(cleaned)
     if isinstance(data, dict):
         data = data.get("translations")
     if not isinstance(data, list):
         raise RuntimeError("AI translation response did not contain a translations array.")
     return [str(item).strip() for item in data]
+
+
+def _salvage_json_translations(cleaned: str) -> list[str]:
+    """Attempt to recover translations from malformed JSON by regex."""
+    # Try to find the translations array content between [ and ]
+    match = re.search(r'"translations"\s*:?\s*\[(.*?)\]', cleaned, re.DOTALL)
+    if match:
+        inner = match.group(1)
+        items = re.findall(r'"((?:[^"\\]|\\.)*)"', inner)
+        if items:
+            return items
+    # Last resort: try to extract any quoted strings from the response
+    items = re.findall(r'"((?:[^"\\]|\\.)*)"', cleaned)
+    if items:
+        # Filter out keys, keep values that look like translated text
+        candidates = [item for item in items if len(item) >= 1 and item not in {"translations"}]
+        if candidates:
+            return candidates
+    raise
 
 
 def _chat_completion(messages: list[dict[str, str]], options: AITranslationOptions) -> str:

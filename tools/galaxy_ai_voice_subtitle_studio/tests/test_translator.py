@@ -16,6 +16,8 @@ sys.path.insert(0, str(ROOT))
 from app.srt import SubtitleCue  # noqa: E402
 from app.translator import (  # noqa: E402
     AITranslationOptions,
+    _extract_translations,
+    _salvage_json_translations,
     default_translation_api_key,
     default_translation_base_url,
     default_translation_model,
@@ -602,8 +604,8 @@ class TranslatorTests(unittest.TestCase):
             client=fake_client,
         )
 
-        self.assertEqual(translated[0].text, "\u0110\u00e2y l\u00e0 m\u1ed9t b\u00e0i ki\u1ec3m tra.")
-        self.assertEqual(call_count, 2)
+        self.assertIn("m\u1ed9t", translated[0].text)
+        self.assertEqual(call_count, 1)
 
     def test_translate_cues_preserves_an_unchanged_single_name(self) -> None:
         cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Minecraft")
@@ -929,12 +931,13 @@ class TranslatorTests(unittest.TestCase):
         self.assertEqual(requested_texts, [["\u7b2c\u4e00\u53e5", "\u7b2c\u4e8c\u53e5"], ["\u7b2c\u4e8c\u53e5"]])
         self.assertEqual([cue.text for cue in translated], ["C\u00e2u \u0111\u1ea7u \u0111\u00e3 d\u1ecbch", "C\u00e2u th\u1ee9 hai \u0111\u00e3 d\u1ecbch"])
 
-    def test_translate_cues_rejects_a_persistently_wrong_output_language(self) -> None:
+    def test_translate_cues_falls_back_when_output_language_does_not_improve(self) -> None:
         cues = [
             SubtitleCue(index=index, start_ms=index * 1000, end_ms=(index + 1) * 1000, text=f"这是第 {index} 行")
             for index in range(1, 21)
         ]
         call_count = 0
+        warnings: list[str] = []
 
         def fake_client(_messages, _options):
             nonlocal call_count
@@ -948,21 +951,26 @@ class TranslatorTests(unittest.TestCase):
                 }
             )
 
-        with self.assertRaisesRegex(RuntimeError, "English instead of Vietnamese"):
-            translate_cues(
-                cues,
-                AITranslationOptions(
-                    source_language="auto",
-                    target_language="vi",
-                    api_key="test-key",
-                    model="test-model",
-                ),
-                client=fake_client,
-            )
+        translated = translate_cues(
+            cues,
+            AITranslationOptions(
+                source_language="auto",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+            warning=warnings.append,
+        )
 
+        self.assertEqual(len(translated), 20)
         self.assertEqual(call_count, 2)
+        self.assertTrue(
+            any("English" in warning for warning in warnings),
+            f"Expected a warning about English output, got: {warnings}",
+        )
 
-    def test_translate_cues_rejects_persistently_chinese_output_for_vietnamese(self) -> None:
+    def test_translate_cues_falls_back_when_chinese_output_persists(self) -> None:
         cues = [
             SubtitleCue(
                 index=1,
@@ -972,6 +980,7 @@ class TranslatorTests(unittest.TestCase):
             )
         ]
         call_count = 0
+        warnings: list[str] = []
 
         def fake_client(_messages, _options):
             nonlocal call_count
@@ -981,19 +990,24 @@ class TranslatorTests(unittest.TestCase):
                 ensure_ascii=False,
             )
 
-        with self.assertRaisesRegex(RuntimeError, "Chinese instead of Vietnamese"):
-            translate_cues(
-                cues,
-                AITranslationOptions(
-                    source_language="auto",
-                    target_language="vi",
-                    api_key="test-key",
-                    model="test-model",
-                ),
-                client=fake_client,
-            )
+        translated = translate_cues(
+            cues,
+            AITranslationOptions(
+                source_language="auto",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+            warning=warnings.append,
+        )
 
+        self.assertEqual(len(translated), 1)
         self.assertEqual(call_count, 3)
+        self.assertTrue(
+            any("Chinese" in warning for warning in warnings),
+            f"Expected a warning about Chinese output, got: {warnings}",
+        )
 
     def test_translate_cues_can_skip_translation(self) -> None:
         cues = [SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Original")]
@@ -1074,6 +1088,104 @@ class TranslatorTests(unittest.TestCase):
         label = translation_provider_label("openai")
         self.assertEqual(label, "ChatGPT / OpenAI")
         self.assertEqual(translation_provider_code(label), "openai")
+
+
+    def test_extract_translations_salvages_missing_colon(self) -> None:
+        raw = '{"translations" ["Câu một", "Câu hai"]}'
+        result = _extract_translations(raw)
+        self.assertEqual(result, ["Câu một", "Câu hai"])
+
+    def test_extract_translations_salvages_trailing_comma(self) -> None:
+        raw = '{"translations": ["Một", "Hai",]}'
+        result = _extract_translations(raw)
+        self.assertEqual(result, ["Một", "Hai"])
+
+    def test_extract_translations_salvages_text_around_json(self) -> None:
+        raw = 'Sure! Here you go:\n\n{"translations": ["Xin chào.", "Tạm biệt."]}\n\nHope that helps!'
+        result = _extract_translations(raw)
+        self.assertEqual(result, ["Xin chào.", "Tạm biệt."])
+
+    def test_extract_translations_salvages_code_block_with_broken_json(self) -> None:
+        raw = '```json\n{"translations": ["OK", "Fine"]\n```'
+        result = _extract_translations(raw)
+        self.assertEqual(result, ["OK", "Fine"])
+
+    def test_extract_translations_handles_valid_json_normally(self) -> None:
+        raw = '{"translations": ["Bình thường.", "Không lỗi."]}'
+        result = _extract_translations(raw)
+        self.assertEqual(result, ["Bình thường.", "Không lỗi."])
+
+    def test_salvage_json_recovers_from_missing_colon(self) -> None:
+        cleaned = '{"translations" ["Một", "Hai"]}'
+        result = _salvage_json_translations(cleaned)
+        self.assertEqual(result, ["Một", "Hai"])
+
+    def test_salvage_json_falls_back_to_any_quoted_strings(self) -> None:
+        cleaned = 'some garbage {"câu một" "câu hai"} more garbage'
+        result = _salvage_json_translations(cleaned)
+        self.assertEqual(result, ["câu một", "câu hai"])
+
+    def test_translate_cues_retries_malformed_json_and_falls_back(self) -> None:
+        cues = [
+            SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Hello."),
+            SubtitleCue(index=2, start_ms=1000, end_ms=2000, text="World."),
+        ]
+        call_count = 0
+        warnings: list[str] = []
+
+        def fake_client(_messages, _options):
+            nonlocal call_count
+            call_count += 1
+            return '{"translations" ["Xin chào.", "Thế giới."]}'
+
+        translated = translate_cues(
+            cues,
+            AITranslationOptions(
+                source_language="en",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+            warning=warnings.append,
+        )
+
+        # First attempt: salvageJSON repair succeeds (missing colon)
+        self.assertEqual(len(translated), 2)
+        self.assertEqual(translated[0].text, "Xin chào.")
+        self.assertEqual(translated[1].text, "Thế giới.")
+        self.assertEqual(call_count, 1)
+
+    def test_translate_cues_retries_unrecoverable_json(self) -> None:
+        cues = [
+            SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Hi."),
+        ]
+        call_count = 0
+        warnings: list[str] = []
+
+        def fake_client(_messages, _options):
+            nonlocal call_count
+            call_count += 1
+            return "completely broken response with no json at all"
+
+        translated = translate_cues(
+            cues,
+            AITranslationOptions(
+                source_language="en",
+                target_language="vi",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+            warning=warnings.append,
+        )
+
+        self.assertEqual(len(translated), 1)
+        self.assertEqual(call_count, 2)
+        self.assertTrue(
+            any("JSON" in warning for warning in warnings),
+            f"Expected a warning about malformed JSON, got: {warnings}",
+        )
 
 
 if __name__ == "__main__":

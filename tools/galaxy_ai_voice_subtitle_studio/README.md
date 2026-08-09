@@ -170,6 +170,20 @@ Khi chạy CUDA, app tự đọc VRAM còn trống của card, chừa thêm 512 
 
 ProPainter chính thức yêu cầu PyTorch và khuyến nghị CUDA; cấu hình tiết kiệm bộ nhớ vẫn cần khoảng 6-7 GB VRAM cho video 640x480 và khoảng 7-8 GB cho 720x480 ở FP16. CPU chạy được nhưng có thể rất chậm với video dài. Quan trọng: code và model ProPainter chỉ được cấp phép cho **mục đích phi thương mại** theo [NTU S-Lab License 1.0](https://github.com/sczhou/ProPainter/blob/main/LICENSE); không dùng chế độ này cho nội dung thương mại nếu chưa có giấy phép riêng từ tác giả. Xem [hướng dẫn và mức VRAM chính thức](https://github.com/sczhou/ProPainter#memory-efficient-inference).
 
+## Tách giọng hát và nhạc nền
+
+Tab `Tách âm thanh` dùng model có sẵn trong thư mục `ultimatevocalremover/models` và giao diện theo workflow UVR: chọn input/output, WAV/FLAC/MP3, process method, model, segment, overlap, thiết bị, stem đơn, sample 30 giây và preset. Input có thể là audio hoặc video; video được chuẩn bị thành stereo 44.1 kHz bằng FFmpeg bundled trước khi tách. Preset tùy chỉnh được lưu riêng trong `audio_presets.json` và không được đưa lên Git.
+
+Engine chạy trong môi trường riêng tại `%LOCALAPPDATA%\GalaxyAIStudio\models\AudioSeparator`, không dùng chung dependency với Whisper hoặc ProPainter. Bấm nút bánh răng trong tab rồi chọn `Install / Update Engine`, hoặc chạy thủ công:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install_audio_separator.ps1 -Device auto
+```
+
+`Auto` ưu tiên NVIDIA CUDA, sau đó dùng DirectML cho MDX/VR trên Intel hoặc AMD GPU. Demucs không chạy DirectML ổn định nên tự dùng CPU khi không có NVIDIA. Mỗi lần xử lý tạo thư mục project riêng, các file stem và `audio_separation_manifest.json`; nút dừng sẽ kết thúc cả cây tiến trình đang chạy.
+
+Backend dùng [audio-separator](https://github.com/nomadkaraoke/python-audio-separator), wrapper MIT cho các model UVR. Khi phân phối sản phẩm, giữ credit cho Ultimate Vocal Remover và tác giả model theo yêu cầu của dự án nguồn.
+
 ## Output
 
 Mỗi lần generate tạo một thư mục riêng:

@@ -183,7 +183,7 @@ class GuiLayoutTests(unittest.TestCase):
         finally:
             root.destroy()
 
-    def test_main_tabs_separate_voice_and_subtitle_removal(self) -> None:
+    def test_main_tabs_include_full_audio_separation_workspace(self) -> None:
         try:
             root = tk.Tk()
         except tk.TclError as error:
@@ -193,7 +193,15 @@ class GuiLayoutTests(unittest.TestCase):
             app = GalaxyStudioApp(root, config_path=self.config_path)
 
             labels = [app.main_notebook.tab(tab_id, "text") for tab_id in app.main_notebook.tabs()]
-            self.assertEqual(labels, ["Voice", "Xóa phụ đề"])
+            self.assertEqual(labels, ["Voice", "Tách âm thanh", "Xóa phụ đề"])
+            self.assertEqual(app.audio_format.get(), "WAV")
+            self.assertIn("MDX-Net", app.audio_method_combo.cget("values"))
+            self.assertIn("Intel / AMD DirectML", app.audio_device_combo.cget("values"))
+            self.assertEqual(str(app.audio_stop_button.cget("state")), "disabled")
+            self.assertEqual(
+                tuple(app.audio_model_combo.cget("values")),
+                tuple(model.label for model in app._audio_models_for_method()),
+            )
             self.assertEqual(app.removal_preview_canvas.cget("width"), "480")
             self.assertEqual(app._removal_mode_code(), BLUR_MODE)
             self.assertIn("AI ProPainter", app.removal_mode_combo.cget("values"))
@@ -206,6 +214,99 @@ class GuiLayoutTests(unittest.TestCase):
             app.removal_mode.set("Fast AI (tối ưu)")
             app._on_removal_mode_changed()
             self.assertEqual(str(app.removal_device_combo.cget("state")), "readonly")
+        finally:
+            root.destroy()
+
+    def test_audio_separation_tab_fits_at_minimum_window_size(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            root.geometry("900x600")
+            app.main_notebook.select(app.audio_tab)
+            root.update_idletasks()
+            root.update()
+
+            self.assertFalse(app.log_frame.winfo_ismapped())
+            self.assertTrue(app.audio_log_text.winfo_ismapped())
+            tab_bottom = app.audio_tab.winfo_rooty() + app.audio_tab.winfo_height()
+            for widget in (
+                app.audio_input_browse_button,
+                app.audio_preset_combo,
+                app.audio_sample_check,
+                app.audio_stop_button,
+                app.audio_log_text,
+            ):
+                self.assertLessEqual(widget.winfo_rooty() + widget.winfo_height(), tab_bottom)
+        finally:
+            root.destroy()
+
+    def test_audio_method_and_single_stem_controls_stay_consistent(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.audio_method.set("VR Architecture")
+            app._on_audio_method_changed()
+            self.assertEqual(app.audio_segment_label.get(), "Window Size")
+            self.assertEqual(app.audio_overlap_label.get(), "Aggression")
+
+            app.audio_instrumental_only.set(True)
+            app.audio_vocals_only.set(True)
+            app._on_audio_vocals_changed()
+            self.assertTrue(app.audio_vocals_only.get())
+            self.assertFalse(app.audio_instrumental_only.get())
+        finally:
+            root.destroy()
+
+    def test_audio_progress_uses_percentage_reported_by_the_engine(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app._update_audio_progress_from_message("Processing audio 47%|####")
+
+            self.assertEqual(str(app.audio_progress.cget("mode")), "determinate")
+            self.assertEqual(float(app.audio_progress.cget("value")), 47.0)
+            self.assertEqual(app.status.get(), "Separating audio 47%")
+        finally:
+            root.destroy()
+
+    def test_audio_custom_preset_is_saved_and_can_be_applied(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.audio_format.set("MP3")
+            app.audio_sample_mode.set(True)
+            app.audio_vocals_only.set(True)
+            with patch("app.gui.simpledialog.askstring", return_value="Podcast Voice"):
+                app.save_current_audio_preset()
+
+            self.assertIn("Podcast Voice", app.audio_preset_combo.cget("values"))
+            self.assertTrue(app.audio_presets_path.is_file())
+
+            app.audio_format.set("WAV")
+            app.audio_sample_mode.set(False)
+            app.audio_vocals_only.set(False)
+            app.audio_saved_setting.set("Podcast Voice")
+            app._on_audio_preset_changed()
+
+            self.assertEqual(app.audio_format.get(), "MP3")
+            self.assertTrue(app.audio_sample_mode.get())
+            self.assertTrue(app.audio_vocals_only.get())
         finally:
             root.destroy()
 

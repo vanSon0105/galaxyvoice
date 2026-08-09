@@ -8,6 +8,13 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
+from .audio_separation import (
+    AUDIO_OUTPUT_FORMATS,
+    AUTO_AUDIO_DEVICE,
+    MDX_METHOD,
+    normalize_audio_device,
+    normalize_audio_method,
+)
 from .compute import AUTO_DEVICE, normalize_processing_device
 from .subtitle_removal import BLUR_MODE, SUBTITLE_REMOVAL_MODES
 from .transcription import WHISPER_MODELS
@@ -15,7 +22,7 @@ from .translator import translation_provider_codes
 from .tts import tts_engine_codes
 
 
-CONFIG_VERSION = 2
+CONFIG_VERSION = 3
 
 
 @dataclass(frozen=True)
@@ -47,6 +54,18 @@ class AppConfig:
     subtitle_blur_strength: int = 18
     removal_processing_device: str = AUTO_DEVICE
     propainter_license_accepted: bool = False
+    audio_output_dir: str = ""
+    audio_process_method: str = MDX_METHOD
+    audio_model_name: str = "Kim_Vocal_2.onnx"
+    audio_output_format: str = "WAV"
+    audio_segment_size: str = "256"
+    audio_overlap: str = "Default"
+    audio_processing_device: str = AUTO_AUDIO_DEVICE
+    audio_gpu_conversion: bool = True
+    audio_vocals_only: bool = False
+    audio_instrumental_only: bool = False
+    audio_sample_mode: bool = False
+    audio_saved_setting: str = "Default"
 
 
 def default_config_path() -> Path:
@@ -84,6 +103,15 @@ def load_app_config(path: Path | None = None) -> AppConfig:
     ).lower()
     if removal_mode not in SUBTITLE_REMOVAL_MODES:
         removal_mode = defaults.subtitle_removal_mode
+
+    audio_output_format = _string(
+        payload.get("audio_output_format"), defaults.audio_output_format
+    ).upper()
+    if audio_output_format not in AUDIO_OUTPUT_FORMATS:
+        audio_output_format = defaults.audio_output_format
+    audio_saved_setting = _string(
+        payload.get("audio_saved_setting"), defaults.audio_saved_setting
+    ) or defaults.audio_saved_setting
 
     subtitle_region_x = _integer(
         payload.get("subtitle_region_x"), defaults.subtitle_region_x, 0, 99
@@ -139,6 +167,32 @@ def load_app_config(path: Path | None = None) -> AppConfig:
         propainter_license_accepted=_boolean(
             payload.get("propainter_license_accepted"), defaults.propainter_license_accepted
         ),
+        audio_output_dir=_string(payload.get("audio_output_dir"), defaults.audio_output_dir),
+        audio_process_method=normalize_audio_method(
+            _string(payload.get("audio_process_method"), defaults.audio_process_method)
+        ),
+        audio_model_name=_string(payload.get("audio_model_name"), defaults.audio_model_name),
+        audio_output_format=audio_output_format,
+        audio_segment_size=_string(
+            payload.get("audio_segment_size"), defaults.audio_segment_size
+        ),
+        audio_overlap=_string(payload.get("audio_overlap"), defaults.audio_overlap),
+        audio_processing_device=normalize_audio_device(
+            _string(payload.get("audio_processing_device"), defaults.audio_processing_device)
+        ),
+        audio_gpu_conversion=_boolean(
+            payload.get("audio_gpu_conversion"), defaults.audio_gpu_conversion
+        ),
+        audio_vocals_only=_boolean(
+            payload.get("audio_vocals_only"), defaults.audio_vocals_only
+        ),
+        audio_instrumental_only=_boolean(
+            payload.get("audio_instrumental_only"), defaults.audio_instrumental_only
+        ),
+        audio_sample_mode=_boolean(
+            payload.get("audio_sample_mode"), defaults.audio_sample_mode
+        ),
+        audio_saved_setting=audio_saved_setting,
     )
 
 

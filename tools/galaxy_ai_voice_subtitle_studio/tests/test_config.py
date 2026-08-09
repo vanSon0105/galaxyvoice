@@ -42,6 +42,18 @@ class ConfigTests(unittest.TestCase):
             subtitle_blur_strength=24,
             removal_processing_device="cuda",
             propainter_license_accepted=True,
+            audio_output_dir=r"D:\Videos\Separated",
+            audio_process_method="vr",
+            audio_model_name="1_HP-UVR.pth",
+            audio_output_format="FLAC",
+            audio_segment_size="320",
+            audio_overlap="10",
+            audio_processing_device="directml",
+            audio_gpu_conversion=True,
+            audio_vocals_only=True,
+            audio_instrumental_only=False,
+            audio_sample_mode=True,
+            audio_saved_setting="Vocal extraction",
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -66,6 +78,9 @@ class ConfigTests(unittest.TestCase):
             "subtitle_blur_strength": 999,
             "voice_processing_device": "intel",
             "removal_processing_device": "amd",
+            "audio_process_method": "unknown",
+            "audio_output_format": "AAC",
+            "audio_processing_device": "metal",
         }
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -87,6 +102,9 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.subtitle_blur_strength, 100)
         self.assertEqual(config.voice_processing_device, "auto")
         self.assertEqual(config.removal_processing_device, "auto")
+        self.assertEqual(config.audio_process_method, "mdx")
+        self.assertEqual(config.audio_output_format, "WAV")
+        self.assertEqual(config.audio_processing_device, "auto")
 
     def test_fast_ai_removal_mode_is_restored(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

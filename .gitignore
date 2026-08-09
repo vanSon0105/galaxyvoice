@@ -2,6 +2,11 @@
 .agents/
 agents/
 
+# Local third-party installers and extracted runtimes
+/ultimatevocalremover/
+/UVR_v*_setup.exe
+/innounp.exe
+
 # Generated app output
 result/
 results/

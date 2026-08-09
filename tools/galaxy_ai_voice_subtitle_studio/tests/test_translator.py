@@ -26,6 +26,7 @@ from app.translator import (  # noqa: E402
     translate_script_text,
     translation_provider_code,
     translation_provider_label,
+    validate_translation_options,
 )
 
 
@@ -604,8 +605,115 @@ class TranslatorTests(unittest.TestCase):
             client=fake_client,
         )
 
-        self.assertIn("m\u1ed9t", translated[0].text)
+        self.assertEqual(translated[0].text, "\u0110\u00e2y l\u00e0 m\u1ed9t b\u00e0i ki\u1ec3m tra.")
+        self.assertEqual(call_count, 2)
+
+    def test_translate_cues_retries_english_when_target_uses_another_script(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Hello")
+        responses = iter([["Still English"], ["\u3053\u3093\u306b\u3061\u306f"]])
+        call_count = 0
+
+        def fake_client(_messages, _options):
+            nonlocal call_count
+            call_count += 1
+            return json.dumps({"translations": next(responses)}, ensure_ascii=False)
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="en",
+                target_language="ja",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "\u3053\u3093\u306b\u3061\u306f")
+        self.assertEqual(call_count, 2)
+
+    def test_translate_cues_retries_english_for_a_french_target(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Hello")
+        responses = iter([["This is still English"], ["Ceci est toujours en français"]])
+
+        def fake_client(_messages, _options):
+            return json.dumps({"translations": next(responses)}, ensure_ascii=False)
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="en",
+                target_language="fr",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "Ceci est toujours en français")
+
+    def test_translate_cues_accepts_a_short_french_sentence(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="We are done")
+        call_count = 0
+
+        def fake_client(_messages, _options):
+            nonlocal call_count
+            call_count += 1
+            return json.dumps({"translations": ["On a fini."]}, ensure_ascii=False)
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="en",
+                target_language="fr",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "On a fini.")
         self.assertEqual(call_count, 1)
+
+    def test_translate_cues_retries_chinese_for_an_english_target(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Hello")
+        responses = iter([["这仍然是中文"], ["This is English"]])
+
+        def fake_client(_messages, _options):
+            return json.dumps({"translations": next(responses)}, ensure_ascii=False)
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="zh",
+                target_language="en",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "This is English")
+
+    def test_translate_cues_retries_a_chinese_sentence_for_a_japanese_target(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="这是一个中文句子")
+        responses = iter([["这仍然是一个中文句子"], ["これは日本語の字幕です"]])
+
+        def fake_client(_messages, _options):
+            return json.dumps({"translations": next(responses)}, ensure_ascii=False)
+
+        translated = translate_cues(
+            [cue],
+            AITranslationOptions(
+                source_language="zh",
+                target_language="ja",
+                api_key="test-key",
+                model="test-model",
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(translated[0].text, "これは日本語の字幕です")
 
     def test_translate_cues_preserves_an_unchanged_single_name(self) -> None:
         cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Minecraft")
@@ -931,7 +1039,7 @@ class TranslatorTests(unittest.TestCase):
         self.assertEqual(requested_texts, [["\u7b2c\u4e00\u53e5", "\u7b2c\u4e8c\u53e5"], ["\u7b2c\u4e8c\u53e5"]])
         self.assertEqual([cue.text for cue in translated], ["C\u00e2u \u0111\u1ea7u \u0111\u00e3 d\u1ecbch", "C\u00e2u th\u1ee9 hai \u0111\u00e3 d\u1ecbch"])
 
-    def test_translate_cues_falls_back_when_output_language_does_not_improve(self) -> None:
+    def test_translate_cues_rejects_output_when_language_does_not_improve(self) -> None:
         cues = [
             SubtitleCue(index=index, start_ms=index * 1000, end_ms=(index + 1) * 1000, text=f"这是第 {index} 行")
             for index in range(1, 21)
@@ -951,26 +1059,26 @@ class TranslatorTests(unittest.TestCase):
                 }
             )
 
-        translated = translate_cues(
-            cues,
-            AITranslationOptions(
-                source_language="auto",
-                target_language="vi",
-                api_key="test-key",
-                model="test-model",
-            ),
-            client=fake_client,
-            warning=warnings.append,
-        )
+        with self.assertRaisesRegex(RuntimeError, "English"):
+            translate_cues(
+                cues,
+                AITranslationOptions(
+                    source_language="auto",
+                    target_language="vi",
+                    api_key="test-key",
+                    model="test-model",
+                ),
+                client=fake_client,
+                warning=warnings.append,
+            )
 
-        self.assertEqual(len(translated), 20)
         self.assertEqual(call_count, 2)
         self.assertTrue(
             any("English" in warning for warning in warnings),
             f"Expected a warning about English output, got: {warnings}",
         )
 
-    def test_translate_cues_falls_back_when_chinese_output_persists(self) -> None:
+    def test_translate_cues_rejects_output_when_chinese_persists(self) -> None:
         cues = [
             SubtitleCue(
                 index=1,
@@ -990,19 +1098,19 @@ class TranslatorTests(unittest.TestCase):
                 ensure_ascii=False,
             )
 
-        translated = translate_cues(
-            cues,
-            AITranslationOptions(
-                source_language="auto",
-                target_language="vi",
-                api_key="test-key",
-                model="test-model",
-            ),
-            client=fake_client,
-            warning=warnings.append,
-        )
+        with self.assertRaisesRegex(RuntimeError, "Chinese"):
+            translate_cues(
+                cues,
+                AITranslationOptions(
+                    source_language="auto",
+                    target_language="vi",
+                    api_key="test-key",
+                    model="test-model",
+                ),
+                client=fake_client,
+                warning=warnings.append,
+            )
 
-        self.assertEqual(len(translated), 1)
         self.assertEqual(call_count, 3)
         self.assertTrue(
             any("Chinese" in warning for warning in warnings),
@@ -1120,10 +1228,68 @@ class TranslatorTests(unittest.TestCase):
         result = _salvage_json_translations(cleaned)
         self.assertEqual(result, ["Một", "Hai"])
 
-    def test_salvage_json_falls_back_to_any_quoted_strings(self) -> None:
+    def test_salvage_json_rejects_unrelated_quoted_strings(self) -> None:
         cleaned = 'some garbage {"câu một" "câu hai"} more garbage'
         result = _salvage_json_translations(cleaned)
-        self.assertEqual(result, ["câu một", "câu hai"])
+        self.assertIsNone(result)
+
+    def test_salvage_json_returns_none_when_nothing_can_be_recovered(self) -> None:
+        self.assertIsNone(_salvage_json_translations("not json"))
+
+    def test_extract_translations_preserves_the_original_json_error(self) -> None:
+        with self.assertRaises(json.JSONDecodeError):
+            _extract_translations("not json")
+
+    def test_translation_options_repr_hides_api_key(self) -> None:
+        options = AITranslationOptions(
+            source_language="en",
+            target_language="vi",
+            api_key="secret-key",
+        )
+
+        self.assertNotIn("secret-key", repr(options))
+
+    def test_translation_rejects_http_api_url_when_key_is_present(self) -> None:
+        with self.assertRaisesRegex(RuntimeError, "HTTPS"):
+            validate_translation_options(
+                AITranslationOptions(
+                    source_language="en",
+                    target_language="vi",
+                    api_key="secret-key",
+                    base_url="http://api.example.com/v1",
+                )
+            )
+
+    def test_translation_allows_http_for_a_local_api(self) -> None:
+        validate_translation_options(
+            AITranslationOptions(
+                source_language="en",
+                target_language="vi",
+                base_url="http://127.0.0.1:11434/v1",
+            )
+        )
+
+    def test_invalid_language_output_is_not_written_to_checkpoint(self) -> None:
+        cue = SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Hello")
+
+        def fake_client(_messages, _options):
+            return json.dumps({"translations": ["Still English"]})
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            checkpoint_path = Path(temp_dir) / "translation.json"
+            with self.assertRaisesRegex(RuntimeError, "English"):
+                translate_cues(
+                    [cue],
+                    AITranslationOptions(
+                        source_language="en",
+                        target_language="vi",
+                        api_key="test-key",
+                    ),
+                    client=fake_client,
+                    checkpoint_path=checkpoint_path,
+                )
+
+            self.assertFalse(checkpoint_path.exists())
 
     def test_translate_cues_retries_malformed_json_and_falls_back(self) -> None:
         cues = [
@@ -1162,30 +1328,30 @@ class TranslatorTests(unittest.TestCase):
         ]
         call_count = 0
         warnings: list[str] = []
+        requests: list[list[dict[str, str]]] = []
 
-        def fake_client(_messages, _options):
+        def fake_client(messages, _options):
             nonlocal call_count
             call_count += 1
+            requests.append(messages)
             return "completely broken response with no json at all"
 
-        translated = translate_cues(
-            cues,
-            AITranslationOptions(
-                source_language="en",
-                target_language="vi",
-                api_key="test-key",
-                model="test-model",
-            ),
-            client=fake_client,
-            warning=warnings.append,
-        )
+        with self.assertRaisesRegex(RuntimeError, "JSON"):
+            translate_cues(
+                cues,
+                AITranslationOptions(
+                    source_language="en",
+                    target_language="vi",
+                    api_key="test-key",
+                    model="test-model",
+                ),
+                client=fake_client,
+                warning=warnings.append,
+            )
 
-        self.assertEqual(len(translated), 1)
         self.assertEqual(call_count, 2)
-        self.assertTrue(
-            any("JSON" in warning for warning in warnings),
-            f"Expected a warning about malformed JSON, got: {warnings}",
-        )
+        retry_prompt = "\n".join(message["content"] for message in requests[1])
+        self.assertIn("JSON", retry_prompt)
 
 
 if __name__ == "__main__":

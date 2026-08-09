@@ -51,6 +51,9 @@ File nằm cạnh `run.py` và được cập nhật sau khi thay đổi output 
 
 API key, nội dung Script, project name và video đang chọn không được ghi vào file cấu hình. API key tiếp tục được đọc từ ô nhập hoặc biến môi trường.
 
+App ghi log chẩn đoán dạng xoay vòng tại `%LOCALAPPDATA%\GalaxyAIStudio\logs\galaxy-studio.log`.
+Log chỉ ghi trạng thái vận hành, tên tác vụ và loại lỗi; không ghi API key hay nội dung subtitle.
+
 ## Tạo shortcut ngoài Desktop
 
 ```powershell
@@ -131,9 +134,11 @@ Chỉ tạo SRT gốc, không dịch:
 python run.py --video .\video.mp4 --transcribe --source-language auto --no-translate
 ```
 
-Trong GUI, `Create Subtitles` chỉ xử lý video và đưa kết quả vào ba tab `Script`, `Sub gốc`, `Sub dịch`; bước này chưa ghi file vào output folder. Có thể kiểm tra hoặc sửa nội dung SRT trong hai tab subtitle, sau đó bấm `Export Subtitles` để xuất bộ file theo đúng cấu trúc cũ. CLI với `--transcribe` vẫn xử lý và xuất file ngay trong một lệnh.
+Trong GUI, `Create Subtitles` chỉ xử lý video và đưa kết quả vào ba tab `Script`, `Sub gốc`, `Sub dịch`; bước này chưa ghi file vào output folder. Có thể kiểm tra hoặc sửa nội dung SRT trong hai tab subtitle, sau đó bấm `Export Subtitles` để xuất bộ file theo đúng cấu trúc cũ. App hỏi xác nhận trước khi đóng, đổi video hoặc tạo lại nếu draft hiện tại chưa được export. CLI với `--transcribe` vẫn xử lý và xuất file ngay trong một lệnh.
 
 App lưu cache transcription và checkpoint dịch tại `%LOCALAPPDATA%\GalaxyAIStudio\cache`. Khi chạy lại cùng video, ngôn ngữ và Whisper model, app vẫn trích audio phục vụ export nhưng bỏ qua bước Whisper đã hoàn thành. Phần dịch tiếp tục từ các cue còn thiếu sau lỗi mạng hoặc khi app bị đóng; API key không được ghi vào cache.
+
+Batch AI trả JSON lỗi không thể phục hồi hoặc sai ngôn ngữ sẽ không được đánh dấu hoàn thành. Các batch đã dịch đúng vẫn nằm trong checkpoint; chạy lại sẽ tiếp tục phần còn thiếu thay vì xuất file subtitle trộn ngôn ngữ.
 
 DeepSeek dịch các batch nhỏ song song và luôn ghép kết quả theo index gốc. Thanh tiến độ hiển thị số cue đã dịch, ví dụ `Translating 240/768`. Batch nào trả sai ngôn ngữ mới được chia nhỏ và chạy fallback riêng, nên các batch đúng không bị làm lại.
 

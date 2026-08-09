@@ -33,6 +33,30 @@ class TextSplitterTests(unittest.TestCase):
 
         self.assertEqual(chunks, ["Xin chao.", "Tam biet."])
 
+    def test_split_text_keeps_common_abbreviations_with_their_sentence(self) -> None:
+        chunks = split_text(
+            "Dr. Smith measured 3.14 units. Visit https://example.com/a.b now.",
+            max_chars=120,
+        )
+
+        self.assertEqual(
+            chunks,
+            [
+                "Dr. Smith measured 3.14 units.",
+                "Visit https://example.com/a.b now.",
+            ],
+        )
+
+    def test_split_text_can_end_a_sentence_after_us_abbreviation(self) -> None:
+        chunks = split_text("I live in the U.S. It is large.", max_chars=120)
+
+        self.assertEqual(chunks, ["I live in the U.S.", "It is large."])
+
+    def test_split_text_keeps_us_with_a_following_proper_name(self) -> None:
+        chunks = split_text("The U.S. Army arrived.", max_chars=120)
+
+        self.assertEqual(chunks, ["The U.S. Army arrived."])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -4,13 +4,15 @@ import json
 import re
 import unicodedata
 import urllib.error
+import urllib.parse
 import urllib.request
 from concurrent.futures import CancelledError, FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
 from .cache import read_json, stable_digest, write_json_atomic
+from .diagnostics import get_logger
 from .env_config import first_env
 from .languages import label_from_code
 from .srt import SubtitleCue
@@ -24,6 +26,7 @@ DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
 DEEPSEEK_MODELS = ("deepseek-v4-flash", "deepseek-v4-pro")
 OPENAI_MODELS = ("gpt-4o-mini", "gpt-4o", "gpt-4.1")
+LOGGER = get_logger("translator")
 
 
 @dataclass(frozen=True)
@@ -72,7 +75,7 @@ class AITranslationOptions:
     source_language: str
     target_language: str
     provider: str = DEFAULT_TRANSLATION_PROVIDER
-    api_key: str = ""
+    api_key: str = field(default="", repr=False)
     model: str = ""
     base_url: str = ""
     batch_size: int = 20
@@ -99,6 +102,7 @@ _ENGLISH_WORDS = frozenset(
         "can",
         "do",
         "done",
+        "english",
         "explosion",
         "finish",
         "finished",
@@ -123,17 +127,33 @@ _ENGLISH_WORDS = frozenset(
         "second",
         "sorry",
         "start",
+        "still",
         "stop",
         "that",
         "the",
         "this",
         "to",
+        "translation",
         "was",
         "wait",
         "we",
         "welcome",
         "with",
         "you",
+    }
+)
+_ENGLISH_SIGNAL_WORDS = frozenset(
+    {
+        "english",
+        "hello",
+        "please",
+        "second",
+        "sorry",
+        "still",
+        "this",
+        "translation",
+        "wait",
+        "welcome",
     }
 )
 _VIETNAMESE_UNMARKED_WORDS = frozenset(
@@ -248,6 +268,9 @@ def validate_translation_options(options: AITranslationOptions) -> None:
     options = resolve_translation_options(options)
     if not options.target_language or options.target_language == "none":
         return
+    parsed_base_url = urllib.parse.urlparse(options.base_url)
+    if options.api_key and not _is_local_base_url(options.base_url) and parsed_base_url.scheme.lower() != "https":
+        raise RuntimeError("AI base URL must use HTTPS when an API key is provided.")
     if _requires_api_key(options.base_url) and not options.api_key:
         provider = _provider_defaults(options.provider)
         env_hint = "/".join(provider.api_key_env_names)
@@ -541,17 +564,17 @@ def _translate_batch(
         raw = client(messages, options)
         try:
             translations = _extract_translations(raw)
-        except json.JSONDecodeError:
-            # AI returned malformed JSON — retry with a format hint
-            wrong_language = "malformed JSON" if attempt else ""
+        except json.JSONDecodeError as error:
+            wrong_language = "malformed JSON"
             if attempt == _TRANSLATION_ATTEMPTS - 1:
-                _JUNK_JSON_WARNING = (
-                    "AI returned malformed JSON that could not be repaired. "
-                    "Review these lines in Sub dịch before exporting."
+                LOGGER.warning(
+                    "Translation batch rejected after malformed JSON retry (cues=%d)",
+                    len(texts),
                 )
-                if warning is not None:
-                    warning(_JUNK_JSON_WARNING)
-                return texts
+                raise RuntimeError(
+                    "AI trả về JSON không hợp lệ sau khi đã thử lại. "
+                    "Không lưu batch này; hãy chạy lại để tiếp tục từ checkpoint."
+                ) from error
             continue
         if len(translations) != len(texts):
             if len(texts) > 1:
@@ -609,12 +632,19 @@ def _translate_batch(
         ) is None:
             return [direct_translation]
 
+    message = (
+        f"AI vẫn trả về {wrong_language or 'ngôn ngữ khác'} sau "
+        f"{_TRANSLATION_ATTEMPTS} lần thử lại. Không lưu batch sai ngôn ngữ; "
+        "hãy chạy lại để tiếp tục từ checkpoint."
+    )
     if warning is not None:
-        warning(
-            f"AI continued to return {wrong_language or 'another language'} after retrying. "
-            "Review these lines in Sub dịch before exporting."
-        )
-    return translations
+        warning(message)
+    LOGGER.warning(
+        "Translation batch rejected after language validation (detected=%s, cues=%d)",
+        wrong_language or "unknown",
+        len(texts),
+    )
+    raise RuntimeError(message)
 
 
 def _translate_split_batch(
@@ -770,8 +800,9 @@ def _wrong_output_language(
     target_language: str,
     source_texts: list[str] | None = None,
 ) -> str | None:
-    if target_language.strip().lower() != "vi":
-        return None
+    normalized_target = target_language.strip().lower()
+    if normalized_target != "vi":
+        return _wrong_script_for_target(translations, normalized_target, source_texts)
 
     for translation in translations:
         if any(_is_han(character) for character in translation):
@@ -803,13 +834,105 @@ def _wrong_output_language(
         ):
             return None
         return "English"
-    if vietnamese_marks and english_words >= max(5, len(words) // 3):
+    if vietnamese_marks and english_words >= max(2, (len(words) + 1) // 2):
         return "English"
     if len(words) < 12:
         return None
     if vietnamese_marks < 2 and english_words >= max(4, len(words) // 8):
         return "English"
     return None
+
+
+def _wrong_script_for_target(
+    translations: list[str],
+    target_language: str,
+    source_texts: list[str] | None,
+) -> str | None:
+    combined = " ".join(translations)
+    if (
+        len(translations) == 1
+        and source_texts
+        and _is_unchanged_single_name(translations[0], source_texts[0])
+    ):
+        return None
+
+    latin_targets = {"en", "fr", "de", "es", "id"}
+    if target_language in latin_targets:
+        detected_script = _detect_non_latin_script(combined)
+        if detected_script is not None:
+            return detected_script
+        if target_language != "en" and _looks_like_english(combined):
+            return "English"
+        return None
+
+    if target_language == "ja":
+        if _contains_codepoint_in_ranges(combined, ((0x3040, 0x30FF),)):
+            return None
+        han_characters = [character for character in combined if _is_han(character)]
+        if han_characters:
+            unchanged_source = bool(
+                len(translations) == 1
+                and source_texts
+                and " ".join(translations[0].split()).casefold()
+                == " ".join(source_texts[0].split()).casefold()
+            )
+            if unchanged_source or len(han_characters) > 4:
+                return "Chinese"
+            return None
+        if any(character.isalpha() for character in combined):
+            return "English" if _looks_like_english(combined) else "another language"
+        return None
+
+    target_ranges: dict[str, tuple[tuple[int, int], ...]] = {
+        "zh": ((0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF)),
+        "ko": ((0x1100, 0x11FF), (0x3130, 0x318F), (0xAC00, 0xD7AF)),
+        "ru": ((0x0400, 0x04FF),),
+        "th": ((0x0E00, 0x0E7F),),
+    }
+    ranges = target_ranges.get(target_language)
+    if ranges is None:
+        return None
+
+    if _contains_codepoint_in_ranges(combined, ranges):
+        return None
+    if any(character.isalpha() for character in combined):
+        return "another language"
+    return None
+
+
+def _looks_like_english(text: str) -> bool:
+    normalized = unicodedata.normalize("NFD", text)
+    latinized = "".join(
+        character for character in normalized if not unicodedata.combining(character)
+    )
+    words = re.findall(r"[a-z]+", latinized.lower())
+    english_words = sum(word in _ENGLISH_WORDS for word in words)
+    signal_words = sum(word in _ENGLISH_SIGNAL_WORDS for word in words)
+    return bool(words) and signal_words >= 2 and english_words >= max(2, len(words) // 2)
+
+
+def _detect_non_latin_script(text: str) -> str | None:
+    scripts = (
+        ("Japanese", ((0x3040, 0x30FF),)),
+        ("Korean", ((0x1100, 0x11FF), (0x3130, 0x318F), (0xAC00, 0xD7AF))),
+        ("Russian", ((0x0400, 0x04FF),)),
+        ("Thai", ((0x0E00, 0x0E7F),)),
+        ("Chinese", ((0x3400, 0x4DBF), (0x4E00, 0x9FFF), (0xF900, 0xFAFF))),
+    )
+    for label, ranges in scripts:
+        if _contains_codepoint_in_ranges(text, ranges):
+            return label
+    return None
+
+
+def _contains_codepoint_in_ranges(
+    text: str,
+    ranges: tuple[tuple[int, int], ...],
+) -> bool:
+    return any(
+        any(start <= ord(character) <= end for start, end in ranges)
+        for character in text
+    )
 
 
 def _is_unchanged_single_name(translation: str, source_text: str) -> bool:
@@ -819,7 +942,7 @@ def _is_unchanged_single_name(translation: str, source_text: str) -> bool:
     if any(_is_han(character) for character in source_text):
         return False
     tokens = re.findall(r"[A-Za-z][A-Za-z0-9'-]*", normalized_translation)
-    return len(tokens) == 1 and (
+    return len(tokens) == 1 and tokens[0].lower() not in _ENGLISH_WORDS and (
         tokens[0].isupper()
         or tokens[0][0].isupper()
         or any(character.isdigit() for character in tokens[0])
@@ -845,7 +968,10 @@ def _extract_translations(raw: str) -> list[str]:
     try:
         data = json.loads(cleaned)
     except json.JSONDecodeError:
-        data = _salvage_json_translations(cleaned)
+        salvaged = _salvage_json_translations(cleaned)
+        if salvaged is None:
+            raise
+        data = salvaged
     if isinstance(data, dict):
         data = data.get("translations")
     if not isinstance(data, list):
@@ -853,7 +979,7 @@ def _extract_translations(raw: str) -> list[str]:
     return [str(item).strip() for item in data]
 
 
-def _salvage_json_translations(cleaned: str) -> list[str]:
+def _salvage_json_translations(cleaned: str) -> list[str] | None:
     """Attempt to recover translations from malformed JSON by regex."""
     # Try to find the translations array content between [ and ]
     match = re.search(r'"translations"\s*:?\s*\[(.*?)\]', cleaned, re.DOTALL)
@@ -862,14 +988,7 @@ def _salvage_json_translations(cleaned: str) -> list[str]:
         items = re.findall(r'"((?:[^"\\]|\\.)*)"', inner)
         if items:
             return items
-    # Last resort: try to extract any quoted strings from the response
-    items = re.findall(r'"((?:[^"\\]|\\.)*)"', cleaned)
-    if items:
-        # Filter out keys, keep values that look like translated text
-        candidates = [item for item in items if len(item) >= 1 and item not in {"translations"}]
-        if candidates:
-            return candidates
-    raise
+    return None
 
 
 def _chat_completion(messages: list[dict[str, str]], options: AITranslationOptions) -> str:
@@ -910,8 +1029,12 @@ def _chat_completion(messages: list[dict[str, str]], options: AITranslationOptio
 
 
 def _requires_api_key(base_url: str) -> bool:
-    lowered = base_url.lower()
-    return not any(host in lowered for host in ["localhost", "127.0.0.1", "0.0.0.0"])
+    return not _is_local_base_url(base_url)
+
+
+def _is_local_base_url(base_url: str) -> bool:
+    hostname = urllib.parse.urlparse(base_url).hostname
+    return hostname in {"localhost", "127.0.0.1", "0.0.0.0", "::1"}
 
 
 def _same_language(source_language: str, target_language: str) -> bool:

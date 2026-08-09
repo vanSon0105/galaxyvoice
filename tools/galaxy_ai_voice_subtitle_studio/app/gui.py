@@ -17,6 +17,7 @@ from .compute import (
     processing_device_label,
 )
 from .config import AppConfig, default_config_path, load_app_config, save_app_config
+from .diagnostics import get_logger, log_operation_failure
 from .engine import GenerationOptions, GenerationResult, generate_package
 from .ffmpeg import find_ffmpeg, find_ffplay
 from .languages import code_from_label, label_from_code, language_labels
@@ -75,6 +76,7 @@ REMOVAL_MODE_LABELS = {
     FAST_AI_INPAINT_MODE: "Fast AI (tối ưu)",
 }
 REMOVAL_MODE_CODES = {label: code for code, label in REMOVAL_MODE_LABELS.items()}
+LOGGER = get_logger("gui")
 PREVIEW_WIDTH = 480
 PREVIEW_HEIGHT = 270
 PREVIEW_FPS = 12
@@ -104,6 +106,9 @@ class GalaxyStudioApp:
             GenerationResult | MediaExtractionResult | VideoSubtitleResult | SubtitleRemovalResult | None
         ) = None
         self.subtitle_draft: VideoSubtitleDraft | None = None
+        self._subtitle_draft_dirty = False
+        self._subtitle_edit_revision = 0
+        self._subtitle_export_revision: int | None = None
         self._poll_after_id: str | None = None
         self._voice_refresh_after_id: str | None = None
         self._config_save_after_id: str | None = None
@@ -189,13 +194,8 @@ class GalaxyStudioApp:
         self.root.protocol("WM_DELETE_WINDOW", self._close_app)
         self._poll_events()
         initial_voices = self.tts.initial_voices()
-        saved_voice_needs_refresh = bool(
-            saved_config.voice_name
-            and all(voice.name != saved_config.voice_name for voice in initial_voices)
-        )
         self._apply_voices(initial_voices, preserve_current=True)
-        if not initial_voices or saved_voice_needs_refresh:
-            self._voice_refresh_after_id = self.root.after_idle(self._refresh_initial_voices)
+        self._voice_refresh_after_id = self.root.after_idle(self._refresh_initial_voices)
         self._bind_config_traces()
         self._config_save_enabled = self._config_load_error is None
 
@@ -268,6 +268,8 @@ class GalaxyStudioApp:
             font=("Consolas", 10),
         )
         self.script_text.bind("<<Modified>>", self._on_script_modified)
+        self.source_subtitle_text.bind("<<Modified>>", self._on_subtitle_modified)
+        self.translated_subtitle_text.bind("<<Modified>>", self._on_subtitle_modified)
 
         right = ttk.Frame(self.voice_tab, style="Panel.TFrame", padding=14)
         right.grid(row=0, column=1, sticky="nsew")
@@ -771,10 +773,17 @@ class GalaxyStudioApp:
                 ("All files", "*.*"),
             ]
         )
-        if file_path:
-            self.video_path.set(file_path)
-            if self.project_name.get() == "galaxy_project":
-                self.project_name.set(Path(file_path).stem)
+        if not file_path or file_path == self.video_path.get():
+            return
+        if not self._confirm_discard_subtitle_draft(
+            "Đổi video sẽ bỏ bản phụ đề hiện tại chưa export. Tiếp tục?"
+        ):
+            return
+
+        self._discard_subtitle_draft()
+        self.video_path.set(file_path)
+        if self.project_name.get() == "galaxy_project":
+            self.project_name.set(Path(file_path).stem)
 
     def browse_removal_video(self) -> None:
         file_path = filedialog.askopenfilename(
@@ -1390,8 +1399,7 @@ class GalaxyStudioApp:
         initial_voices = self.tts.initial_voices()
         self._apply_voices(initial_voices)
         self._append_log(f"Voice engine: {self.tts.label}")
-        if not initial_voices:
-            self.refresh_voices()
+        self.refresh_voices()
 
     def start_generate(self) -> None:
         if self.worker and self.worker.is_alive():
@@ -1415,6 +1423,26 @@ class GalaxyStudioApp:
             keep_segments=self.keep_segments.get(),
         )
 
+        translation_options = self._build_generation_translation_options()
+        source_language = self._script_source_language()
+        voice_language = (
+            translation_options.target_language
+            if translation_options is not None
+            else source_language
+        )
+        if voice_language and voice_language not in {"auto", "none"}:
+            voice_language_label = label_from_code(voice_language, default=voice_language)
+            if not self._select_voice_for_language(voice_language):
+                if not self.voice_worker or not self.voice_worker.is_alive():
+                    self.refresh_voices()
+                messagebox.showwarning(
+                    "Missing matching voice",
+                    f"Chưa tải được voice cho {voice_language_label}. "
+                    "Đợi Refresh hoàn tất rồi bấm Generate lại.",
+                )
+                return
+            options = replace(options, voice_name=self.voice_name.get() or None)
+
         self.last_result = None
         self.open_button.configure(state="disabled")
         self.removal_open_button.configure(state="disabled")
@@ -1423,14 +1451,12 @@ class GalaxyStudioApp:
         self.status.set("Generating")
         self._append_log("Starting generation...")
 
-        translation_options = self._build_generation_translation_options()
         if translation_options:
-            target = label_from_code(translation_options.target_language, default=translation_options.target_language)
-            if self._select_voice_for_language(translation_options.target_language):
-                options = replace(options, voice_name=self.voice_name.get() or None)
-                self._append_log(f"Selected voice for {target}: {self.voice_name.get()}")
+            self._append_log(f"Selected voice for {voice_language_label}: {self.voice_name.get()}")
             self.status.set("Translating")
-            self._append_log(f"Will translate Script to {target} before generating voice.")
+            self._append_log(
+                f"Will translate Script to {voice_language_label} before generating voice."
+            )
 
         self.worker = threading.Thread(
             target=self._run_generation,
@@ -1508,6 +1534,11 @@ class GalaxyStudioApp:
         if not video:
             messagebox.showwarning("Missing video", "Choose a video file before creating subtitles.")
             return
+        if not self._confirm_discard_subtitle_draft(
+            "Tạo lại phụ đề sẽ bỏ bản hiện tại chưa export. Tiếp tục?"
+        ):
+            return
+        self._discard_subtitle_draft()
 
         options = VideoSubtitleOptions(
             video_path=Path(video).expanduser(),
@@ -1561,6 +1592,13 @@ class GalaxyStudioApp:
         if self.subtitle_draft is None:
             messagebox.showwarning("Missing subtitles", "Create subtitles before exporting.")
             return
+        selected_video = self.video_path.get().strip()
+        if selected_video and not _same_path(Path(selected_video), self.subtitle_draft.source_video):
+            messagebox.showwarning(
+                "Video changed",
+                "Bản phụ đề hiện tại thuộc video khác. Hãy tạo phụ đề cho video đang chọn trước khi export.",
+            )
+            return
 
         source_srt_text = self.source_subtitle_text.get("1.0", "end-1c")
         translated_srt_text = (
@@ -1590,6 +1628,7 @@ class GalaxyStudioApp:
             ),
             daemon=False,
         )
+        self._subtitle_export_revision = self._subtitle_edit_revision
         self._export_in_progress = True
         self.worker.start()
 
@@ -1738,7 +1777,7 @@ class GalaxyStudioApp:
         return max(minimum, min(maximum, value))
 
     def _build_generation_translation_options(self) -> AITranslationOptions | None:
-        source_language = self.script_language_code.strip().lower()
+        source_language = self._script_source_language()
         target_language = code_from_label(self.video_target_language.get(), default="none")
         if not source_language or target_language == "none":
             return None
@@ -1754,6 +1793,12 @@ class GalaxyStudioApp:
             model=self.ai_model.get(),
             base_url=self.ai_base_url.get(),
         )
+
+    def _script_source_language(self) -> str:
+        known_language = self.script_language_code.strip().lower()
+        if known_language:
+            return known_language
+        return code_from_label(self.video_source_language.get(), default="auto")
 
     def _poll_events(self) -> None:
         while True:
@@ -1782,6 +1827,7 @@ class GalaxyStudioApp:
                 engine_code, voices = payload if isinstance(payload, tuple) else ("", [])
                 if engine_code == self.tts.code and isinstance(voices, list):
                     self._apply_voices(voices)
+                    self._select_voice_for_language(self.script_language_code)
                     self._append_log(f"Loaded {len(voices)} {self.tts.label} voices.")
                 self._finish_voice_refresh()
             elif event == "voices_error":
@@ -1896,6 +1942,11 @@ class GalaxyStudioApp:
             for warning in self.last_result.warnings:
                 self._append_log(f"Warning: {warning}")
         elif isinstance(self.last_result, VideoSubtitleResult):
+            self._subtitle_draft_dirty = (
+                self._subtitle_export_revision is not None
+                and self._subtitle_edit_revision != self._subtitle_export_revision
+            )
+            self._subtitle_export_revision = None
             self.open_button.configure(state="normal")
             self._append_log(f"Audio: {self.last_result.audio_path}")
             self._append_log(f"Original SRT: {self.last_result.source_srt_path}")
@@ -1912,6 +1963,8 @@ class GalaxyStudioApp:
                 self._append_log(f"Warning: {warning}")
 
     def _finish_error(self, error: object) -> None:
+        if isinstance(error, BaseException):
+            log_operation_failure(LOGGER, "GUI task", error)
         self.progress.stop()
         self.removal_progress.stop()
         self.progress.configure(mode="indeterminate", maximum=100, value=0)
@@ -1960,6 +2013,25 @@ class GalaxyStudioApp:
         if self.subtitle_draft is not None and self.subtitle_draft is not draft:
             self.subtitle_draft.cleanup()
         self.subtitle_draft = draft
+        self._subtitle_draft_dirty = True
+        self._subtitle_edit_revision = 0
+        self._subtitle_export_revision = None
+
+    def _confirm_discard_subtitle_draft(self, message: str) -> bool:
+        if self.subtitle_draft is None or not self._subtitle_draft_dirty:
+            return True
+        return messagebox.askyesno("Phụ đề chưa export", message)
+
+    def _discard_subtitle_draft(self) -> None:
+        if self.subtitle_draft is not None:
+            self.subtitle_draft.cleanup()
+        self.subtitle_draft = None
+        self._subtitle_draft_dirty = False
+        self._subtitle_edit_revision = 0
+        self._subtitle_export_revision = None
+        self._set_editor_text(self.source_subtitle_text, "")
+        self._set_editor_text(self.translated_subtitle_text, "")
+        self.subtitle_export_button.configure(state="disabled")
 
     def _select_voice_for_language(self, language_code: str) -> bool:
         normalized = language_code.strip().lower()
@@ -2013,6 +2085,15 @@ class GalaxyStudioApp:
             self.script_language_code = ""
         widget.edit_modified(False)
 
+    def _on_subtitle_modified(self, event: tk.Event) -> None:
+        widget = event.widget
+        if not isinstance(widget, tk.Text) or not widget.edit_modified():
+            return
+        if self.subtitle_draft is not None:
+            self._subtitle_edit_revision += 1
+            self._subtitle_draft_dirty = True
+        widget.edit_modified(False)
+
     def _set_busy(self, busy: bool) -> None:
         state = "disabled" if busy else "normal"
         self.generate_button.configure(state=state)
@@ -2061,6 +2142,10 @@ class GalaxyStudioApp:
         return "break"
 
     def _close_app(self) -> None:
+        if not self._confirm_discard_subtitle_draft(
+            "Đóng ứng dụng sẽ mất bản phụ đề chưa export. Vẫn đóng?"
+        ):
+            return
         self._save_config_now()
         self.root.destroy()
 
@@ -2108,6 +2193,9 @@ class GalaxyStudioApp:
             self._preview_temp_dir.cleanup()
         except OSError:
             pass
+
+def _same_path(first: Path, second: Path) -> bool:
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))
 
 
 def run_app() -> None:

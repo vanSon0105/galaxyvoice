@@ -2,6 +2,26 @@ from __future__ import annotations
 
 import re
 
+
+_TITLE_ABBREVIATIONS = (
+    "mr.",
+    "mrs.",
+    "ms.",
+    "dr.",
+    "prof.",
+    "sr.",
+    "jr.",
+    "st.",
+)
+_INLINE_ABBREVIATIONS = (
+    "vs.",
+    "e.g.",
+    "i.e.",
+)
+_SENTENCE_STARTERS = frozenset(
+    {"a", "an", "he", "i", "it", "she", "that", "the", "they", "this", "we", "you"}
+)
+
 _WHITESPACE_RE = re.compile(r"\s+")
 
 
@@ -54,6 +74,8 @@ def _split_paragraph_into_sentences(paragraph: str) -> list[str]:
         next_index = index + 1
         if next_index < len(text) and not text[next_index].isspace():
             continue
+        if char == "." and next_index < len(text) and _ends_with_abbreviation(text, next_index):
+            continue
         piece = text[start:next_index].strip()
         if piece:
             sentences.append(piece)
@@ -64,6 +86,26 @@ def _split_paragraph_into_sentences(paragraph: str) -> list[str]:
         sentences.append(tail)
 
     return sentences
+
+
+def _ends_with_abbreviation(text: str, end: int) -> bool:
+    prefix = text[:end].lower()
+    if any(_has_abbreviation_suffix(prefix, abbreviation) for abbreviation in _TITLE_ABBREVIATIONS):
+        return True
+    if any(_has_abbreviation_suffix(prefix, abbreviation) for abbreviation in _INLINE_ABBREVIATIONS):
+        return True
+    if not _has_abbreviation_suffix(prefix, "u.s."):
+        return False
+
+    next_word = re.match(r"\s+([A-Za-z]+)", text[end:])
+    return next_word is None or next_word.group(1).lower() not in _SENTENCE_STARTERS
+
+
+def _has_abbreviation_suffix(prefix: str, abbreviation: str) -> bool:
+    return prefix.endswith(abbreviation) and (
+        len(prefix) == len(abbreviation)
+        or not prefix[-len(abbreviation) - 1].isalpha()
+    )
 
 
 def _chunk_long_sentence(sentence: str, max_chars: int) -> list[str]:

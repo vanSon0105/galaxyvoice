@@ -667,6 +667,114 @@ class GuiLayoutTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_closing_with_an_unexported_subtitle_draft_requires_confirmation(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.subtitle_draft = Mock(spec=VideoSubtitleDraft)
+            app._subtitle_draft_dirty = True
+
+            with (
+                patch("app.gui.messagebox.askyesno", return_value=False) as confirm,
+                patch.object(app, "_save_config_now") as save_config,
+                patch.object(root, "destroy") as destroy,
+            ):
+                app._close_app()
+
+            confirm.assert_called_once()
+            save_config.assert_not_called()
+            destroy.assert_not_called()
+        finally:
+            root.destroy()
+
+    def test_browsing_to_a_new_video_discards_the_confirmed_old_draft(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            draft = Mock(spec=VideoSubtitleDraft)
+            app.subtitle_draft = draft
+            app._subtitle_draft_dirty = True
+            app.video_path.set("old.mp4")
+            app._set_editor_text(app.source_subtitle_text, "old source")
+            app._set_editor_text(app.translated_subtitle_text, "old translation")
+
+            with (
+                patch("app.gui.filedialog.askopenfilename", return_value="new.mp4"),
+                patch("app.gui.messagebox.askyesno", return_value=True),
+            ):
+                app.browse_video()
+
+            draft.cleanup.assert_called_once()
+            self.assertIsNone(app.subtitle_draft)
+            self.assertFalse(app._subtitle_draft_dirty)
+            self.assertEqual(app.video_path.get(), "new.mp4")
+            self.assertEqual(app.source_subtitle_text.get("1.0", "end-1c"), "")
+            self.assertEqual(str(app.subtitle_export_button.cget("state")), "disabled")
+        finally:
+            root.destroy()
+
+    def test_export_blocks_a_draft_from_a_different_manually_entered_video(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.subtitle_draft = Mock(
+                spec=VideoSubtitleDraft,
+                source_video=Path("old.mp4"),
+            )
+            app.video_path.set("new.mp4")
+
+            with (
+                patch("app.gui.messagebox.showwarning") as warning,
+                patch("app.gui.threading.Thread") as thread,
+            ):
+                app.start_export_subtitles()
+
+            warning.assert_called_once()
+            thread.assert_not_called()
+        finally:
+            root.destroy()
+
+    def test_export_completion_keeps_draft_dirty_if_it_changed_during_export(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        result = VideoSubtitleResult(
+            project_dir=Path("exports") / "clip",
+            audio_path=Path("exports") / "clip" / "speech.wav",
+            source_srt_path=Path("exports") / "clip" / "source.srt",
+            translated_srt_path=Path("exports") / "clip" / "translated.srt",
+            manifest_path=Path("exports") / "clip" / "manifest.json",
+            cue_count=1,
+            script_text="Xin chao.",
+            script_language="vi",
+            warnings=[],
+        )
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.subtitle_draft = Mock(spec=VideoSubtitleDraft)
+            app._subtitle_export_revision = 3
+            app._subtitle_edit_revision = 4
+            app._finish_success(result)
+
+            self.assertTrue(app._subtitle_draft_dirty)
+        finally:
+            root.destroy()
+
     def test_closing_during_export_defers_subtitle_workspace_cleanup_to_worker(self) -> None:
         try:
             root = tk.Tk()
@@ -801,6 +909,95 @@ class GuiLayoutTests(unittest.TestCase):
                 self.assertEqual(translation_options.target_language, "vi")
                 self.assertIs(tts_engine, app.tts)
                 thread.return_value.start.assert_called_once()
+        finally:
+            root.destroy()
+
+    def test_manual_script_uses_selected_source_language_for_translation(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        voices = [
+            Voice(name="Vietnamese Voice", culture="vi-VN", gender="Female", age="Adult"),
+        ]
+
+        try:
+            with patch("app.gui.EdgeTTS.initial_voices", return_value=voices):
+                app = GalaxyStudioApp(root, config_path=self.config_path)
+                app.script_text.insert("1.0", "Hello.")
+                app.video_source_language.set("English")
+                app.video_target_language.set("Vietnamese")
+                app.ai_api_key.set("test-key")
+
+                with patch("app.gui.threading.Thread") as thread:
+                    app.start_generate()
+
+                _generation_options, translation_options, _tts_engine = thread.call_args.kwargs["args"]
+                self.assertEqual(translation_options.source_language, "en")
+                self.assertEqual(translation_options.target_language, "vi")
+                thread.return_value.start.assert_called_once()
+        finally:
+            root.destroy()
+
+    def test_start_generate_waits_when_target_voice_is_not_loaded(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        vietnamese_voices = [
+            Voice(name="Vietnamese Voice", culture="vi-VN", gender="Female", age="Adult"),
+        ]
+
+        try:
+            with patch("app.gui.EdgeTTS.initial_voices", return_value=vietnamese_voices):
+                app = GalaxyStudioApp(root, config_path=self.config_path)
+                app.script_text.insert("1.0", "Hello.")
+                app.script_language_code = "en"
+                app.video_target_language.set("Japanese")
+                app.ai_api_key.set("test-key")
+
+                with (
+                    patch.object(app, "refresh_voices") as refresh,
+                    patch("app.gui.messagebox.showwarning") as warning,
+                    patch("app.gui.threading.Thread") as thread,
+                ):
+                    app.start_generate()
+
+                refresh.assert_called_once()
+                warning.assert_called_once()
+                thread.assert_not_called()
+        finally:
+            root.destroy()
+
+    def test_start_generate_without_translation_still_requires_a_matching_voice(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        vietnamese_voices = [
+            Voice(name="Vietnamese Voice", culture="vi-VN", gender="Female", age="Adult"),
+        ]
+
+        try:
+            with patch("app.gui.EdgeTTS.initial_voices", return_value=vietnamese_voices):
+                app = GalaxyStudioApp(root, config_path=self.config_path)
+                app.script_text.insert("1.0", "こんにちは")
+                app.script_language_code = "ja"
+                app.video_target_language.set("Japanese")
+
+                with (
+                    patch.object(app, "refresh_voices") as refresh,
+                    patch("app.gui.messagebox.showwarning") as warning,
+                    patch("app.gui.threading.Thread") as thread,
+                ):
+                    app.start_generate()
+
+                refresh.assert_called_once()
+                warning.assert_called_once()
+                thread.assert_not_called()
         finally:
             root.destroy()
 

@@ -250,7 +250,9 @@ Trên Windows, app cũng đọc `OPENAI_API_KEY` và `DEEPSEEK_API_KEY` từ Use
 
 ## OmniVoice local và nhái giọng
 
-Main tab `Voice` có notebook con gồm `Voice & Subtitle`, `Auto Voice`, `Nhái giọng`, `Thiết kế giọng`, `Thư viện giọng` và `Model & Runtime`. Ba chế độ OmniVoice hỗ trợ ngôn ngữ trực tiếp, quality steps, speed, duration, CFG/generation parameters, chia đoạn dài, denoise, text normalization, WAV và MP3.
+Main tab `Voice` có notebook con gồm `Voice & Subtitle`, `Auto Voice`, `Nhái giọng`, `Thiết kế giọng`, `Batch Voice`, `Long-form`, `Thư viện giọng`, `LoRA` và `Model & Runtime`. Ba chế độ OmniVoice hỗ trợ đủ 646 language ID, quality steps, speed, duration, CFG/generation parameters, chia đoạn dài, denoise, text normalization, WAV và MP3.
+
+Thanh công cụ nội dung chèn được non-verbal tag như `[laughter]`, `[sigh]`, CMU phoneme tiếng Anh và pinyin có thanh điệu tiếng Trung. `Batch Voice` nhận mỗi dòng là một câu hoặc JSONL theo format CLI gốc (`id`, `text`, `language_id`, `speed`, `duration`). `Long-form` tách nội dung theo đoạn trống, tạo từng phần, ghép `combined.wav` và xuất thêm MP3 khi được chọn.
 
 OmniVoice chạy trong worker riêng và giữ model trong RAM/VRAM giữa các lần Generate. Runtime, checkpoint, Hugging Face cache và profile nằm tại `%LOCALAPPDATA%\GalaxyAIStudio\models\OmniVoice`, không dùng chung Python với app chính. Cài hoặc sửa runtime bằng nút trong GUI, hoặc chạy:
 
@@ -259,6 +261,14 @@ powershell -ExecutionPolicy Bypass -File .\install_omnivoice.ps1 -Device auto
 ```
 
 `auto` ưu tiên NVIDIA CUDA rồi mới dùng CPU. Có thể chọn `xpu` cho Intel Arc đã cài PyTorch XPU; Intel Iris Xe không được coi là Arc tương thích. Model mặc định là `k2-fsa/OmniVoice`; nút `Tải model` tải checkpoint ở lần đầu và giữ worker sẵn sàng cho các lần tạo tiếp theo.
+
+FlashInfer chỉ dùng với NVIDIA CUDA. Cài bằng nút `Cài FlashInfer` hoặc chạy:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install_omnivoice_flashinfer.ps1
+```
+
+LoRA cần một thư mục adapter có `adapter_config.json`. Có thể áp dụng adapter trực tiếp cho generation hoặc merge sang model độc lập trong tab `LoRA`; runtime cài `peft` sẵn.
 
 Nhái giọng nhận audio mẫu hoặc profile `.pt` đã lưu. Nếu transcript mẫu để trống, worker tải Whisper để tự nhận dạng; nhập transcript đúng sẽ tránh phần tải ASR và thường cho kết quả ổn định hơn. App yêu cầu xác nhận quyền sử dụng giọng trước khi tạo profile mới. Việc mạo danh, gian lận hoặc clone giọng không được phép là bị cấm theo disclaimer của dự án OmniVoice.
 

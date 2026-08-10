@@ -3,7 +3,9 @@ from __future__ import annotations
 import contextlib
 import gc
 import json
+import shutil
 import sys
+import tempfile
 import traceback
 from pathlib import Path
 from typing import Any
@@ -11,7 +13,7 @@ from typing import Any
 
 PROTOCOL_VERSION = 1
 _model: Any | None = None
-_model_identity: tuple[str, str] | None = None
+_model_identity: tuple[str, str, str, bool, bool] | None = None
 
 
 def _finalize_generated_audio(
@@ -103,9 +105,29 @@ def _load_model(request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 
         model_id = str(payload.get("model_id") or "k2-fsa/OmniVoice")
         device = _resolve_device(torch, str(payload.get("device") or "auto"))
-        identity = (model_id, device)
+        lora_adapter = str(payload.get("lora_adapter") or "").strip()
+        enable_flashinfer = bool(payload.get("enable_flashinfer", False))
+        flashinfer_cuda_graph = bool(payload.get("flashinfer_cuda_graph", True))
+        identity = (
+            model_id,
+            device,
+            lora_adapter,
+            enable_flashinfer,
+            flashinfer_cuda_graph,
+        )
         if _model is not None and _model_identity == identity:
-            return {"model_id": model_id, "device": device, "cached": True}
+            return _model_info(
+                model_id,
+                device,
+                cached=True,
+                lora_adapter=lora_adapter,
+                enable_flashinfer=enable_flashinfer,
+                flashinfer_cuda_graph=flashinfer_cuda_graph,
+            )
+        if enable_flashinfer and not device.startswith("cuda"):
+            raise RuntimeError("FlashInfer chỉ hỗ trợ NVIDIA CUDA.")
+        if lora_adapter and not (Path(lora_adapter) / "adapter_config.json").is_file():
+            raise FileNotFoundError(f"LoRA adapter không hợp lệ: {lora_adapter}")
         _unload_model()
         _progress(request_id, f"Đang tải model {model_id} trên {device}...")
         dtype = (
@@ -113,14 +135,52 @@ def _load_model(request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             if device.startswith(("cuda", "xpu"))
             else torch.float32
         )
-        _model = OmniVoice.from_pretrained(model_id, device_map=device, dtype=dtype)
+        try:
+            _model = OmniVoice.from_pretrained(model_id, device_map=device, dtype=dtype)
+            if lora_adapter:
+                _progress(request_id, "Đang nạp LoRA adapter...")
+                from omnivoice.utils.lora import load_lora_adapter
+
+                _model = load_lora_adapter(_model, lora_adapter)
+            if enable_flashinfer:
+                _progress(request_id, "Đang bật FlashInfer...")
+                from omnivoice.models.omnivoice_flashinfer import apply_flashinfer
+
+                apply_flashinfer(_model, enable_cuda_graph=flashinfer_cuda_graph)
+        except Exception:
+            _unload_model()
+            raise
         _model_identity = identity
-        return {
-            "model_id": model_id,
-            "device": device,
-            "cached": False,
-            "sampling_rate": int(_model.sampling_rate),
-        }
+        return _model_info(
+            model_id,
+            device,
+            cached=False,
+            lora_adapter=lora_adapter,
+            enable_flashinfer=enable_flashinfer,
+            flashinfer_cuda_graph=flashinfer_cuda_graph,
+        )
+
+
+def _model_info(
+    model_id: str,
+    device: str,
+    *,
+    cached: bool,
+    lora_adapter: str,
+    enable_flashinfer: bool,
+    flashinfer_cuda_graph: bool,
+) -> dict[str, Any]:
+    assert _model is not None
+    return {
+        "model_id": model_id,
+        "device": device,
+        "cached": cached,
+        "sampling_rate": int(_model.sampling_rate),
+        "languages": sorted(_model.supported_language_ids()),
+        "lora_adapter": lora_adapter,
+        "flashinfer": enable_flashinfer,
+        "flashinfer_cuda_graph": enable_flashinfer and flashinfer_cuda_graph,
+    }
 
 
 def _unload_model() -> None:
@@ -199,8 +259,9 @@ def _generate(request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
                     Path(save_profile_path).parent.mkdir(parents=True, exist_ok=True)
                     prompt.save(save_profile_path)
                 kwargs["voice_clone_prompt"] = prompt
-        elif mode == "design":
-            kwargs["instruct"] = str(payload.get("instruct") or "")
+        instruct = str(payload.get("instruct") or "").strip()
+        if instruct:
+            kwargs["instruct"] = instruct
 
         _progress(request_id, "Đang tổng hợp giọng nói...")
         audio = _model.generate(**kwargs)
@@ -222,11 +283,79 @@ def _generate(request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         }
 
 
+def _merge_lora(request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    global _model, _model_identity
+    base_model = str(payload.get("base_model") or "").strip()
+    adapter = Path(str(payload.get("lora_adapter") or "")).expanduser()
+    output_dir = Path(str(payload.get("output_dir") or "")).expanduser()
+    if not base_model:
+        raise ValueError("Hãy chọn base model để merge LoRA.")
+    if not (adapter / "adapter_config.json").is_file():
+        raise FileNotFoundError(f"LoRA adapter không hợp lệ: {adapter}")
+    _validate_empty_output_dir(output_dir)
+
+    _unload_model()
+    output_dir.parent.mkdir(parents=True, exist_ok=True)
+    staged_dir = Path(
+        tempfile.mkdtemp(prefix=f".{output_dir.name}.merge-", dir=output_dir.parent)
+    )
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            import torch
+            from transformers import AutoTokenizer
+
+            from omnivoice.models.omnivoice import OmniVoice, _resolve_model_path
+            from omnivoice.utils.lora import load_lora_adapter
+
+            _progress(request_id, "Đang tải base model để merge LoRA...")
+            model = OmniVoice.from_pretrained(base_model, train=True, dtype=torch.float32)
+            _progress(request_id, "Đang merge LoRA adapter...")
+            merged = load_lora_adapter(model, str(adapter), merge=True)
+            merged.save_pretrained(staged_dir)
+
+            tokenizer_source = (
+                str(adapter)
+                if (adapter / "tokenizer_config.json").is_file()
+                else base_model
+            )
+            tokenizer = AutoTokenizer.from_pretrained(tokenizer_source)
+            tokenizer.save_pretrained(staged_dir)
+            resolved_base = Path(_resolve_model_path(base_model))
+            for name in ("audio_tokenizer", "chat_template.jinja"):
+                source = resolved_base / name
+                target = staged_dir / name
+                if source.is_dir() and not target.exists():
+                    shutil.copytree(source, target)
+                elif source.is_file() and not target.exists():
+                    shutil.copy2(source, target)
+            del merged
+            del model
+        _validate_empty_output_dir(output_dir)
+        if output_dir.exists():
+            output_dir.rmdir()
+        staged_dir.replace(output_dir)
+    except Exception:
+        shutil.rmtree(staged_dir, ignore_errors=True)
+        raise
+    gc.collect()
+    _model = None
+    _model_identity = None
+    return {"output_dir": str(output_dir), "base_model": base_model, "adapter": str(adapter)}
+
+
+def _validate_empty_output_dir(path: Path) -> None:
+    if path.is_file():
+        raise NotADirectoryError(f"Output LoRA phải là một thư mục: {path}")
+    if path.exists() and any(path.iterdir()):
+        raise FileExistsError(f"Thư mục output LoRA phải rỗng: {path}")
+
+
 def _dispatch(request_id: str, command: str, payload: dict[str, Any]) -> dict[str, Any]:
     if command == "ping":
         return {"ready": True, "model_loaded": _model is not None}
     if command == "probe":
         with contextlib.redirect_stdout(sys.stderr):
+            import importlib.util
             import torch
             import omnivoice
 
@@ -236,6 +365,8 @@ def _dispatch(request_id: str, command: str, payload: dict[str, Any]) -> dict[st
             "torch_version": str(torch.__version__),
             "cuda": bool(torch.cuda.is_available()),
             "xpu": bool(hasattr(torch, "xpu") and torch.xpu.is_available()),
+            "flashinfer": bool(importlib.util.find_spec("flashinfer")),
+            "peft": bool(importlib.util.find_spec("peft")),
         }
     if command == "load":
         return _load_model(request_id, payload)
@@ -248,6 +379,8 @@ def _dispatch(request_id: str, command: str, payload: dict[str, Any]) -> dict[st
         _load_model(request_id, payload)
         assert _model is not None
         return {"languages": sorted(_model.supported_language_names())}
+    if command == "merge_lora":
+        return _merge_lora(request_id, payload)
     if command == "shutdown":
         _unload_model()
         return {"shutdown": True}

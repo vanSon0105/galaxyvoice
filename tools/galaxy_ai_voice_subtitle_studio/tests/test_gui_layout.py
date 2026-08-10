@@ -205,10 +205,13 @@ class GuiLayoutTests(unittest.TestCase):
                 [
                     "Voice & Subtitle",
                     "Auto Voice",
-                    "Nhái giọng",
-                    "Thiết kế giọng",
-                    "Thư viện giọng",
-                    "Model & Runtime",
+                "Nhái giọng",
+                "Thiết kế giọng",
+                "Batch Voice",
+                "Long-form",
+                "Thư viện giọng",
+                "LoRA",
+                "Model & Runtime",
                 ],
             )
             self.assertEqual(app.omnivoice_language.get(), "vi")

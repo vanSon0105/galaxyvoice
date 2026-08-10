@@ -37,7 +37,7 @@ from ..video_editor.service import (
 )
 
 
-CONFIG_VERSION = 5
+CONFIG_VERSION = 6
 
 
 @dataclass(frozen=True)
@@ -112,7 +112,14 @@ class AppConfig:
     omnivoice_pad_duration: float = 0.0
     omnivoice_fade_duration: float = 0.02
     omnivoice_export_mp3: bool = True
+    omnivoice_enable_flashinfer: bool = False
+    omnivoice_flashinfer_cuda_graph: bool = True
+    omnivoice_lora_adapter: str = ""
     omnivoice_profile_id: str = ""
+    omnivoice_clone_instruct: str = ""
+    omnivoice_batch_mode: str = "auto"
+    omnivoice_long_form_mode: str = "auto"
+    omnivoice_long_form_gap_ms: int = 250
     omnivoice_design_gender: str = ""
     omnivoice_design_age: str = ""
     omnivoice_design_pitch: str = ""
@@ -357,8 +364,35 @@ def load_app_config(path: Path | None = None) -> AppConfig:
         omnivoice_export_mp3=_boolean(
             payload.get("omnivoice_export_mp3"), defaults.omnivoice_export_mp3
         ),
+        omnivoice_enable_flashinfer=_boolean(
+            payload.get("omnivoice_enable_flashinfer"), defaults.omnivoice_enable_flashinfer
+        ),
+        omnivoice_flashinfer_cuda_graph=_boolean(
+            payload.get("omnivoice_flashinfer_cuda_graph"),
+            defaults.omnivoice_flashinfer_cuda_graph,
+        ),
+        omnivoice_lora_adapter=_string(
+            payload.get("omnivoice_lora_adapter"), defaults.omnivoice_lora_adapter
+        ),
         omnivoice_profile_id=_string(
             payload.get("omnivoice_profile_id"), defaults.omnivoice_profile_id
+        ),
+        omnivoice_clone_instruct=_string(
+            payload.get("omnivoice_clone_instruct"), defaults.omnivoice_clone_instruct
+        ),
+        omnivoice_batch_mode=_choice(
+            payload.get("omnivoice_batch_mode"), defaults.omnivoice_batch_mode, {"auto", "clone", "design"}
+        ),
+        omnivoice_long_form_mode=_choice(
+            payload.get("omnivoice_long_form_mode"),
+            defaults.omnivoice_long_form_mode,
+            {"auto", "clone", "design"},
+        ),
+        omnivoice_long_form_gap_ms=_integer(
+            payload.get("omnivoice_long_form_gap_ms"),
+            defaults.omnivoice_long_form_gap_ms,
+            0,
+            5_000,
         ),
         omnivoice_design_gender=_string(
             payload.get("omnivoice_design_gender"), defaults.omnivoice_design_gender

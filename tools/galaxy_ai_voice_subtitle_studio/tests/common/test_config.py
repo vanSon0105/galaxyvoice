@@ -82,6 +82,13 @@ class ConfigTests(unittest.TestCase):
             omnivoice_pad_duration=0.2,
             omnivoice_fade_duration=0.15,
             omnivoice_profile_id="narrator",
+            omnivoice_clone_instruct="Vietnamese accent",
+            omnivoice_batch_mode="clone",
+            omnivoice_long_form_mode="design",
+            omnivoice_long_form_gap_ms=400,
+            omnivoice_enable_flashinfer=True,
+            omnivoice_flashinfer_cuda_graph=False,
+            omnivoice_lora_adapter=r"D:\Models\adapter",
             omnivoice_design_gender="female",
             omnivoice_design_pitch="low pitch",
         )

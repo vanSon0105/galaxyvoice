@@ -13,6 +13,7 @@ from app.omnivoice.runtime import (
     XPU_DEVICE,
     clear_model_cache,
     inspect_runtime,
+    load_supported_language_ids,
     normalize_omnivoice_device,
     remove_runtime_engine,
 )
@@ -70,6 +71,16 @@ class OmniVoiceRuntimeTests(unittest.TestCase):
         self.assertEqual(normalize_omnivoice_device("xpu"), XPU_DEVICE)
         self.assertEqual(normalize_omnivoice_device("CPU"), CPU_DEVICE)
         self.assertEqual(normalize_omnivoice_device("iris"), "auto")
+
+    def test_workspace_language_map_exposes_the_full_model_language_list(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            language_ids = load_supported_language_ids(
+                OmniVoiceRuntime.from_base(Path(temp_dir))
+            )
+
+        self.assertGreaterEqual(len(language_ids), 647)
+        self.assertIn("vi", language_ids)
+        self.assertEqual(language_ids[-1], "auto")
 
     def test_removing_runtime_preserves_voice_profiles(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

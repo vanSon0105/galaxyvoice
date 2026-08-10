@@ -39,6 +39,9 @@ class OmniVoiceServiceTests(unittest.TestCase):
                     guidance_scale=0.0,
                     layer_penalty_factor=0.0,
                     position_temperature=0.0,
+                    enable_flashinfer=True,
+                    flashinfer_cuda_graph=False,
+                    lora_adapter="C:/models/adapter",
                 ),
                 client,
             )
@@ -50,6 +53,9 @@ class OmniVoiceServiceTests(unittest.TestCase):
             self.assertEqual(client.requests[0][1]["guidance_scale"], 0.0)
             self.assertEqual(client.requests[0][1]["layer_penalty_factor"], 0.0)
             self.assertEqual(client.requests[0][1]["position_temperature"], 0.0)
+            self.assertTrue(client.requests[0][1]["enable_flashinfer"])
+            self.assertFalse(client.requests[0][1]["flashinfer_cuda_graph"])
+            self.assertEqual(client.requests[0][1]["lora_adapter"], "C:/models/adapter")
 
     def test_blank_text_is_rejected_before_starting_worker(self) -> None:
         client = _FakeClient()

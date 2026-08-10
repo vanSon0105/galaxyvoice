@@ -7,9 +7,13 @@ import threading
 import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
+from typing import Callable
 
 from ..common.paths import studio_root
+from .advanced_gui import OmniVoiceAdvancedGuiMixin
+from .batch import OmniVoiceBatchResult
 from .client import OmniVoiceWorkerClient
+from .features import MODE_LABELS, NON_VERBAL_TAGS
 from .models import (
     AUTO_MODE,
     CLONE_MODE,
@@ -22,6 +26,7 @@ from .runtime import (
     DEVICE_LABELS,
     OmniVoiceRuntime,
     inspect_runtime,
+    load_supported_language_ids,
     normalize_omnivoice_device,
     omnivoice_device_label,
     clear_model_cache,
@@ -86,9 +91,12 @@ DIALECT_CHOICES = {
 }
 
 
-class OmniVoiceTabMixin:
+class OmniVoiceTabMixin(OmniVoiceAdvancedGuiMixin):
     def _init_omnivoice_state(self, saved_config: object) -> None:
         self.omnivoice_runtime = OmniVoiceRuntime.default()
+        self.omnivoice_language_values = (
+            load_supported_language_ids(self.omnivoice_runtime) or COMMON_LANGUAGES
+        )
         self.omnivoice_client = OmniVoiceWorkerClient(
             self.omnivoice_runtime,
             Path(__file__).with_name("worker.py"),
@@ -96,6 +104,7 @@ class OmniVoiceTabMixin:
         )
         self.omnivoice_task_thread: threading.Thread | None = None
         self.omnivoice_last_result: OmniVoiceResult | None = None
+        self.omnivoice_last_batch_result: OmniVoiceBatchResult | None = None
         self._omnivoice_cancel_requested = False
         self.omnivoice_profiles: list[VoiceProfile] = []
         self._omnivoice_profile_by_label: dict[str, VoiceProfile] = {}
@@ -167,10 +176,22 @@ class OmniVoiceTabMixin:
         self.omnivoice_export_mp3 = tk.BooleanVar(
             value=getattr(saved_config, "omnivoice_export_mp3", True)
         )
+        self.omnivoice_enable_flashinfer = tk.BooleanVar(
+            value=getattr(saved_config, "omnivoice_enable_flashinfer", False)
+        )
+        self.omnivoice_flashinfer_cuda_graph = tk.BooleanVar(
+            value=getattr(saved_config, "omnivoice_flashinfer_cuda_graph", True)
+        )
+        self.omnivoice_lora_adapter = tk.StringVar(
+            value=getattr(saved_config, "omnivoice_lora_adapter", "")
+        )
         self.omnivoice_profile_choice = tk.StringVar(
             value=getattr(saved_config, "omnivoice_profile_id", "")
         )
         self.omnivoice_reference_audio = tk.StringVar()
+        self.omnivoice_clone_instruct = tk.StringVar(
+            value=getattr(saved_config, "omnivoice_clone_instruct", "")
+        )
         self.omnivoice_save_profile_name = tk.StringVar()
         self.omnivoice_clone_consent = tk.BooleanVar(value=False)
         self.omnivoice_design_gender = tk.StringVar(
@@ -204,6 +225,24 @@ class OmniVoiceTabMixin:
         self.omnivoice_runtime_status = tk.StringVar(value="Chưa kiểm tra runtime")
         self.omnivoice_worker_status = tk.StringVar(value="Model chưa nạp")
         self.omnivoice_job_status = tk.StringVar(value="Sẵn sàng")
+        self.omnivoice_expression_choice = tk.StringVar(value=next(iter(NON_VERBAL_TAGS)))
+        self.omnivoice_batch_mode = tk.StringVar(
+            value=_label_for_value(
+                MODE_LABELS, getattr(saved_config, "omnivoice_batch_mode", AUTO_MODE)
+            )
+        )
+        self.omnivoice_long_form_mode = tk.StringVar(
+            value=_label_for_value(
+                MODE_LABELS, getattr(saved_config, "omnivoice_long_form_mode", AUTO_MODE)
+            )
+        )
+        self.omnivoice_batch_project_name = tk.StringVar(value="omnivoice-batch")
+        self.omnivoice_long_form_project_name = tk.StringVar(value="omnivoice-long-form")
+        self.omnivoice_long_form_gap_ms = tk.IntVar(
+            value=getattr(saved_config, "omnivoice_long_form_gap_ms", 250)
+        )
+        self.omnivoice_lora_merge_output = tk.StringVar()
+        self.omnivoice_lora_status = tk.StringVar(value="Sẵn sàng")
 
     def _build_omnivoice_tabs(self, notebook: ttk.Notebook) -> None:
         self.omnivoice_text_widgets: dict[str, tk.Text] = {}
@@ -214,6 +253,8 @@ class OmniVoiceTabMixin:
         self.omnivoice_progress_bars: list[ttk.Progressbar] = []
         self.omnivoice_mutable_widgets: list[tk.Widget] = []
         self.omnivoice_editable_combos: list[ttk.Combobox] = []
+        self.omnivoice_language_combos: list[ttk.Combobox] = []
+        self.omnivoice_profile_combos: list[ttk.Combobox] = []
 
         self.omnivoice_auto_tab = self._build_omnivoice_studio_page(
             notebook, "Auto Voice", AUTO_MODE
@@ -224,7 +265,10 @@ class OmniVoiceTabMixin:
         self.omnivoice_design_tab = self._build_omnivoice_studio_page(
             notebook, "Thiết kế giọng", DESIGN_MODE
         )
+        self._build_omnivoice_batch_tab(notebook)
+        self._build_omnivoice_long_form_tab(notebook)
         self._build_omnivoice_library_tab(notebook)
+        self._build_omnivoice_lora_tab(notebook)
         self._build_omnivoice_runtime_tab(notebook)
         self._refresh_omnivoice_profiles()
         self._refresh_omnivoice_runtime_status()
@@ -244,12 +288,45 @@ class OmniVoiceTabMixin:
         editor = ttk.Frame(page)
         editor.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         editor.columnconfigure(0, weight=1)
-        editor.rowconfigure(1, weight=1)
+        editor.rowconfigure(2, weight=1)
         ttk.Label(editor, text="Nội dung", style="PageSection.TLabel").grid(
             row=0, column=0, sticky="w", pady=(0, 6)
         )
+        text_tools = ttk.Frame(editor, style="Surface.TFrame")
+        text_tools.grid(row=1, column=0, sticky="ew", pady=(0, 6))
+        text_tools.columnconfigure(0, weight=1)
+        expression = ttk.Combobox(
+            text_tools,
+            textvariable=self.omnivoice_expression_choice,
+            values=tuple(NON_VERBAL_TAGS),
+            state="readonly",
+            width=18,
+        )
+        expression.grid(row=0, column=0, sticky="ew")
+        insert_expression = ttk.Button(
+            text_tools,
+            text="Chèn biểu cảm",
+            command=lambda selected_mode=mode: self._insert_omnivoice_expression(selected_mode),
+        )
+        insert_expression.grid(row=0, column=1, padx=(6, 0))
+        cmu = ttk.Button(
+            text_tools,
+            text="CMU",
+            command=lambda selected_mode=mode: self._insert_omnivoice_pronunciation(
+                selected_mode, "cmu"
+            ),
+        )
+        cmu.grid(row=0, column=2, padx=(6, 0))
+        pinyin = ttk.Button(
+            text_tools,
+            text="Pinyin",
+            command=lambda selected_mode=mode: self._insert_omnivoice_pronunciation(
+                selected_mode, "pinyin"
+            ),
+        )
+        pinyin.grid(row=0, column=3, padx=(6, 0))
         text_frame = ttk.Frame(editor, style="Panel.TFrame")
-        text_frame.grid(row=1, column=0, sticky="nsew")
+        text_frame.grid(row=2, column=0, sticky="nsew")
         text_frame.columnconfigure(0, weight=1)
         text_frame.rowconfigure(0, weight=1)
         text_widget = tk.Text(
@@ -266,7 +343,9 @@ class OmniVoiceTabMixin:
         text_scroll.grid(row=0, column=1, sticky="ns")
         text_widget.configure(yscrollcommand=text_scroll.set)
         self.omnivoice_text_widgets[mode] = text_widget
-        self.omnivoice_mutable_widgets.append(text_widget)
+        self.omnivoice_mutable_widgets.extend(
+            (expression, insert_expression, cmu, pinyin, text_widget)
+        )
 
         controls_host = ttk.Frame(page, style="Panel.TFrame", padding=12)
         controls_host.grid(row=0, column=1, sticky="nsew")
@@ -338,6 +417,7 @@ class OmniVoiceTabMixin:
         )
         self.omnivoice_profile_combo.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(3, 8))
         self.omnivoice_mutable_widgets.append(self.omnivoice_profile_combo)
+        self.omnivoice_profile_combos.append(self.omnivoice_profile_combo)
         row += 1
         ttk.Label(parent, text="Audio tham chiếu", style="Panel.TLabel").grid(
             row=row, column=0, columnspan=2, sticky="w"
@@ -356,6 +436,14 @@ class OmniVoiceTabMixin:
         self.omnivoice_reference_text = tk.Text(parent, height=4, wrap="word", font=("Segoe UI", 9))
         self.omnivoice_reference_text.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(3, 8))
         self.omnivoice_mutable_widgets.append(self.omnivoice_reference_text)
+        row += 1
+        ttk.Label(parent, text="Mô tả giọng mẫu (tùy chọn)", style="Panel.TLabel").grid(
+            row=row, column=0, columnspan=2, sticky="w"
+        )
+        row += 1
+        clone_instruct = ttk.Entry(parent, textvariable=self.omnivoice_clone_instruct)
+        clone_instruct.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(3, 8))
+        self.omnivoice_mutable_widgets.append(clone_instruct)
         row += 1
         ttk.Label(parent, text="Lưu thành profile mới", style="Panel.TLabel").grid(
             row=row, column=0, columnspan=2, sticky="w"
@@ -419,12 +507,13 @@ class OmniVoiceTabMixin:
         language = ttk.Combobox(
             parent,
             textvariable=self.omnivoice_language,
-            values=COMMON_LANGUAGES,
+            values=self.omnivoice_language_values,
             state="normal",
             width=16,
         )
         language.grid(row=row, column=1, sticky="ew", padx=(8, 0), pady=2)
         self.omnivoice_editable_combos.append(language)
+        self.omnivoice_language_combos.append(language)
         row += 1
         ttk.Label(parent, text="Quality steps", style="Panel.TLabel").grid(row=row, column=0, sticky="w")
         steps = ttk.Combobox(
@@ -482,6 +571,8 @@ class OmniVoiceTabMixin:
             ("Xử lý audio mẫu", self.omnivoice_preprocess_prompt),
             ("Cắt im lặng đầu/cuối", self.omnivoice_postprocess_output),
             ("Xuất thêm MP3", self.omnivoice_export_mp3),
+            ("FlashInfer", self.omnivoice_enable_flashinfer),
+            ("FlashInfer CUDA Graph", self.omnivoice_flashinfer_cuda_graph),
         )
         toggle_widgets: list[ttk.Checkbutton] = []
         for label, variable in toggles:
@@ -489,6 +580,15 @@ class OmniVoiceTabMixin:
             toggle.grid(row=row, column=0, columnspan=2, sticky="w", pady=1)
             toggle_widgets.append(toggle)
             row += 1
+        ttk.Label(parent, text="LoRA adapter (tùy chọn)", style="Panel.TLabel").grid(
+            row=row, column=0, columnspan=2, sticky="w", pady=(6, 0)
+        )
+        row += 1
+        lora_entry = ttk.Entry(parent, textvariable=self.omnivoice_lora_adapter)
+        lora_entry.grid(row=row, column=0, sticky="ew", pady=(3, 5))
+        lora_browse = ttk.Button(parent, text="Chọn", command=self._browse_omnivoice_lora)
+        lora_browse.grid(row=row, column=1, sticky="ew", padx=(6, 0), pady=(3, 5))
+        row += 1
         ttk.Label(parent, text="Tên project", style="Panel.TLabel").grid(
             row=row, column=0, columnspan=2, sticky="w", pady=(6, 0)
         )
@@ -512,6 +612,8 @@ class OmniVoiceTabMixin:
                 guidance,
                 *advanced_widgets,
                 *toggle_widgets,
+                lora_entry,
+                lora_browse,
                 project,
                 output,
                 output_browse,
@@ -617,6 +719,7 @@ class OmniVoiceTabMixin:
         controls = (
             ("Kiểm tra", self._probe_omnivoice_runtime),
             ("Cài / sửa runtime", self._install_omnivoice_runtime),
+            ("Cài FlashInfer", self._install_omnivoice_flashinfer),
             ("Chọn model local", self._browse_omnivoice_model),
             ("Tải model", self._load_omnivoice_model),
             ("Giải phóng VRAM", self._unload_omnivoice_model),
@@ -679,34 +782,62 @@ class OmniVoiceTabMixin:
             self.voice_feature_notebook.select(self.omnivoice_runtime_tab)
             return
         text = self.omnivoice_text_widgets[mode].get("1.0", "end").strip()
+        try:
+            options = self._omnivoice_options(mode, text, bulk=False)
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Thiết lập OmniVoice chưa hợp lệ", str(error))
+            return
+        self._start_omnivoice_thread(
+            "omnivoice_generation",
+            self._run_omnivoice_generation,
+            (options,),
+            "omnivoice-generate",
+        )
+
+    def _omnivoice_options(
+        self,
+        mode: str,
+        text: str,
+        *,
+        bulk: bool,
+        project_name: str | None = None,
+    ) -> OmniVoiceGenerationOptions:
         profile = self._selected_omnivoice_profile()
         reference_text = (
             self.omnivoice_reference_text.get("1.0", "end").strip()
             if mode == CLONE_MODE
             else ""
         )
+        if mode == CLONE_MODE and bulk and profile is None:
+            raise ValueError("Batch và long-form cần chọn một profile giọng đã lưu.")
         if mode == CLONE_MODE and profile is None and not self.omnivoice_clone_consent.get():
-            messagebox.showerror(
-                "Cần xác nhận quyền sử dụng",
-                "Hãy xác nhận bạn có quyền sử dụng giọng nói trong audio mẫu.",
-            )
-            return
+            raise ValueError("Hãy xác nhận bạn có quyền sử dụng giọng nói trong audio mẫu.")
         reference_value = self.omnivoice_reference_audio.get().strip()
         reference_audio = Path(reference_value).expanduser() if reference_value else None
-        options = OmniVoiceGenerationOptions(
+        if mode == DESIGN_MODE:
+            instruct = self._omnivoice_design_instruction()
+        elif mode == CLONE_MODE:
+            instruct = self.omnivoice_clone_instruct.get().strip()
+        else:
+            instruct = ""
+        return OmniVoiceGenerationOptions(
             mode=mode,
             text=text,
             output_dir=Path(self.omnivoice_output_dir.get().strip()).expanduser(),
-            project_name=self.omnivoice_project_name.get().strip() or f"omnivoice-{mode}",
+            project_name=(
+                project_name
+                if project_name is not None
+                else self.omnivoice_project_name.get().strip() or f"omnivoice-{mode}"
+            ),
             model_id=self.omnivoice_model_id.get().strip(),
             device=normalize_omnivoice_device(self.omnivoice_device.get()),
             language=self.omnivoice_language.get().strip() or "auto",
             reference_audio=reference_audio,
             reference_text=reference_text,
             profile_id=profile.profile_id if profile else "",
-            save_profile_name=self.omnivoice_save_profile_name.get().strip(),
+            save_profile_name="" if bulk else self.omnivoice_save_profile_name.get().strip(),
             profiles_dir=self.omnivoice_runtime.profiles_dir,
-            instruct=self._omnivoice_design_instruction() if mode == DESIGN_MODE else "",
+            instruct=instruct,
             num_step=self._safe_int(self.omnivoice_num_step, 32),
             guidance_scale=self._safe_float(self.omnivoice_guidance_scale, 2.0),
             t_shift=self._safe_float(self.omnivoice_t_shift, 0.1),
@@ -736,18 +867,29 @@ class OmniVoiceTabMixin:
             pad_duration=self._safe_float(self.omnivoice_pad_duration, 0.0),
             fade_duration=self._safe_float(self.omnivoice_fade_duration, 0.02),
             export_mp3=bool(self.omnivoice_export_mp3.get()),
+            enable_flashinfer=bool(self.omnivoice_enable_flashinfer.get()),
+            flashinfer_cuda_graph=bool(self.omnivoice_flashinfer_cuda_graph.get()),
+            lora_adapter=self.omnivoice_lora_adapter.get().strip(),
         )
+
+    def _start_omnivoice_thread(
+        self,
+        task_name: str,
+        target: Callable[..., None],
+        args: tuple[object, ...],
+        thread_name: str,
+    ) -> None:
         self._omnivoice_cancel_requested = False
-        self._active_task = "omnivoice_generation"
+        self._active_task = task_name
         self.omnivoice_job_status.set("Đang khởi động OmniVoice...")
         self._set_busy(True)
         for progress in self.omnivoice_progress_bars:
             progress.start(12)
         self.omnivoice_task_thread = threading.Thread(
-            target=self._run_omnivoice_generation,
-            args=(options,),
+            target=target,
+            args=args,
             daemon=True,
-            name="omnivoice-generate",
+            name=thread_name,
         )
         self.omnivoice_task_thread.start()
 
@@ -777,6 +919,9 @@ class OmniVoiceTabMixin:
         self.omnivoice_worker_status.set("Đang tải model...")
         model_id = self.omnivoice_model_id.get().strip()
         device = normalize_omnivoice_device(self.omnivoice_device.get())
+        lora_adapter = self.omnivoice_lora_adapter.get().strip()
+        enable_flashinfer = bool(self.omnivoice_enable_flashinfer.get())
+        flashinfer_cuda_graph = bool(self.omnivoice_flashinfer_cuda_graph.get())
 
         def run() -> None:
             try:
@@ -785,6 +930,9 @@ class OmniVoiceTabMixin:
                     {
                         "model_id": model_id,
                         "device": device,
+                        "lora_adapter": lora_adapter,
+                        "enable_flashinfer": enable_flashinfer,
+                        "flashinfer_cuda_graph": flashinfer_cuda_graph,
                     },
                     on_progress=lambda message: self.events.put(("omnivoice_progress", message)),
                 )
@@ -838,13 +986,22 @@ class OmniVoiceTabMixin:
     def _stop_omnivoice(self) -> None:
         if self._active_task not in {
             "omnivoice_generation",
+            "omnivoice_batch",
+            "omnivoice_long_form",
             "omnivoice_model",
             "omnivoice_probe",
+            "omnivoice_lora_merge",
         }:
             return
         self._omnivoice_cancel_requested = True
         self.omnivoice_job_status.set("Đang dừng OmniVoice...")
-        self.omnivoice_client.stop()
+        for button in self.omnivoice_stop_buttons:
+            button.configure(state="disabled")
+        threading.Thread(
+            target=self.omnivoice_client.stop,
+            daemon=True,
+            name="omnivoice-stop",
+        ).start()
 
     def _handle_omnivoice_event(self, event: str, payload: object) -> bool:
         if not event.startswith("omnivoice_"):
@@ -865,6 +1022,7 @@ class OmniVoiceTabMixin:
         self._set_busy(False)
         if event == "omnivoice_done" and isinstance(payload, OmniVoiceResult):
             self.omnivoice_last_result = payload
+            self.omnivoice_last_batch_result = None
             self.omnivoice_job_status.set("Hoàn tất")
             self.status.set("Done")
             for button in self.omnivoice_open_buttons:
@@ -879,6 +1037,21 @@ class OmniVoiceTabMixin:
                 self._refresh_omnivoice_profiles()
             for warning in payload.warnings:
                 self._append_omnivoice_log(f"Cảnh báo: {warning}")
+        elif event == "omnivoice_batch_done" and isinstance(payload, OmniVoiceBatchResult):
+            self.omnivoice_last_result = None
+            self.omnivoice_last_batch_result = payload
+            self.omnivoice_job_status.set("Hoàn tất")
+            self.status.set("Done")
+            for button in self.omnivoice_open_buttons:
+                button.configure(state="normal")
+            for button in self.omnivoice_play_buttons:
+                button.configure(state="normal" if payload.preview_path else "disabled")
+            self._append_omnivoice_log(f"Batch output: {payload.project_dir}")
+            self._append_omnivoice_log(f"Đã tạo {len(payload.item_results)} mục.")
+            if payload.combined_wav_path:
+                self._append_omnivoice_log(f"WAV đã ghép: {payload.combined_wav_path}")
+            for warning in payload.warnings:
+                self._append_omnivoice_log(f"Cảnh báo: {warning}")
         elif event == "omnivoice_model_loaded" and isinstance(payload, dict):
             device = str(payload.get("device") or "")
             self.omnivoice_worker_status.set(f"Đã nạp model trên {device}")
@@ -887,11 +1060,33 @@ class OmniVoiceTabMixin:
             self._append_omnivoice_log(
                 f"Model {payload.get('model_id', '')} đã nạp trên {device}."
             )
+            languages = payload.get("languages")
+            if isinstance(languages, list) and languages:
+                values = tuple(str(value) for value in languages)
+                for combo in self.omnivoice_language_combos:
+                    combo.configure(values=values)
+                self._append_omnivoice_log(f"Đã nạp {len(values)} ngôn ngữ.")
+            if payload.get("flashinfer"):
+                graph = " + CUDA Graph" if payload.get("flashinfer_cuda_graph") else ""
+                self._append_omnivoice_log(f"FlashInfer{graph} đang bật.")
+            if payload.get("lora_adapter"):
+                self._append_omnivoice_log(f"LoRA: {payload.get('lora_adapter')}")
+        elif event == "omnivoice_lora_merged" and isinstance(payload, dict):
+            output_dir = str(payload.get("output_dir") or "")
+            self.omnivoice_job_status.set("Merge LoRA hoàn tất")
+            self.status.set("Done")
+            self.omnivoice_lora_status.set("Merge hoàn tất")
+            if output_dir:
+                self.omnivoice_model_id.set(output_dir)
+                self.omnivoice_lora_adapter.set("")
+                self._append_omnivoice_log(f"Model LoRA đã merge: {output_dir}")
         elif event == "omnivoice_runtime_probed" and isinstance(payload, dict):
             accelerator = "CUDA" if payload.get("cuda") else "XPU" if payload.get("xpu") else "CPU"
             self.omnivoice_runtime_status.set(
                 f"OmniVoice {payload.get('omnivoice_version', '')} | "
-                f"Torch {payload.get('torch_version', '')} | {accelerator}"
+                f"Torch {payload.get('torch_version', '')} | {accelerator} | "
+                f"FlashInfer {'OK' if payload.get('flashinfer') else 'chưa cài'} | "
+                f"LoRA {'OK' if payload.get('peft') else 'chưa cài'}"
             )
             self.omnivoice_worker_status.set("Worker sẵn sàng; model chưa nạp")
             self.omnivoice_job_status.set("Runtime sẵn sàng")
@@ -927,8 +1122,11 @@ class OmniVoiceTabMixin:
             button.configure(state=state)
         is_omnivoice_task = busy and self._active_task in {
             "omnivoice_generation",
+            "omnivoice_batch",
+            "omnivoice_long_form",
             "omnivoice_model",
             "omnivoice_probe",
+            "omnivoice_lora_merge",
         }
         for button in self.omnivoice_stop_buttons:
             button.configure(state="normal" if is_omnivoice_task else "disabled")
@@ -1005,9 +1203,10 @@ class OmniVoiceTabMixin:
             f"{profile.display_name} [{profile.language}]": profile
             for profile in self.omnivoice_profiles
         }
-        if hasattr(self, "omnivoice_profile_combo"):
+        if self.omnivoice_profile_combos:
             values = ("", *self._omnivoice_profile_by_label)
-            self.omnivoice_profile_combo.configure(values=values)
+            for combo in self.omnivoice_profile_combos:
+                combo.configure(values=values)
             configured_id = self.omnivoice_profile_choice.get().strip()
             matching = next(
                 (
@@ -1055,7 +1254,14 @@ class OmniVoiceTabMixin:
             self.omnivoice_pad_duration,
             self.omnivoice_fade_duration,
             self.omnivoice_export_mp3,
+            self.omnivoice_enable_flashinfer,
+            self.omnivoice_flashinfer_cuda_graph,
+            self.omnivoice_lora_adapter,
             self.omnivoice_profile_choice,
+            self.omnivoice_clone_instruct,
+            self.omnivoice_batch_mode,
+            self.omnivoice_long_form_mode,
+            self.omnivoice_long_form_gap_ms,
             self.omnivoice_design_gender,
             self.omnivoice_design_age,
             self.omnivoice_design_pitch,
@@ -1114,8 +1320,23 @@ class OmniVoiceTabMixin:
                 self.omnivoice_fade_duration, 0.02, 0.0, 5.0
             ),
             "omnivoice_export_mp3": bool(self.omnivoice_export_mp3.get()),
+            "omnivoice_enable_flashinfer": bool(self.omnivoice_enable_flashinfer.get()),
+            "omnivoice_flashinfer_cuda_graph": bool(
+                self.omnivoice_flashinfer_cuda_graph.get()
+            ),
+            "omnivoice_lora_adapter": self.omnivoice_lora_adapter.get().strip(),
             "omnivoice_profile_id": (
                 selected_profile.profile_id if selected_profile is not None else ""
+            ),
+            "omnivoice_clone_instruct": self.omnivoice_clone_instruct.get().strip(),
+            "omnivoice_batch_mode": MODE_LABELS.get(
+                self.omnivoice_batch_mode.get(), AUTO_MODE
+            ),
+            "omnivoice_long_form_mode": MODE_LABELS.get(
+                self.omnivoice_long_form_mode.get(), AUTO_MODE
+            ),
+            "omnivoice_long_form_gap_ms": max(
+                0, min(5_000, self._safe_int(self.omnivoice_long_form_gap_ms, 250))
             ),
             "omnivoice_design_gender": GENDER_CHOICES.get(
                 self.omnivoice_design_gender.get(), ""
@@ -1222,10 +1443,16 @@ class OmniVoiceTabMixin:
     def _open_omnivoice_output(self) -> None:
         if self.omnivoice_last_result is not None:
             os.startfile(self.omnivoice_last_result.project_dir)
+        elif self.omnivoice_last_batch_result is not None:
+            os.startfile(self.omnivoice_last_batch_result.project_dir)
 
     def _play_omnivoice_result(self) -> None:
         if self.omnivoice_last_result is not None:
             os.startfile(self.omnivoice_last_result.wav_path)
+        elif self.omnivoice_last_batch_result is not None:
+            preview = self.omnivoice_last_batch_result.preview_path
+            if preview is not None:
+                os.startfile(preview)
 
     def _open_omnivoice_profiles(self) -> None:
         self.omnivoice_runtime.ensure_directories()

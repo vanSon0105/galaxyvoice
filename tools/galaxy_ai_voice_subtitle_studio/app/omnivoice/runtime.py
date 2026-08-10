@@ -158,3 +158,24 @@ def normalize_omnivoice_device(value: str) -> str:
 
 def omnivoice_device_label(code: str) -> str:
     return DEVICE_LABELS[normalize_omnivoice_device(code)]
+
+
+def load_supported_language_ids(runtime: OmniVoiceRuntime) -> tuple[str, ...]:
+    workspace_map = Path(__file__).resolve().parents[4] / "omnivoice" / "docs" / "lang_id_name_map.tsv"
+    candidates = (
+        runtime.source_dir / "docs" / "lang_id_name_map.tsv",
+        workspace_map,
+    )
+    for path in candidates:
+        try:
+            lines = path.read_text(encoding="utf-8").splitlines()
+        except (OSError, UnicodeDecodeError):
+            continue
+        language_ids = tuple(
+            line.split("\t", 1)[0].strip()
+            for line in lines[1:]
+            if line.strip() and "\t" in line
+        )
+        if language_ids:
+            return (*language_ids, "auto")
+    return ()

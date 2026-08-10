@@ -43,6 +43,9 @@ class OmniVoiceGenerationOptions:
     pad_duration: float = 0.0
     fade_duration: float = 0.02
     export_mp3: bool = False
+    enable_flashinfer: bool = False
+    flashinfer_cuda_graph: bool = True
+    lora_adapter: str = ""
 
 
 @dataclass(frozen=True)

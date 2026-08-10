@@ -47,6 +47,7 @@ class OmniVoiceWorkerClientTests(unittest.TestCase):
             )
             progress: list[str] = []
             client = OmniVoiceWorkerClient(runtime, worker)
+            process = None
             studio = root / "studio"
             bundled_bin = studio / "bin"
             bundled_bin.mkdir(parents=True)
@@ -62,6 +63,7 @@ class OmniVoiceWorkerClientTests(unittest.TestCase):
                 ):
                     first = client.request("ping", {}, on_progress=progress.append)
                     second = client.request("ping", {}, on_progress=progress.append)
+                    process = client._process
             finally:
                 client.close()
 
@@ -71,6 +73,12 @@ class OmniVoiceWorkerClientTests(unittest.TestCase):
         self.assertEqual(first["python_io_encoding"], "utf-8")
         self.assertEqual(progress, ["working", "working"])
         self.assertFalse(client.is_running)
+        self.assertIsNotNone(process)
+        assert process is not None
+        self.assertIsNotNone(process.returncode)
+        self.assertTrue(process.stdin is None or process.stdin.closed)
+        self.assertTrue(process.stdout is None or process.stdout.closed)
+        self.assertTrue(process.stderr is None or process.stderr.closed)
 
 
 if __name__ == "__main__":

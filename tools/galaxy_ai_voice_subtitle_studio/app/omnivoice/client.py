@@ -173,14 +173,43 @@ class OmniVoiceWorkerClient:
 
     def _terminate_process(self) -> None:
         process = self._process
+        stderr_thread = self._stderr_thread
         self._process = None
+        self._stderr_thread = None
         if process is None:
             return
         terminate_process_tree(process)
+        self._reap_process(process, stderr_thread)
         managed_media_processes.discard(process)
 
     def _discard_process(self) -> None:
         process = self._process
+        stderr_thread = self._stderr_thread
         self._process = None
+        self._stderr_thread = None
         if process is not None:
+            terminate_process_tree(process)
+            self._reap_process(process, stderr_thread)
             managed_media_processes.discard(process)
+
+    @staticmethod
+    def _reap_process(
+        process: subprocess.Popen[str],
+        stderr_thread: threading.Thread | None,
+    ) -> None:
+        try:
+            process.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            try:
+                process.kill()
+            except OSError:
+                pass
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                pass
+        if stderr_thread is not None and stderr_thread is not threading.current_thread():
+            stderr_thread.join(timeout=1)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            if stream is not None and not stream.closed:
+                stream.close()

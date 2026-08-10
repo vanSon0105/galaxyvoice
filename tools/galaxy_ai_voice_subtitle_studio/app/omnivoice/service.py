@@ -102,6 +102,9 @@ def generate_omnivoice_audio(
         "audio_chunk_threshold": max(0.0, min(600.0, float(options.audio_chunk_threshold))),
         "pad_duration": max(0.0, min(5.0, float(options.pad_duration))),
         "fade_duration": max(0.0, min(5.0, float(options.fade_duration))),
+        "enable_flashinfer": bool(options.enable_flashinfer),
+        "flashinfer_cuda_graph": bool(options.flashinfer_cuda_graph),
+        "lora_adapter": options.lora_adapter.strip(),
     }
 
     try:

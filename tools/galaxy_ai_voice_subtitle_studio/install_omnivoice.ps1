@@ -67,6 +67,9 @@ Copy-Item -LiteralPath (Join-Path $sourceRoot "pyproject.toml") -Destination $ru
 Copy-Item -LiteralPath (Join-Path $sourceRoot "README.md") -Destination $runtimeSource
 Copy-Item -LiteralPath (Join-Path $sourceRoot "LICENSE") -Destination $runtimeSource
 Copy-Item -LiteralPath (Join-Path $sourceRoot "omnivoice") -Destination $runtimeSource -Recurse
+New-Item -ItemType Directory -Path (Join-Path $runtimeSource "docs") -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $sourceRoot "docs\lang_id_name_map.tsv") `
+    -Destination (Join-Path $runtimeSource "docs\lang_id_name_map.tsv")
 
 if (-not (Test-Path $runtimePython)) {
     $pythonCommand = Find-PythonRuntime
@@ -105,6 +108,9 @@ Invoke-Checked "Installing OmniVoice" {
 }
 Invoke-Checked "Installing multilingual text normalization" {
     & $runtimePython -m pip install num2words
+}
+Invoke-Checked "Installing LoRA support" {
+    & $runtimePython -m pip install "peft>=0.20.0"
 }
 if ($env:OS -eq "Windows_NT") {
     Write-Warning "WeTextProcessing is skipped on Windows because pynini has no compatible wheel. Basic normalization remains available through num2words."

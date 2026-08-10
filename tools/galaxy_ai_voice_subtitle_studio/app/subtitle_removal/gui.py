@@ -9,6 +9,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from ..common.compute import PROCESSING_DEVICE_LABELS, processing_device_code
 from ..common.ffmpeg import find_ffmpeg, find_ffplay
+from ..common.paths import studio_root
 from . import propainter
 from .constants import (
     PREVIEW_FPS,
@@ -725,7 +726,7 @@ class SubtitleRemovalTabMixin:
     def install_propainter(self) -> None:
         if not self._confirm_propainter_license():
             return
-        installer = Path(__file__).resolve().parents[1] / "install_propainter.ps1"
+        installer = studio_root() / "install_propainter.ps1"
         if not installer.is_file():
             messagebox.showerror("Installer missing", f"Could not find: {installer}")
             return

@@ -3,9 +3,11 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
+from .paths import studio_root
+
 
 def find_ffmpeg(project_root: Path | None = None) -> str | None:
-    root = project_root or Path(__file__).resolve().parents[1]
+    root = project_root or studio_root()
     bundled = [
         root / "bin" / "ffmpeg.exe",
         root / "bin" / "ffmpeg",
@@ -19,7 +21,7 @@ def find_ffmpeg(project_root: Path | None = None) -> str | None:
 
 
 def find_ffprobe(project_root: Path | None = None) -> str | None:
-    root = project_root or Path(__file__).resolve().parents[1]
+    root = project_root or studio_root()
     bundled = [
         root / "bin" / "ffprobe.exe",
         root / "bin" / "ffprobe",
@@ -33,7 +35,7 @@ def find_ffprobe(project_root: Path | None = None) -> str | None:
 
 
 def find_ffplay(project_root: Path | None = None) -> str | None:
-    root = project_root or Path(__file__).resolve().parents[1]
+    root = project_root or studio_root()
     bundled = [
         root / "bin" / "ffplay.exe",
         root / "bin" / "ffplay",

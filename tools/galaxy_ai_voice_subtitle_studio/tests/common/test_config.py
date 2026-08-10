@@ -54,6 +54,16 @@ class ConfigTests(unittest.TestCase):
             audio_instrumental_only=False,
             audio_sample_mode=True,
             audio_saved_setting="Vocal extraction",
+            editor_output_dir=r"D:\Videos\Edited",
+            editor_resolution="2k",
+            editor_fps="60",
+            editor_encoder="nvidia",
+            editor_audio_mode="replace",
+            editor_source_volume=75,
+            editor_external_volume=125,
+            editor_subtitle_font_size=30,
+            editor_subtitle_margin=54,
+            editor_timeline_zoom=0.25,
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -81,6 +91,12 @@ class ConfigTests(unittest.TestCase):
             "audio_process_method": "unknown",
             "audio_output_format": "AAC",
             "audio_processing_device": "metal",
+            "editor_resolution": "8k",
+            "editor_fps": "120",
+            "editor_encoder": "other",
+            "editor_audio_mode": "duck",
+            "editor_source_volume": 999,
+            "editor_timeline_zoom": -1,
         }
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -105,6 +121,12 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.audio_process_method, "mdx")
         self.assertEqual(config.audio_output_format, "WAV")
         self.assertEqual(config.audio_processing_device, "auto")
+        self.assertEqual(config.editor_resolution, "original")
+        self.assertEqual(config.editor_fps, "source")
+        self.assertEqual(config.editor_encoder, "auto")
+        self.assertEqual(config.editor_audio_mode, "mix")
+        self.assertEqual(config.editor_source_volume, 200)
+        self.assertEqual(config.editor_timeline_zoom, 0.1)
 
     def test_fast_ai_removal_mode_is_restored(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

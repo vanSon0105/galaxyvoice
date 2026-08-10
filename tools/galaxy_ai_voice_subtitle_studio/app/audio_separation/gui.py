@@ -8,6 +8,7 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from ..common.paths import studio_root
 from ..common.processes import managed_media_processes
 from .service import (
     AUDIO_OUTPUT_FORMATS,
@@ -577,7 +578,7 @@ class AudioSeparationTabMixin:
         os.startfile(uvr_root)
 
     def install_audio_separator(self) -> None:
-        installer = Path(__file__).resolve().parents[1] / "install_audio_separator.ps1"
+        installer = studio_root() / "install_audio_separator.ps1"
         if not installer.is_file():
             messagebox.showerror("Installer missing", f"Could not find: {installer}")
             return

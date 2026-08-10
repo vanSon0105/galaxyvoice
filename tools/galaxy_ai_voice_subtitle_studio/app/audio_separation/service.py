@@ -14,7 +14,7 @@ from typing import Callable, Iterable
 from ..common.cache import read_json, write_json_atomic
 from ..common.compute import detect_nvidia_hardware
 from ..common.ffmpeg import ffmpeg_missing_message, find_ffmpeg
-from ..common.paths import unique_project_dir
+from ..common.paths import repository_root, unique_project_dir
 from ..common.processes import managed_media_processes, terminate_process_tree
 
 MDX_METHOD = "mdx"
@@ -154,7 +154,7 @@ def default_uvr_root() -> Path:
     configured = os.environ.get("GALAXY_UVR_ROOT", "").strip()
     if configured:
         return Path(configured).expanduser()
-    return Path(__file__).resolve().parents[3] / "ultimatevocalremover"
+    return repository_root() / "ultimatevocalremover"
 
 
 def default_audio_separator_runtime() -> AudioSeparatorRuntime:

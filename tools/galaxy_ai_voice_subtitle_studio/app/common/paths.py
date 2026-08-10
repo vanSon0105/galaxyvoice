@@ -1,9 +1,19 @@
 from __future__ import annotations
 
-import re
 import os
+import re
 from datetime import datetime
 from pathlib import Path
+
+
+def studio_root() -> Path:
+    """Return the Galaxy Studio tool directory regardless of the caller module."""
+    return Path(__file__).resolve().parents[2]
+
+
+def repository_root() -> Path:
+    """Return the workspace repository that contains the tool directory."""
+    return studio_root().parents[1]
 
 
 def unique_project_dir(output_dir: Path, project_name: str, fallback_prefix: str = "galaxy") -> Path:

@@ -15,7 +15,9 @@ sys.path.insert(0, str(ROOT))
 from app.gui import GalaxyStudioApp  # noqa: E402
 from app.common.config import AppConfig, load_app_config, save_app_config  # noqa: E402
 from app.voice.engine import GenerationOptions, GenerationResult  # noqa: E402
-from app.voice.srt import SubtitleCue  # noqa: E402
+from app.voice.srt import SubtitleCue, parse_srt  # noqa: E402
+from app.video_editor.model import AUDIO_ASSET, EditorAsset  # noqa: E402
+from app.video_editor.service import EditorMediaInfo  # noqa: E402
 from app.subtitle_removal.service import (  # noqa: E402
     AI_INPAINT_MODE,
     BLUR_MODE,
@@ -193,7 +195,11 @@ class GuiLayoutTests(unittest.TestCase):
             app = GalaxyStudioApp(root, config_path=self.config_path)
 
             labels = [app.main_notebook.tab(tab_id, "text") for tab_id in app.main_notebook.tabs()]
-            self.assertEqual(labels, ["Voice", "Tách âm thanh", "Xóa phụ đề"])
+            self.assertEqual(labels, ["Voice", "Dựng video", "Tách âm thanh", "Xóa phụ đề"])
+            self.assertEqual(app.editor_preview_canvas.cget("width"), "384")
+            self.assertEqual(str(app.editor_export_button.cget("state")), "disabled")
+            self.assertIn("2K 1440p", app.editor_resolution_combo.cget("values"))
+            self.assertIn("60 fps", app.editor_fps_combo.cget("values"))
             self.assertEqual(app.audio_format.get(), "WAV")
             self.assertIn("MDX-Net", app.audio_method_combo.cget("values"))
             self.assertIn("Intel / AMD DirectML", app.audio_device_combo.cget("values"))
@@ -214,6 +220,120 @@ class GuiLayoutTests(unittest.TestCase):
             app.removal_mode.set("Fast AI (tối ưu)")
             app._on_removal_mode_changed()
             self.assertEqual(str(app.removal_device_combo.cget("state")), "readonly")
+        finally:
+            root.destroy()
+
+    def test_video_editor_tab_fits_and_exposes_three_resizable_tracks(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            root.geometry("900x600")
+            app.main_notebook.select(app.editor_tab)
+            root.update_idletasks()
+            root.update()
+
+            self.assertFalse(app.log_frame.winfo_ismapped())
+            self.assertEqual(app.editor_timeline.track_heights, [48, 48, 60])
+            self.assertTrue(app.editor_media_bin.winfo_ismapped())
+            self.assertGreaterEqual(app.editor_timeline.canvas.winfo_height(), 180)
+            self.assertLessEqual(
+                app.editor_preview_canvas.winfo_width(),
+                app.editor_preview_canvas.master.winfo_width(),
+            )
+            inspector = app.editor_inspector_notebook.master
+            subtitle_controls_bottom = max(
+                child.winfo_rooty() + child.winfo_height()
+                for child in app.editor_cue_text.master.winfo_children()
+                if child.winfo_ismapped()
+            )
+            self.assertLessEqual(
+                subtitle_controls_bottom,
+                inspector.winfo_rooty() + inspector.winfo_height(),
+            )
+            self.assertEqual(app.editor_time_text.get(), "00:00 / 00:00")
+        finally:
+            root.destroy()
+
+    def test_imported_editor_video_stays_in_media_bin_until_inserted(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            info = EditorMediaInfo(12.0, 1920, 1080, 30.0, True)
+
+            app._handle_editor_event("editor_video_loaded", ("asset-video", "clip.mp4", info))
+
+            self.assertIn("asset-video", app.editor_assets)
+            self.assertTrue(app.editor_media_bin.tree.exists("asset-video"))
+            self.assertEqual(app.editor_video_path.get(), "")
+            self.assertIsNone(app.editor_media_info)
+
+            with patch.object(app, "_render_editor_still"):
+                app._insert_editor_asset("asset-video")
+
+            self.assertEqual(app.editor_video_path.get(), "clip.mp4")
+            self.assertEqual(app.editor_media_info, info)
+            self.assertEqual(app.editor_timeline.video_label, "clip.mp4")
+        finally:
+            root.destroy()
+
+    def test_dropped_editor_audio_uses_the_timeline_drop_position(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            asset = EditorAsset(
+                "asset-audio",
+                AUDIO_ASSET,
+                "voice.wav",
+                duration_seconds=8.0,
+            )
+            app._store_editor_asset(asset)
+
+            with patch.object(app.editor_timeline, "drop_time_at", return_value=2_500):
+                app._drop_editor_asset("asset-audio", 100, 200)
+
+            self.assertEqual(app.editor_audio_path.get(), "voice.wav")
+            self.assertEqual(app.editor_audio_offset.get(), 2_500)
+            self.assertEqual(app.editor_audio_duration_seconds, 8.0)
+        finally:
+            root.destroy()
+
+    def test_editor_preview_subtitles_are_shifted_to_the_seek_position(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.editor_cues = [
+                SubtitleCue(1, 200, 800, "Past"),
+                SubtitleCue(2, 1_000, 2_000, "Visible at seek"),
+                SubtitleCue(3, 3_000, 4_000, "Future"),
+            ]
+
+            preview_path = app._write_editor_preview_subtitles(1_500)
+            self.assertIsNotNone(preview_path)
+            shifted = parse_srt(preview_path.read_text(encoding="utf-8"))
+
+            self.assertEqual(
+                shifted,
+                [
+                    SubtitleCue(1, 0, 500, "Visible at seek"),
+                    SubtitleCue(2, 1_500, 2_500, "Future"),
+                ],
+            )
         finally:
             root.destroy()
 

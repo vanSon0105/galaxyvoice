@@ -54,3 +54,6 @@ tools/galaxy_ai_voice_subtitle_studio/bin/ffplay.exe
 tools/galaxy_ai_voice_subtitle_studio/bin/ffprobe.exe
 tools/galaxy_ai_voice_subtitle_studio/config.json*
 tools/galaxy_ai_voice_subtitle_studio/audio_presets.json*
+
+# OMNIVOICE
+/omnivoice/

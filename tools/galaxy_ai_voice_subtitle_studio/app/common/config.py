@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import tempfile
 import uuid
@@ -16,13 +17,24 @@ from ..audio_separation.service import (
     normalize_audio_method,
 )
 from .compute import AUTO_DEVICE, normalize_processing_device
+from .paths import studio_root
 from ..subtitle_removal.service import BLUR_MODE, SUBTITLE_REMOVAL_MODES
 from ..voice.transcription import WHISPER_MODELS
 from ..voice.translator import translation_provider_codes
 from ..voice.tts import tts_engine_codes
+from ..video_editor.service import (
+    EDITOR_AUDIO_MODES,
+    EDITOR_ENCODERS,
+    EDITOR_FPS_OPTIONS,
+    EDITOR_RESOLUTIONS,
+    AUTO_ENCODER,
+    MIX_AUDIO,
+    ORIGINAL_RESOLUTION,
+    SOURCE_FPS,
+)
 
 
-CONFIG_VERSION = 3
+CONFIG_VERSION = 4
 
 
 @dataclass(frozen=True)
@@ -66,10 +78,20 @@ class AppConfig:
     audio_instrumental_only: bool = False
     audio_sample_mode: bool = False
     audio_saved_setting: str = "Default"
+    editor_output_dir: str = ""
+    editor_resolution: str = ORIGINAL_RESOLUTION
+    editor_fps: str = SOURCE_FPS
+    editor_encoder: str = AUTO_ENCODER
+    editor_audio_mode: str = MIX_AUDIO
+    editor_source_volume: int = 100
+    editor_external_volume: int = 100
+    editor_subtitle_font_size: int = 22
+    editor_subtitle_margin: int = 36
+    editor_timeline_zoom: float = 80.0
 
 
 def default_config_path() -> Path:
-    return Path(__file__).resolve().parents[1] / "config.json"
+    return studio_root() / "config.json"
 
 
 def load_app_config(path: Path | None = None) -> AppConfig:
@@ -112,6 +134,16 @@ def load_app_config(path: Path | None = None) -> AppConfig:
     audio_saved_setting = _string(
         payload.get("audio_saved_setting"), defaults.audio_saved_setting
     ) or defaults.audio_saved_setting
+    editor_resolution = _choice(
+        payload.get("editor_resolution"), defaults.editor_resolution, set(EDITOR_RESOLUTIONS)
+    )
+    editor_fps = _choice(payload.get("editor_fps"), defaults.editor_fps, set(EDITOR_FPS_OPTIONS))
+    editor_encoder = _choice(
+        payload.get("editor_encoder"), defaults.editor_encoder, set(EDITOR_ENCODERS)
+    )
+    editor_audio_mode = _choice(
+        payload.get("editor_audio_mode"), defaults.editor_audio_mode, set(EDITOR_AUDIO_MODES)
+    )
 
     subtitle_region_x = _integer(
         payload.get("subtitle_region_x"), defaults.subtitle_region_x, 0, 99
@@ -193,6 +225,26 @@ def load_app_config(path: Path | None = None) -> AppConfig:
             payload.get("audio_sample_mode"), defaults.audio_sample_mode
         ),
         audio_saved_setting=audio_saved_setting,
+        editor_output_dir=_string(payload.get("editor_output_dir"), defaults.editor_output_dir),
+        editor_resolution=editor_resolution,
+        editor_fps=editor_fps,
+        editor_encoder=editor_encoder,
+        editor_audio_mode=editor_audio_mode,
+        editor_source_volume=_integer(
+            payload.get("editor_source_volume"), defaults.editor_source_volume, 0, 200
+        ),
+        editor_external_volume=_integer(
+            payload.get("editor_external_volume"), defaults.editor_external_volume, 0, 200
+        ),
+        editor_subtitle_font_size=_integer(
+            payload.get("editor_subtitle_font_size"), defaults.editor_subtitle_font_size, 10, 72
+        ),
+        editor_subtitle_margin=_integer(
+            payload.get("editor_subtitle_margin"), defaults.editor_subtitle_margin, 0, 300
+        ),
+        editor_timeline_zoom=_number(
+            payload.get("editor_timeline_zoom"), defaults.editor_timeline_zoom, 0.1, 300.0
+        ),
     )
 
 
@@ -241,5 +293,19 @@ def _integer(value: Any, default: int, minimum: int, maximum: int) -> int:
     return max(minimum, min(maximum, value))
 
 
+def _number(value: Any, default: float, minimum: float, maximum: float) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return default
+    number = float(value)
+    if not math.isfinite(number):
+        return default
+    return max(minimum, min(maximum, number))
+
+
 def _boolean(value: Any, default: bool) -> bool:
     return value if isinstance(value, bool) else default
+
+
+def _choice(value: Any, default: str, choices: set[str]) -> str:
+    normalized = _string(value, default).lower()
+    return normalized if normalized in choices else default

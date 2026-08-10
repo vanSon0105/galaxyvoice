@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import os
 import queue
 import subprocess
@@ -53,6 +54,17 @@ from .voice.tts import (
     create_tts_engine,
     tts_engine_code,
 )
+from .voice.srt import SubtitleCue
+from .video_editor.gui import (
+    AUDIO_MODE_LABELS,
+    ENCODER_LABELS,
+    FPS_LABELS,
+    RESOLUTION_LABELS,
+    VideoEditorTabMixin,
+    _code_from_label,
+)
+from .video_editor.service import EditorExportResult, EditorMediaInfo
+from .video_editor.model import EditorAsset
 
 
 from .audio_separation.gui import AudioSeparationTabMixin
@@ -62,13 +74,18 @@ from .voice.gui import VoiceTabMixin
 LOGGER = get_logger("gui")
 
 
-class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTabMixin):
+class GalaxyStudioApp(
+    VideoEditorTabMixin,
+    AudioSeparationTabMixin,
+    SubtitleRemovalTabMixin,
+    VoiceTabMixin,
+):
     def __init__(self, root: tk.Tk, config_path: Path | None = None) -> None:
         managed_media_processes.reset()
         self.root = root
         self.root.title("Galaxy AI Voice & Subtitle Studio")
-        self.root.geometry("1120x720")
-        self.root.minsize(900, 600)
+        self.root.geometry("1280x800")
+        self.root.minsize(1080, 680)
 
         self.config_path = config_path or default_config_path()
         self._config_load_error: OSError | None = None
@@ -92,6 +109,7 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
             | VideoSubtitleResult
             | SubtitleRemovalResult
             | AudioSeparationResult
+            | EditorExportResult
             | None
         ) = None
         self.subtitle_draft: VideoSubtitleDraft | None = None
@@ -107,6 +125,7 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
         self._subtitle_draft_lock = threading.Lock()
         self._pending_subtitle_draft: VideoSubtitleDraft | None = None
         self._preview_temp_dir = tempfile.TemporaryDirectory(prefix="galaxy_video_preview_")
+        self._editor_preview_temp_dir = tempfile.TemporaryDirectory(prefix="galaxy_editor_preview_")
         self._removal_drag_start: tuple[int, int] | None = None
         self._removal_preview_image: tk.PhotoImage | None = None
         self._playback_process: subprocess.Popen[bytes] | None = None
@@ -120,6 +139,23 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
         self._timeline_dragging = False
         self._resume_after_timeline_seek = False
         self._ffplay_missing_logged = False
+        self.editor_media_info: EditorMediaInfo | None = None
+        self.editor_assets: dict[str, EditorAsset] = {}
+        self.editor_cues: list[SubtitleCue] = []
+        self.editor_subtitle_path: Path | None = None
+        self.editor_audio_duration_seconds = 0.0
+        self._editor_last_result: EditorExportResult | None = None
+        self._editor_preview_image: tk.PhotoImage | None = None
+        self._editor_playback_process: subprocess.Popen[bytes] | None = None
+        self._editor_audio_processes: list[subprocess.Popen[bytes]] = []
+        self._editor_playback_worker: threading.Thread | None = None
+        self._editor_playback_stop = threading.Event()
+        self._editor_playback_frames: queue.Queue[tuple[int, bytes, float]] = queue.Queue(maxsize=2)
+        self._editor_playback_session = 0
+        self._editor_still_session = 0
+        self._editor_seek_dragging = False
+        self._editor_resume_after_seek = False
+        self._editor_export_cancel = threading.Event()
 
         self.project_name = tk.StringVar(value="galaxy_project")
         self.output_dir = tk.StringVar(value=saved_config.output_dir or str(Path.cwd() / "exports"))
@@ -206,6 +242,35 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
         ]
         initial_audio_model = saved_audio_model or (method_models[0] if method_models else None)
         self.audio_model = tk.StringVar(value=initial_audio_model.label if initial_audio_model else "")
+        self.editor_video_path = tk.StringVar()
+        self.editor_audio_path = tk.StringVar()
+        self.editor_output_dir = tk.StringVar(
+            value=saved_config.editor_output_dir or saved_config.output_dir or str(Path.cwd() / "exports")
+        )
+        self.editor_project_name = tk.StringVar()
+        self.editor_resolution = tk.StringVar(
+            value=RESOLUTION_LABELS.get(saved_config.editor_resolution, RESOLUTION_LABELS["original"])
+        )
+        self.editor_fps = tk.StringVar(
+            value=FPS_LABELS.get(saved_config.editor_fps, FPS_LABELS["source"])
+        )
+        self.editor_encoder = tk.StringVar(
+            value=ENCODER_LABELS.get(saved_config.editor_encoder, ENCODER_LABELS["auto"])
+        )
+        self.editor_audio_mode = tk.StringVar(
+            value=AUDIO_MODE_LABELS.get(saved_config.editor_audio_mode, AUDIO_MODE_LABELS["mix"])
+        )
+        self.editor_source_volume = tk.IntVar(value=saved_config.editor_source_volume)
+        self.editor_external_volume = tk.IntVar(value=saved_config.editor_external_volume)
+        self.editor_subtitle_font_size = tk.IntVar(value=saved_config.editor_subtitle_font_size)
+        self.editor_subtitle_margin = tk.IntVar(value=saved_config.editor_subtitle_margin)
+        self.editor_timeline_zoom = tk.DoubleVar(value=saved_config.editor_timeline_zoom)
+        self.editor_audio_offset = tk.IntVar(value=0)
+        self.editor_position = tk.DoubleVar(value=0.0)
+        self.editor_time_text = tk.StringVar(value="00:00 / 00:00")
+        self.editor_project_summary = tk.StringVar(value="Chưa có video")
+        self.editor_cue_start = tk.StringVar()
+        self.editor_cue_end = tk.StringVar()
         self.removal_timeline_position = tk.DoubleVar(value=0.0)
         self.removal_time_text = tk.StringVar(value="00:00 / 00:00")
         self.removal_duration_seconds = 0.0
@@ -324,6 +389,7 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
         self.progress = ttk.Progressbar(right, mode="indeterminate")
         self.progress.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
 
+        self._build_video_editor_tab()
         self._build_audio_separation_tab()
         self._build_removal_tab()
         self.main_notebook.bind("<<NotebookTabChanged>>", self._on_main_tab_changed)
@@ -351,7 +417,9 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
         selected_tab = self.main_notebook.select()
         if selected_tab != str(self.removal_tab):
             self._stop_removal_playback()
-        if selected_tab == str(self.audio_tab):
+        if selected_tab != str(self.editor_tab):
+            self._stop_editor_playback()
+        if selected_tab in (str(self.audio_tab), str(self.editor_tab)):
             self.log_frame.grid_remove()
         else:
             self.log_frame.grid()
@@ -397,6 +465,16 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
             self.audio_instrumental_only,
             self.audio_sample_mode,
             self.audio_saved_setting,
+            self.editor_output_dir,
+            self.editor_resolution,
+            self.editor_fps,
+            self.editor_encoder,
+            self.editor_audio_mode,
+            self.editor_source_volume,
+            self.editor_external_volume,
+            self.editor_subtitle_font_size,
+            self.editor_subtitle_margin,
+            self.editor_timeline_zoom,
         )
         for variable in variables:
             variable.trace_add("write", self._schedule_config_save)
@@ -480,6 +558,24 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
             audio_instrumental_only=bool(self.audio_instrumental_only.get()),
             audio_sample_mode=bool(self.audio_sample_mode.get()),
             audio_saved_setting=self.audio_saved_setting.get().strip(),
+            editor_output_dir=self.editor_output_dir.get().strip(),
+            editor_resolution=_code_from_label(
+                self.editor_resolution.get(), RESOLUTION_LABELS, "original"
+            ),
+            editor_fps=_code_from_label(self.editor_fps.get(), FPS_LABELS, "source"),
+            editor_encoder=_code_from_label(self.editor_encoder.get(), ENCODER_LABELS, "auto"),
+            editor_audio_mode=_code_from_label(
+                self.editor_audio_mode.get(), AUDIO_MODE_LABELS, "mix"
+            ),
+            editor_source_volume=self._config_int(self.editor_source_volume, 100, 0, 200),
+            editor_external_volume=self._config_int(self.editor_external_volume, 100, 0, 200),
+            editor_subtitle_font_size=self._config_int(
+                self.editor_subtitle_font_size, 22, 10, 72
+            ),
+            editor_subtitle_margin=self._config_int(self.editor_subtitle_margin, 36, 0, 300),
+            editor_timeline_zoom=self._config_float(
+                self.editor_timeline_zoom, 80.0, 0.1, 300.0
+            ),
         )
         try:
             save_app_config(config, self.config_path)
@@ -494,6 +590,21 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
             value = default
         return max(minimum, min(maximum, value))
 
+    @staticmethod
+    def _config_float(
+        variable: tk.DoubleVar,
+        default: float,
+        minimum: float,
+        maximum: float,
+    ) -> float:
+        try:
+            value = float(variable.get())
+        except (tk.TclError, TypeError, ValueError):
+            value = default
+        if not math.isfinite(value):
+            value = default
+        return max(minimum, min(maximum, value))
+
 
     def _poll_events(self) -> None:
         while True:
@@ -502,6 +613,8 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
             except queue.Empty:
                 break
 
+            if self._handle_editor_event(event, payload):
+                continue
             if event == "log":
                 self._append_log(str(payload))
             elif event == "audio_log":
@@ -593,6 +706,7 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
                 self._finish_error(payload)
 
         self._render_latest_playback_frame()
+        self._render_latest_editor_frame()
         try:
             self._poll_after_id = self.root.after(60, self._poll_events)
         except tk.TclError:
@@ -602,15 +716,17 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
         self.progress.stop()
         self.removal_progress.stop()
         self.audio_progress.stop()
+        self.editor_progress.stop()
         self.progress.configure(mode="indeterminate", maximum=100, value=0)
         self.removal_progress.configure(mode="indeterminate", maximum=100, value=0)
         self.audio_progress.configure(mode="indeterminate", maximum=100, value=0)
-        self._set_busy(False)
         self._active_task = None
+        self._set_busy(False)
         self.status.set("Done")
         self.open_button.configure(state="disabled")
         self.removal_open_button.configure(state="disabled")
         self.audio_open_button.configure(state="disabled")
+        self.editor_open_button.configure(state="disabled")
         self.last_result = (
             result
             if isinstance(
@@ -621,6 +737,7 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
                     VideoSubtitleResult,
                     SubtitleRemovalResult,
                     AudioSeparationResult,
+                    EditorExportResult,
                 ),
             )
             else None
@@ -686,6 +803,8 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
             for warning in self.last_result.warnings:
                 self._append_audio_log(f"Warning: {warning}")
             self._append_log(f"Audio stems: {self.last_result.project_dir}")
+        elif isinstance(self.last_result, EditorExportResult):
+            self._finish_editor_result(self.last_result)
 
     def _finish_error(self, error: object) -> None:
         if isinstance(error, BaseException):
@@ -693,17 +812,20 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
         self.progress.stop()
         self.removal_progress.stop()
         self.audio_progress.stop()
+        self.editor_progress.stop()
         self.progress.configure(mode="indeterminate", maximum=100, value=0)
         self.removal_progress.configure(mode="indeterminate", maximum=100, value=0)
         self.audio_progress.configure(mode="indeterminate", maximum=100, value=0)
-        self._set_busy(False)
+        self.editor_progress.configure(mode="determinate", maximum=100, value=0)
         audio_task_failed = self._active_task == "audio_separation"
         self._active_task = None
+        self._set_busy(False)
         self.status.set("Error")
         if self.last_result is None:
             self.open_button.configure(state="disabled")
             self.removal_open_button.configure(state="disabled")
             self.audio_open_button.configure(state="disabled")
+            self.editor_open_button.configure(state="disabled")
         self._append_log(f"Error: {error}")
         if audio_task_failed:
             self._append_audio_log(f"Error: {error}")
@@ -762,6 +884,23 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
             self.audio_preset_combo.configure(state="readonly")
             self._on_audio_gpu_changed()
 
+        for widget in self.editor_mutable_widgets:
+            widget.configure(state=state)
+        if not busy:
+            self.editor_resolution_combo.configure(state="readonly")
+            self.editor_fps_combo.configure(state="readonly")
+            self.editor_encoder_combo.configure(state="readonly")
+            self.editor_audio_mode_combo.configure(state="readonly")
+            self.editor_export_button.configure(
+                state="normal" if self.editor_media_info is not None else "disabled"
+            )
+        self.editor_stop_button.configure(
+            state="normal" if busy and self._active_task == "editor_export" else "disabled"
+        )
+        editor_playback_state = "normal" if not busy and self.editor_media_info is not None else "disabled"
+        self.editor_play_button.configure(state=editor_playback_state)
+        self.editor_seek.configure(state=editor_playback_state)
+
 
     def _on_controls_mousewheel(self, event: tk.Event) -> str:
         widget = event.widget
@@ -789,6 +928,8 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
             return
 
         self._stop_removal_playback(update_ui=False)
+        self._stop_editor_playback(update_ui=False)
+        self._editor_export_cancel.set()
         managed_media_processes.terminate_all()
 
         with self._subtitle_draft_lock:
@@ -826,6 +967,10 @@ class GalaxyStudioApp(AudioSeparationTabMixin, SubtitleRemovalTabMixin, VoiceTab
 
         try:
             self._preview_temp_dir.cleanup()
+        except OSError:
+            pass
+        try:
+            self._editor_preview_temp_dir.cleanup()
         except OSError:
             pass
 

@@ -47,7 +47,7 @@ App tự đọc và lưu cấu hình người dùng tại:
 config.json
 ```
 
-File nằm cạnh `run.py` và được cập nhật sau khi thay đổi output folder, engine/voice, speed, volume, pause, tùy chọn export, ngôn ngữ, Whisper, thiết bị xử lý hoặc AI provider/model/base URL. `config.json` được Git bỏ qua để mỗi máy giữ cấu hình riêng.
+File nằm cạnh `run.py` và được cập nhật sau khi thay đổi output folder, engine/voice, speed, volume, pause, tùy chọn export, ngôn ngữ, Whisper, thiết bị xử lý, cấu hình dựng video hoặc AI provider/model/base URL. `config.json` được Git bỏ qua để mỗi máy giữ cấu hình riêng.
 
 API key, nội dung Script, project name và video đang chọn không được ghi vào file cấu hình. API key tiếp tục được đọc từ ô nhập hoặc biến môi trường.
 
@@ -146,9 +146,17 @@ Mục `Thiết bị xử lý` trong tab Voice điều khiển riêng bước Whi
 
 Bấm `Generate` sau đó sẽ tạo voice từ nội dung trong tab `Script`. Nếu script được tạo từ video và bạn đổi `Translate to` trước khi generate, app sẽ dịch script sang ngôn ngữ mới rồi mới tạo voice. Nếu máy có voice Windows/SAPI trùng ngôn ngữ đã chọn, app sẽ tự chọn voice đó; nếu không, hãy cài hoặc chọn voice phù hợp thủ công.
 
+## Dựng video nhẹ
+
+Tab `Dựng video` là editor một video, một audio ngoài và một track SRT, dành cho bước ghép cuối mà không cần mở CapCut. `Thêm video`, `Thêm audio` và `Thêm SRT` chỉ nhập nguồn vào Media Bin bên trái; kéo nguồn xuống timeline hoặc double-click/nhấn `Đưa vào timeline` khi muốn sử dụng. Có thể giữ nhiều nguồn trong Media Bin, còn thả nguồn mới sẽ thay track cùng loại đang dùng. Timing trong SRT được đặt thẳng lên timeline; audio được đặt tại vị trí thả. Danh sách cue cho phép sửa thời điểm bắt đầu, kết thúc và nội dung, hoặc kéo cả block và hai mép cue trực tiếp trên track Subtitle.
+
+Preview phát video cùng audio gốc/audio ngoài và subtitle tại vị trí playhead. Hai pane workspace/timeline, đường phân cách giữa các track và mức zoom timeline đều co giãn được. `Căn theo video` chỉ dùng khi cần scale toàn bộ track subtitle để khớp chính xác đầu-cuối video; SRT có timing đúng thì không cần bấm.
+
+Phần xuất hỗ trợ giữ độ phân giải gốc, 720p, 1080p hoặc 2K `2560x1440`, cùng FPS gốc, 24, 30, 50 hoặc 60. `Tự động` ưu tiên NVIDIA NVENC, sau đó Intel Quick Sync trên Windows và cuối cùng CPU `libx264`; nếu hardware encoder tự động bị lỗi, app thử lại bằng CPU. Audio ngoài có thể trộn với audio gốc hoặc thay hoàn toàn. Mỗi lần xuất tạo một thư mục project gồm MP4, bản SRT đã chỉnh và `editor_manifest.json`.
+
 ## Xóa phụ đề khỏi video
 
-GUI có hai tab chính: `Voice` giữ nguyên toàn bộ workflow tạo voice/subtitle, còn `Xóa phụ đề` xử lý video đã có phụ đề. Preview có nút `Phát` / `Tạm dừng` và timeline để xem hoặc tua đến đúng đoạn có chữ; kéo khung vàng quanh vùng subtitle rồi chọn một trong năm chế độ:
+Tab `Xóa phụ đề` xử lý video đã có phụ đề. Preview có nút `Phát` / `Tạm dừng` và timeline để xem hoặc tua đến đúng đoạn có chữ; kéo khung vàng quanh vùng subtitle rồi chọn một trong năm chế độ:
 
 - `Bỏ track phụ đề`: loại bỏ subtitle stream rời và copy các stream còn lại, không encode lại.
 - `Làm mờ vùng phụ đề`: làm mờ vùng đã chọn, phù hợp với nền chuyển động và cho kết quả ổn định.
@@ -251,6 +259,7 @@ Code được nhóm theo tab để thay đổi một workflow không phải đ�
 app/
 |-- common/                  # config, cache, FFmpeg, logging, process và path
 |-- voice/                   # TTS, transcription, dịch AI, SRT và UI tab Voice
+|-- video_editor/            # project, preview, export và timeline tab Dựng video
 |-- audio_separation/        # backend UVR/audio-separator và UI tab Tách âm thanh
 |-- subtitle_removal/        # blur, ProPainter và UI tab Xóa phụ đề
 |-- gui.py                   # composition root, vòng đời app và event chung

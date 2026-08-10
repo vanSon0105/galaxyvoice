@@ -9,6 +9,7 @@ MVP desktop cho workflow:
 5. Xuất thêm `.mp3` nếu máy có `ffmpeg`.
 6. Trích audio `.wav` / `.mp3` từ video bằng `ffmpeg`.
 7. Tạo phụ đề từ giọng nói trong video bằng `faster-whisper`, rồi dịch phụ đề bằng AI qua API OpenAI-compatible.
+8. Tạo giọng local bằng OmniVoice với Auto Voice, nhái giọng, thiết kế giọng và thư viện profile.
 
 Edge TTS dùng dịch vụ giọng đọc online của Microsoft Edge nhưng không cần API key. Windows SAPI vẫn hoạt động hoàn toàn offline. Phần dịch phụ đề chỉ gọi cloud khi người dùng chọn dịch bằng OpenAI hoặc DeepSeek.
 
@@ -247,9 +248,19 @@ Trên Windows, app cũng đọc `OPENAI_API_KEY` và `DEEPSEEK_API_KEY` từ Use
 
 `GALAXY_TRANSLATION_BASE_URL` dùng endpoint tương thích OpenAI `/v1/chat/completions`, nên có thể đổi sang provider khác nếu muốn. Nếu chọn `No translation`, app chỉ tạo SRT gốc từ video.
 
-## Ghi chú về voice clone
+## OmniVoice local và nhái giọng
 
-Voice clone chưa được bật trong MVP này. Phần đó nên làm thành engine riêng sau khi chọn model/license rõ ràng, có kiểm soát quyền sử dụng giọng, và có UI quản lý sample voice. Core hiện đã tách `app/voice/tts.py` để sau này thêm engine khác mà không phải viết lại GUI/SRT.
+Main tab `Voice` có notebook con gồm `Voice & Subtitle`, `Auto Voice`, `Nhái giọng`, `Thiết kế giọng`, `Thư viện giọng` và `Model & Runtime`. Ba chế độ OmniVoice hỗ trợ ngôn ngữ trực tiếp, quality steps, speed, duration, CFG/generation parameters, chia đoạn dài, denoise, text normalization, WAV và MP3.
+
+OmniVoice chạy trong worker riêng và giữ model trong RAM/VRAM giữa các lần Generate. Runtime, checkpoint, Hugging Face cache và profile nằm tại `%LOCALAPPDATA%\GalaxyAIStudio\models\OmniVoice`, không dùng chung Python với app chính. Cài hoặc sửa runtime bằng nút trong GUI, hoặc chạy:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install_omnivoice.ps1 -Device auto
+```
+
+`auto` ưu tiên NVIDIA CUDA rồi mới dùng CPU. Có thể chọn `xpu` cho Intel Arc đã cài PyTorch XPU; Intel Iris Xe không được coi là Arc tương thích. Model mặc định là `k2-fsa/OmniVoice`; nút `Tải model` tải checkpoint ở lần đầu và giữ worker sẵn sàng cho các lần tạo tiếp theo.
+
+Nhái giọng nhận audio mẫu hoặc profile `.pt` đã lưu. Nếu transcript mẫu để trống, worker tải Whisper để tự nhận dạng; nhập transcript đúng sẽ tránh phần tải ASR và thường cho kết quả ổn định hơn. App yêu cầu xác nhận quyền sử dụng giọng trước khi tạo profile mới. Việc mạo danh, gian lận hoặc clone giọng không được phép là bị cấm theo disclaimer của dự án OmniVoice.
 
 ## Cấu trúc code
 
@@ -259,6 +270,7 @@ Code được nhóm theo tab để thay đổi một workflow không phải đ�
 app/
 |-- common/                  # config, cache, FFmpeg, logging, process và path
 |-- voice/                   # TTS, transcription, dịch AI, SRT và UI tab Voice
+|-- omnivoice/               # runtime worker, profile và các trang OmniVoice
 |-- video_editor/            # project, preview, export và timeline tab Dựng video
 |-- audio_separation/        # backend UVR/audio-separator và UI tab Tách âm thanh
 |-- subtitle_removal/        # blur, ProPainter và UI tab Xóa phụ đề

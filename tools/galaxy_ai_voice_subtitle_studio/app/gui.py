@@ -21,6 +21,7 @@ from .audio_separation.service import (
     load_audio_presets,
     normalize_audio_method,
 )
+from .omnivoice.gui import OmniVoiceTabMixin
 from .common.compute import (
     processing_device_code,
     processing_device_label,
@@ -79,6 +80,7 @@ class GalaxyStudioApp(
     AudioSeparationTabMixin,
     SubtitleRemovalTabMixin,
     VoiceTabMixin,
+    OmniVoiceTabMixin,
 ):
     def __init__(self, root: tk.Tk, config_path: Path | None = None) -> None:
         managed_media_processes.reset()
@@ -103,6 +105,7 @@ class GalaxyStudioApp(
         self._active_task: str | None = None
         self._audio_stop_event = threading.Event()
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
+        self._init_omnivoice_state(saved_config)
         self.last_result: (
             GenerationResult
             | MediaExtractionResult
@@ -334,11 +337,18 @@ class GalaxyStudioApp(
 
         self.voice_tab = ttk.Frame(self.main_notebook, padding=(0, 10, 0, 0))
         self.voice_tab.columnconfigure(0, weight=1)
-        self.voice_tab.columnconfigure(1, minsize=340)
         self.voice_tab.rowconfigure(0, weight=1)
         self.main_notebook.add(self.voice_tab, text="Voice")
 
-        left = ttk.Frame(self.voice_tab)
+        self.voice_feature_notebook = ttk.Notebook(self.voice_tab)
+        self.voice_feature_notebook.grid(row=0, column=0, sticky="nsew")
+        self.classic_voice_tab = ttk.Frame(self.voice_feature_notebook, padding=(0, 10, 0, 0))
+        self.classic_voice_tab.columnconfigure(0, weight=1)
+        self.classic_voice_tab.columnconfigure(1, minsize=340)
+        self.classic_voice_tab.rowconfigure(0, weight=1)
+        self.voice_feature_notebook.add(self.classic_voice_tab, text="Voice & Subtitle")
+
+        left = ttk.Frame(self.classic_voice_tab)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
         left.columnconfigure(0, weight=1)
         left.rowconfigure(0, weight=1)
@@ -366,7 +376,7 @@ class GalaxyStudioApp(
         self.source_subtitle_text.bind("<<Modified>>", self._on_subtitle_modified)
         self.translated_subtitle_text.bind("<<Modified>>", self._on_subtitle_modified)
 
-        right = ttk.Frame(self.voice_tab, style="Panel.TFrame", padding=14)
+        right = ttk.Frame(self.classic_voice_tab, style="Panel.TFrame", padding=14)
         right.grid(row=0, column=1, sticky="nsew")
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=1)
@@ -389,6 +399,7 @@ class GalaxyStudioApp(
         self.progress = ttk.Progressbar(right, mode="indeterminate")
         self.progress.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
 
+        self._build_omnivoice_tabs(self.voice_feature_notebook)
         self._build_video_editor_tab()
         self._build_audio_separation_tab()
         self._build_removal_tab()
@@ -475,6 +486,7 @@ class GalaxyStudioApp(
             self.editor_subtitle_font_size,
             self.editor_subtitle_margin,
             self.editor_timeline_zoom,
+            *self._omnivoice_config_variables(),
         )
         for variable in variables:
             variable.trace_add("write", self._schedule_config_save)
@@ -513,6 +525,7 @@ class GalaxyStudioApp(
         region_x = self._config_int(self.subtitle_region_x, 5, 0, 99)
         region_y = self._config_int(self.subtitle_region_y, 75, 0, 99)
         selected_audio_model = self._selected_audio_model()
+        omnivoice_config = self._omnivoice_config_values()
         config = AppConfig(
             output_dir=self.output_dir.get().strip(),
             tts_engine=tts_engine_code(self.tts_engine_name.get()),
@@ -576,6 +589,7 @@ class GalaxyStudioApp(
             editor_timeline_zoom=self._config_float(
                 self.editor_timeline_zoom, 80.0, 0.1, 300.0
             ),
+            **omnivoice_config,
         )
         try:
             save_app_config(config, self.config_path)
@@ -614,6 +628,8 @@ class GalaxyStudioApp(
                 break
 
             if self._handle_editor_event(event, payload):
+                continue
+            if self._handle_omnivoice_event(event, payload):
                 continue
             if event == "log":
                 self._append_log(str(payload))
@@ -900,6 +916,7 @@ class GalaxyStudioApp(
         editor_playback_state = "normal" if not busy and self.editor_media_info is not None else "disabled"
         self.editor_play_button.configure(state=editor_playback_state)
         self.editor_seek.configure(state=editor_playback_state)
+        self._set_omnivoice_busy(busy)
 
 
     def _on_controls_mousewheel(self, event: tk.Event) -> str:
@@ -930,6 +947,7 @@ class GalaxyStudioApp(
         self._stop_removal_playback(update_ui=False)
         self._stop_editor_playback(update_ui=False)
         self._editor_export_cancel.set()
+        self.omnivoice_client.close()
         managed_media_processes.terminate_all()
 
         with self._subtitle_draft_lock:

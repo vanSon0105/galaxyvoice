@@ -171,7 +171,7 @@ class GuiLayoutTests(unittest.TestCase):
             root.update_idletasks()
             root.update()
 
-            right_panel = _find_grid_child(app.voice_tab, row=0, column=1)
+            right_panel = _find_grid_child(app.classic_voice_tab, row=0, column=1)
             self.assertIsNotNone(right_panel)
 
             right_height = right_panel.winfo_height()
@@ -196,6 +196,24 @@ class GuiLayoutTests(unittest.TestCase):
 
             labels = [app.main_notebook.tab(tab_id, "text") for tab_id in app.main_notebook.tabs()]
             self.assertEqual(labels, ["Voice", "Dựng video", "Tách âm thanh", "Xóa phụ đề"])
+            voice_labels = [
+                app.voice_feature_notebook.tab(tab_id, "text")
+                for tab_id in app.voice_feature_notebook.tabs()
+            ]
+            self.assertEqual(
+                voice_labels,
+                [
+                    "Voice & Subtitle",
+                    "Auto Voice",
+                    "Nhái giọng",
+                    "Thiết kế giọng",
+                    "Thư viện giọng",
+                    "Model & Runtime",
+                ],
+            )
+            self.assertEqual(app.omnivoice_language.get(), "vi")
+            self.assertEqual(str(app.omnivoice_profile_combo.cget("state")), "readonly")
+            self.assertEqual(str(app.omnivoice_stop_buttons[0].cget("state")), "disabled")
             self.assertEqual(app.editor_preview_canvas.cget("width"), "384")
             self.assertEqual(str(app.editor_export_button.cget("state")), "disabled")
             self.assertIn("2K 1440p", app.editor_resolution_combo.cget("values"))

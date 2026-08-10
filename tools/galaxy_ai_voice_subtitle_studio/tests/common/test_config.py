@@ -64,6 +64,26 @@ class ConfigTests(unittest.TestCase):
             editor_subtitle_font_size=30,
             editor_subtitle_margin=54,
             editor_timeline_zoom=0.25,
+            omnivoice_output_dir=r"D:\Videos\OmniVoice",
+            omnivoice_model_id="local/omnivoice",
+            omnivoice_device="cuda",
+            omnivoice_language="vi",
+            omnivoice_num_step=16,
+            omnivoice_guidance_scale=1.8,
+            omnivoice_t_shift=0.2,
+            omnivoice_layer_penalty_factor=4.5,
+            omnivoice_position_temperature=3.0,
+            omnivoice_class_temperature=0.4,
+            omnivoice_speed=1.15,
+            omnivoice_duration=12.5,
+            omnivoice_normalize_text=True,
+            omnivoice_audio_chunk_duration=12.0,
+            omnivoice_audio_chunk_threshold=24.0,
+            omnivoice_pad_duration=0.2,
+            omnivoice_fade_duration=0.15,
+            omnivoice_profile_id="narrator",
+            omnivoice_design_gender="female",
+            omnivoice_design_pitch="low pitch",
         )
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -97,6 +117,10 @@ class ConfigTests(unittest.TestCase):
             "editor_audio_mode": "duck",
             "editor_source_volume": 999,
             "editor_timeline_zoom": -1,
+            "omnivoice_device": "iris",
+            "omnivoice_num_step": 999,
+            "omnivoice_guidance_scale": -2,
+            "omnivoice_speed": 9,
         }
 
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -127,6 +151,10 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.editor_audio_mode, "mix")
         self.assertEqual(config.editor_source_volume, 200)
         self.assertEqual(config.editor_timeline_zoom, 0.1)
+        self.assertEqual(config.omnivoice_device, "auto")
+        self.assertEqual(config.omnivoice_num_step, 64)
+        self.assertEqual(config.omnivoice_guidance_scale, 0.0)
+        self.assertEqual(config.omnivoice_speed, 1.5)
 
     def test_fast_ai_removal_mode_is_restored(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

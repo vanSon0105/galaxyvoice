@@ -16,6 +16,9 @@ from ..audio_separation.service import (
     normalize_audio_device,
     normalize_audio_method,
 )
+from ..omnivoice.models import DEFAULT_MODEL_ID
+from ..omnivoice.runtime import AUTO_DEVICE as OMNIVOICE_AUTO_DEVICE
+from ..omnivoice.runtime import normalize_omnivoice_device
 from .compute import AUTO_DEVICE, normalize_processing_device
 from .paths import studio_root
 from ..subtitle_removal.service import BLUR_MODE, SUBTITLE_REMOVAL_MODES
@@ -34,7 +37,7 @@ from ..video_editor.service import (
 )
 
 
-CONFIG_VERSION = 4
+CONFIG_VERSION = 5
 
 
 @dataclass(frozen=True)
@@ -88,6 +91,34 @@ class AppConfig:
     editor_subtitle_font_size: int = 22
     editor_subtitle_margin: int = 36
     editor_timeline_zoom: float = 80.0
+    omnivoice_output_dir: str = ""
+    omnivoice_model_id: str = DEFAULT_MODEL_ID
+    omnivoice_device: str = OMNIVOICE_AUTO_DEVICE
+    omnivoice_language: str = "vi"
+    omnivoice_num_step: int = 32
+    omnivoice_guidance_scale: float = 2.0
+    omnivoice_t_shift: float = 0.1
+    omnivoice_layer_penalty_factor: float = 5.0
+    omnivoice_position_temperature: float = 5.0
+    omnivoice_class_temperature: float = 0.0
+    omnivoice_speed: float = 1.0
+    omnivoice_duration: float = 0.0
+    omnivoice_denoise: bool = True
+    omnivoice_normalize_text: bool = False
+    omnivoice_preprocess_prompt: bool = True
+    omnivoice_postprocess_output: bool = True
+    omnivoice_audio_chunk_duration: float = 15.0
+    omnivoice_audio_chunk_threshold: float = 30.0
+    omnivoice_pad_duration: float = 0.1
+    omnivoice_fade_duration: float = 0.1
+    omnivoice_export_mp3: bool = True
+    omnivoice_profile_id: str = ""
+    omnivoice_design_gender: str = ""
+    omnivoice_design_age: str = ""
+    omnivoice_design_pitch: str = ""
+    omnivoice_design_style: str = ""
+    omnivoice_design_accent: str = ""
+    omnivoice_design_dialect: str = ""
 
 
 def default_config_path() -> Path:
@@ -244,6 +275,108 @@ def load_app_config(path: Path | None = None) -> AppConfig:
         ),
         editor_timeline_zoom=_number(
             payload.get("editor_timeline_zoom"), defaults.editor_timeline_zoom, 0.1, 300.0
+        ),
+        omnivoice_output_dir=_string(
+            payload.get("omnivoice_output_dir"), defaults.omnivoice_output_dir
+        ),
+        omnivoice_model_id=_string(
+            payload.get("omnivoice_model_id"), defaults.omnivoice_model_id
+        ) or defaults.omnivoice_model_id,
+        omnivoice_device=normalize_omnivoice_device(
+            _string(payload.get("omnivoice_device"), defaults.omnivoice_device)
+        ),
+        omnivoice_language=_string(
+            payload.get("omnivoice_language"), defaults.omnivoice_language
+        ) or defaults.omnivoice_language,
+        omnivoice_num_step=_integer(
+            payload.get("omnivoice_num_step"), defaults.omnivoice_num_step, 4, 64
+        ),
+        omnivoice_guidance_scale=_number(
+            payload.get("omnivoice_guidance_scale"),
+            defaults.omnivoice_guidance_scale,
+            0.0,
+            4.0,
+        ),
+        omnivoice_t_shift=_number(
+            payload.get("omnivoice_t_shift"), defaults.omnivoice_t_shift, 0.01, 1.0
+        ),
+        omnivoice_layer_penalty_factor=_number(
+            payload.get("omnivoice_layer_penalty_factor"),
+            defaults.omnivoice_layer_penalty_factor,
+            0.0,
+            20.0,
+        ),
+        omnivoice_position_temperature=_number(
+            payload.get("omnivoice_position_temperature"),
+            defaults.omnivoice_position_temperature,
+            0.0,
+            20.0,
+        ),
+        omnivoice_class_temperature=_number(
+            payload.get("omnivoice_class_temperature"),
+            defaults.omnivoice_class_temperature,
+            0.0,
+            5.0,
+        ),
+        omnivoice_speed=_number(
+            payload.get("omnivoice_speed"), defaults.omnivoice_speed, 0.5, 1.5
+        ),
+        omnivoice_duration=_number(
+            payload.get("omnivoice_duration"), defaults.omnivoice_duration, 0.0, 600.0
+        ),
+        omnivoice_denoise=_boolean(
+            payload.get("omnivoice_denoise"), defaults.omnivoice_denoise
+        ),
+        omnivoice_normalize_text=_boolean(
+            payload.get("omnivoice_normalize_text"), defaults.omnivoice_normalize_text
+        ),
+        omnivoice_preprocess_prompt=_boolean(
+            payload.get("omnivoice_preprocess_prompt"), defaults.omnivoice_preprocess_prompt
+        ),
+        omnivoice_postprocess_output=_boolean(
+            payload.get("omnivoice_postprocess_output"), defaults.omnivoice_postprocess_output
+        ),
+        omnivoice_audio_chunk_duration=_number(
+            payload.get("omnivoice_audio_chunk_duration"),
+            defaults.omnivoice_audio_chunk_duration,
+            0.0,
+            120.0,
+        ),
+        omnivoice_audio_chunk_threshold=_number(
+            payload.get("omnivoice_audio_chunk_threshold"),
+            defaults.omnivoice_audio_chunk_threshold,
+            0.0,
+            600.0,
+        ),
+        omnivoice_pad_duration=_number(
+            payload.get("omnivoice_pad_duration"), defaults.omnivoice_pad_duration, 0.0, 5.0
+        ),
+        omnivoice_fade_duration=_number(
+            payload.get("omnivoice_fade_duration"), defaults.omnivoice_fade_duration, 0.0, 5.0
+        ),
+        omnivoice_export_mp3=_boolean(
+            payload.get("omnivoice_export_mp3"), defaults.omnivoice_export_mp3
+        ),
+        omnivoice_profile_id=_string(
+            payload.get("omnivoice_profile_id"), defaults.omnivoice_profile_id
+        ),
+        omnivoice_design_gender=_string(
+            payload.get("omnivoice_design_gender"), defaults.omnivoice_design_gender
+        ),
+        omnivoice_design_age=_string(
+            payload.get("omnivoice_design_age"), defaults.omnivoice_design_age
+        ),
+        omnivoice_design_pitch=_string(
+            payload.get("omnivoice_design_pitch"), defaults.omnivoice_design_pitch
+        ),
+        omnivoice_design_style=_string(
+            payload.get("omnivoice_design_style"), defaults.omnivoice_design_style
+        ),
+        omnivoice_design_accent=_string(
+            payload.get("omnivoice_design_accent"), defaults.omnivoice_design_accent
+        ),
+        omnivoice_design_dialect=_string(
+            payload.get("omnivoice_design_dialect"), defaults.omnivoice_design_dialect
         ),
     )
 

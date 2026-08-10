@@ -65,7 +65,15 @@ class OmniVoiceGuiTests(unittest.TestCase):
             ]
             self.assertEqual(
                 gallery_tools,
-                ["Presets", "Giọng đã lưu", "Auto Voice", "Batch", "LoRA", "Runtime"],
+                [
+                    "Presets",
+                    "Giọng đã lưu",
+                    "Auto Voice",
+                    "Batch",
+                    "LoRA",
+                    "Runtime",
+                    "Lịch sử tạo",
+                ],
             )
         finally:
             root.destroy()

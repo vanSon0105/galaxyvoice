@@ -855,7 +855,10 @@ class GuiLayoutTests(unittest.TestCase):
                     result.translated_srt_text.strip(),
                 )
                 tab_labels = [app.subtitle_notebook.tab(tab_id, "text") for tab_id in app.subtitle_notebook.tabs()]
-                self.assertEqual(tab_labels, ["Script", "Sub gốc", "Sub dịch"])
+                self.assertEqual(
+                    tab_labels,
+                    ["Script", "Sub gốc", "Sub dịch", "Segments"],
+                )
                 self.assertEqual(str(app.subtitle_export_button.cget("state")), "normal")
                 self.assertEqual(str(app.open_button.cget("state")), "disabled")
                 self.assertEqual(app.voice_name.get(), "Vietnamese Voice")

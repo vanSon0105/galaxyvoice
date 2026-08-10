@@ -991,6 +991,10 @@ class OmniVoiceTabMixin(OmniVoiceWorkspaceGuiMixin, OmniVoiceAdvancedGuiMixin):
             "omnivoice_stories",
             "omnivoice_audiobook",
             "omnivoice_dub",
+            "omnivoice_dubbing_preview",
+            "omnivoice_stories_preview",
+            "omnivoice_audiobook_preview",
+            "omnivoice_audiobook_chapter_preview",
             "omnivoice_model",
             "omnivoice_probe",
             "omnivoice_lora_merge",
@@ -1045,6 +1049,7 @@ class OmniVoiceTabMixin(OmniVoiceWorkspaceGuiMixin, OmniVoiceAdvancedGuiMixin):
                 self._refresh_omnivoice_profiles()
             for warning in payload.warnings:
                 self._append_omnivoice_log(f"Cảnh báo: {warning}")
+            self.record_omnivoice_generation_result(payload)
         elif event == "omnivoice_batch_done" and isinstance(payload, OmniVoiceBatchResult):
             self.omnivoice_last_result = None
             self.omnivoice_last_batch_result = payload
@@ -1061,6 +1066,7 @@ class OmniVoiceTabMixin(OmniVoiceWorkspaceGuiMixin, OmniVoiceAdvancedGuiMixin):
                 self._append_omnivoice_log(f"WAV đã ghép: {payload.combined_wav_path}")
             for warning in payload.warnings:
                 self._append_omnivoice_log(f"Cảnh báo: {warning}")
+            self.record_omnivoice_batch_result(payload)
         elif event == "omnivoice_model_loaded" and isinstance(payload, dict):
             device = str(payload.get("device") or "")
             self.omnivoice_worker_status.set(f"Đã nạp model trên {device}")

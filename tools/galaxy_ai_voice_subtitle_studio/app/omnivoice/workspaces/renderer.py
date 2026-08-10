@@ -1,14 +1,17 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 import wave
+from array import array
 from dataclasses import asdict, dataclass, replace
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Mapping
 
-from ...common.cache import write_json_atomic
+from ...common.cache import read_json, stable_digest, write_json_atomic
 from ...common.ffmpeg import find_ffmpeg
-from ...common.paths import unique_project_dir
+from ...common.paths import slugify, unique_project_dir
 from ...voice.audio import concatenate_wavs, try_convert_to_mp3
 from ...voice.srt import SubtitleCue, render_srt
 from ..models import AUTO_MODE, CLONE_MODE, OmniVoiceGenerationOptions, OmniVoiceResult
@@ -29,11 +32,23 @@ class LongformWorkspaceResult:
     item_results: tuple[OmniVoiceResult, ...]
     mp3_path: Path | None = None
     m4b_path: Path | None = None
+    stems_dir: Path | None = None
     warnings: tuple[str, ...] = ()
 
     @property
     def preview_path(self) -> Path:
         return self.wav_path
+
+
+@dataclass(frozen=True)
+class ResumableWorkspaceJob:
+    project_dir: Path
+    project_name: str
+    status: str
+    completed_spans: int
+    total_spans: int
+    updated_at: str
+    error: str = ""
 
 
 def render_longform_plan(
@@ -46,56 +61,118 @@ def render_longform_plan(
     gap_ms: int = 250,
     export_mp3: bool = True,
     export_m4b: bool = False,
+    export_stems: bool = False,
     title: str = "",
     author: str = "",
+    cover_path: Path | None = None,
     progress: WorkspaceProgress | None = None,
+    resume_project_dir: Path | None = None,
 ) -> LongformWorkspaceResult:
     report = progress or (lambda _message: None)
     speech_spans = [span for span in plan.spans if span.kind == SPEECH_SPAN]
     if not speech_spans:
         raise ValueError("Kế hoạch không có đoạn thoại nào.")
 
-    project_dir = unique_project_dir(
-        base_options.output_dir,
-        base_options.project_name,
-        "omnivoice-longform",
+    project_dir = (
+        _validated_resume_dir(base_options.output_dir, resume_project_dir)
+        if resume_project_dir is not None
+        else unique_project_dir(
+            base_options.output_dir,
+            base_options.project_name,
+            "omnivoice-longform",
+        )
     )
     resolved_cast = _profile_lookup(profiles, cast_map or {})
+    job_path = project_dir / "workspace_job.json"
+    used_cast = {
+        span.voice_name.casefold(): resolved_cast.get(span.voice_name.casefold(), "")
+        for span in plan.spans
+        if span.voice_name and not span.profile_id
+    }
+    plan_signature = _plan_signature(base_options, plan, used_cast, gap_ms)
+    job = _load_or_create_job(
+        job_path,
+        project_name=base_options.project_name,
+        signature=plan_signature,
+        total_spans=len(speech_spans),
+    )
+    cached_items = job.get("items") if isinstance(job.get("items"), dict) else {}
+    job["status"] = "running"
+    job["error"] = ""
+    _save_job(job_path, job)
     item_results: list[OmniVoiceResult] = []
     speech_paths: dict[int, Path] = {}
     speech_total = len(speech_spans)
     speech_index = 0
-    for span_index, span in enumerate(plan.spans):
-        if span.kind != SPEECH_SPAN:
-            continue
-        speech_index += 1
-        report(f"Đang tạo đoạn {speech_index}/{speech_total}: {span.voice_name or 'Auto'}")
-        profile_id = resolved_cast.get(span.voice_name.casefold(), "") if span.voice_name else ""
-        if not profile_id:
-            profile_id = base_options.profile_id
-        mode = CLONE_MODE if profile_id else AUTO_MODE
-        options = replace(
-            base_options,
-            mode=mode,
-            text=span.text,
-            output_dir=project_dir,
-            project_name=f"part-{speech_index:04d}",
-            profile_id=profile_id,
-            reference_audio=None if profile_id else base_options.reference_audio,
-            save_profile_name="",
-            instruct=base_options.instruct if mode == CLONE_MODE else "",
-            speed=max(0.5, min(1.5, base_options.speed * span.speed)),
-            duration=span.duration,
-            export_mp3=False,
-        )
-        result = generate_omnivoice_audio(options, client, progress=report)
-        if span.duration is not None:
-            _fit_wav_duration(result.wav_path, round(span.duration * 1000))
-        item_results.append(result)
-        speech_paths[span_index] = result.wav_path
+    try:
+        for span_index, span in enumerate(plan.spans):
+            if span.kind != SPEECH_SPAN:
+                continue
+            speech_index += 1
+            profile_id = span.profile_id
+            if not profile_id and span.voice_name:
+                profile_id = resolved_cast.get(span.voice_name.casefold(), "")
+            if not profile_id:
+                profile_id = base_options.profile_id
+            item_key = str(span_index)
+            item_signature = _span_signature(base_options, span, profile_id)
+            cached = cached_items.get(item_key) if isinstance(cached_items, dict) else None
+            reused = _cached_result(cached, item_signature)
+            if reused is not None:
+                report(f"Dùng lại đoạn {speech_index}/{speech_total}: {span.voice_name or 'Auto'}")
+                result = reused
+            else:
+                report(f"Đang tạo đoạn {speech_index}/{speech_total}: {span.voice_name or 'Auto'}")
+                mode = CLONE_MODE if profile_id else AUTO_MODE
+                options = replace(
+                    base_options,
+                    mode=mode,
+                    text=span.text,
+                    output_dir=project_dir,
+                    project_name=f"part-{speech_index:04d}",
+                    profile_id=profile_id,
+                    reference_audio=None if profile_id else base_options.reference_audio,
+                    save_profile_name="",
+                    instruct=base_options.instruct if mode == CLONE_MODE else "",
+                    speed=max(0.5, min(1.5, base_options.speed * span.speed)),
+                    duration=span.duration,
+                    export_mp3=False,
+                )
+                result = generate_omnivoice_audio(options, client, progress=report)
+                if span.duration is not None:
+                    _fit_wav_duration(result.wav_path, round(span.duration * 1000))
+                if abs(span.volume - 1.0) > 0.001:
+                    _scale_wav_volume(result.wav_path, span.volume)
+                cached_items[item_key] = {
+                    "signature": item_signature,
+                    "project_dir": str(result.project_dir),
+                    "wav_path": str(result.wav_path),
+                    "manifest_path": str(result.manifest_path),
+                    "warnings": list(result.warnings),
+                }
+                job["items"] = cached_items
+                job["completed_spans"] = len(cached_items)
+                _save_job(job_path, job)
+            item_results.append(result)
+            speech_paths[span_index] = result.wav_path
+    except Exception as error:
+        job["status"] = "failed"
+        job["error"] = str(error)
+        job["completed_spans"] = len(cached_items)
+        _save_job(job_path, job)
+        raise
 
     with wave.open(str(item_results[0].wav_path), "rb") as first:
         params = first.getparams()
+
+    stems_dir: Path | None = None
+    if export_stems:
+        stems_dir = project_dir / "stems"
+        stems_dir.mkdir(parents=True, exist_ok=True)
+        for index, (span, result) in enumerate(zip(speech_spans, item_results), start=1):
+            label = slugify("-".join(part for part in (span.chapter, span.voice_name) if part))
+            destination = stems_dir / f"{index:04d}-{label or 'voice'}.wav"
+            shutil.copy2(result.wav_path, destination)
 
     sequence_paths: list[Path] = []
     sequence_spans: list[LongformSpan | None] = []
@@ -162,6 +239,7 @@ def render_longform_plan(
             candidate,
             title=title or base_options.project_name,
             author=author,
+            cover_path=cover_path,
             chapters=[
                 (chapter, *chapter_bounds[chapter])
                 for chapter in plan.chapters
@@ -201,10 +279,21 @@ def render_longform_plan(
                 "srt": str(srt_path),
                 "mp3": str(mp3_path) if mp3_path else None,
                 "m4b": str(m4b_path) if m4b_path else None,
+                "stems": str(stems_dir) if stems_dir else None,
             },
             "warnings": warnings,
         },
     )
+    job["status"] = "completed"
+    job["error"] = ""
+    job["completed_spans"] = speech_total
+    job["files"] = {
+        "wav": str(wav_path),
+        "srt": str(srt_path),
+        "mp3": str(mp3_path) if mp3_path else "",
+        "m4b": str(m4b_path) if m4b_path else "",
+    }
+    _save_job(job_path, job)
     return LongformWorkspaceResult(
         project_dir=project_dir,
         wav_path=wav_path,
@@ -213,7 +302,124 @@ def render_longform_plan(
         item_results=tuple(item_results),
         mp3_path=mp3_path,
         m4b_path=m4b_path,
+        stems_dir=stems_dir,
         warnings=tuple(warnings),
+    )
+
+
+def find_resumable_workspace_jobs(output_dir: Path) -> tuple[ResumableWorkspaceJob, ...]:
+    root = Path(output_dir).expanduser()
+    if not root.is_dir():
+        return ()
+    jobs: list[ResumableWorkspaceJob] = []
+    for path in root.glob("*/workspace_job.json"):
+        payload = read_json(path)
+        if not isinstance(payload, dict) or payload.get("status") not in {"running", "failed"}:
+            continue
+        jobs.append(
+            ResumableWorkspaceJob(
+                project_dir=path.parent,
+                project_name=str(payload.get("project_name") or path.parent.name),
+                status=str(payload.get("status") or "failed"),
+                completed_spans=max(0, int(payload.get("completed_spans") or 0)),
+                total_spans=max(0, int(payload.get("total_spans") or 0)),
+                updated_at=str(payload.get("updated_at") or ""),
+                error=str(payload.get("error") or ""),
+            )
+        )
+    return tuple(sorted(jobs, key=lambda item: item.updated_at, reverse=True))
+
+
+def _validated_resume_dir(output_dir: Path, resume_project_dir: Path) -> Path:
+    root = Path(output_dir).expanduser().resolve()
+    candidate = Path(resume_project_dir).expanduser().resolve()
+    if candidate.parent != root or not candidate.is_dir():
+        raise ValueError("Thư mục resume phải là project nằm trực tiếp trong output OmniVoice.")
+    return candidate
+
+
+def _plan_signature(
+    options: OmniVoiceGenerationOptions,
+    plan: LongformPlan,
+    cast_map: Mapping[str, str],
+    gap_ms: int,
+) -> str:
+    return stable_digest(
+        {
+            "model_id": options.model_id,
+            "device": options.device,
+            "language": options.language,
+            "base_profile": options.profile_id,
+            "speed": options.speed,
+            "gap_ms": max(0, int(gap_ms)),
+            "cast": dict(sorted(cast_map.items())),
+            "spans": [asdict(span) for span in plan.spans],
+        }
+    )
+
+
+def _span_signature(
+    options: OmniVoiceGenerationOptions,
+    span: LongformSpan,
+    profile_id: str,
+) -> str:
+    return stable_digest(
+        {
+            "model_id": options.model_id,
+            "language": options.language,
+            "profile_id": profile_id,
+            "base_speed": options.speed,
+            "num_step": options.num_step,
+            "guidance_scale": options.guidance_scale,
+            "span": asdict(span),
+        }
+    )
+
+
+def _load_or_create_job(
+    path: Path,
+    *,
+    project_name: str,
+    signature: str,
+    total_spans: int,
+) -> dict[str, object]:
+    existing = read_json(path)
+    if isinstance(existing, dict):
+        if existing.get("signature") != signature:
+            raise ValueError("Project resume không còn khớp với script hoặc thiết lập hiện tại.")
+        return existing
+    return {
+        "version": 1,
+        "project_name": project_name,
+        "signature": signature,
+        "status": "pending",
+        "completed_spans": 0,
+        "total_spans": max(0, int(total_spans)),
+        "items": {},
+        "error": "",
+    }
+
+
+def _save_job(path: Path, payload: dict[str, object]) -> None:
+    payload["updated_at"] = datetime.now(timezone.utc).isoformat()
+    write_json_atomic(path, payload)
+
+
+def _cached_result(payload: object, signature: str) -> OmniVoiceResult | None:
+    if not isinstance(payload, dict) or payload.get("signature") != signature:
+        return None
+    wav_path = Path(str(payload.get("wav_path") or ""))
+    project_dir = Path(str(payload.get("project_dir") or ""))
+    manifest_path = Path(str(payload.get("manifest_path") or ""))
+    if not wav_path.is_file() or not project_dir.is_dir():
+        return None
+    warnings = payload.get("warnings")
+    return OmniVoiceResult(
+        project_dir=project_dir,
+        wav_path=wav_path,
+        mp3_path=None,
+        manifest_path=manifest_path,
+        warnings=tuple(str(item) for item in warnings) if isinstance(warnings, list) else (),
     )
 
 
@@ -243,6 +449,24 @@ def _fit_wav_duration(path: Path, target_ms: int) -> None:
     temporary.replace(path)
 
 
+def _scale_wav_volume(path: Path, volume: float) -> None:
+    factor = max(0.0, min(2.0, float(volume)))
+    with wave.open(str(path), "rb") as source:
+        params = source.getparams()
+        frames = source.readframes(source.getnframes())
+    if params.sampwidth != 2:
+        return
+    samples = array("h")
+    samples.frombytes(frames)
+    for index, sample in enumerate(samples):
+        samples[index] = max(-32768, min(32767, round(sample * factor)))
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    with wave.open(str(temporary), "wb") as output:
+        output.setparams(params)
+        output.writeframes(samples.tobytes())
+    temporary.replace(path)
+
+
 def _write_silence(path: Path, params: wave._wave_params, duration_ms: int) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     frames = max(1, round(params.framerate * max(1, duration_ms) / 1000))
@@ -257,6 +481,7 @@ def _convert_to_m4b(
     *,
     title: str,
     author: str,
+    cover_path: Path | None,
     chapters: list[tuple[str, int, int]],
 ) -> tuple[bool, str]:
     ffmpeg = find_ffmpeg()
@@ -287,14 +512,31 @@ def _convert_to_m4b(
         str(wav_path),
         "-i",
         str(metadata_path),
-        "-map_metadata",
-        "1",
+    ]
+    valid_cover = cover_path is not None and Path(cover_path).is_file()
+    if valid_cover:
+        command.extend(("-i", str(cover_path)))
+    command.extend(("-map_metadata", "1"))
+    if valid_cover:
+        command.extend(
+            (
+                "-map",
+                "0:a:0",
+                "-map",
+                "2:v:0",
+                "-c:v",
+                "copy",
+                "-disposition:v:0",
+                "attached_pic",
+            )
+        )
+    command.extend([
         "-c:a",
         "aac",
         "-b:a",
         "192k",
         str(output_path),
-    ]
+    ])
     try:
         completed = subprocess.run(command, capture_output=True, text=True, check=False)
     finally:

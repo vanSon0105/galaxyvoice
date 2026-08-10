@@ -23,8 +23,10 @@ class LongformSpan:
     kind: str
     text: str = ""
     voice_name: str = ""
+    profile_id: str = ""
     pause_ms: int = 0
     speed: float = 1.0
+    volume: float = 1.0
     duration: float | None = None
     chapter: str = ""
     source_index: int | None = None

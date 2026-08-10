@@ -4,12 +4,19 @@ import os
 import tkinter as tk
 from dataclasses import replace
 from pathlib import Path
-from tkinter import filedialog, messagebox, ttk
+from tkinter import filedialog, messagebox, simpledialog, ttk
 
+from ...common.cache import read_json
 from ...voice.srt import parse_srt
 from ...voice.transcription import VideoSubtitleDraft
 from ..models import AUTO_MODE, CLONE_MODE, DESIGN_MODE, OmniVoiceGenerationOptions
 from ..runtime import inspect_runtime
+from .audiobook import AudiobookWorkspaceGuiMixin
+from .common import WorkspaceRepository
+from .common.editor_gui import EditableLongformGuiMixin
+from .dubbing.gui import DubbingWorkspaceGuiMixin
+from .dubbing.model import plan_dubbing_segments
+from .editable import EditableLongformDocument, EditableLongformItem
 from .gallery import VoiceArchetype, list_voice_archetypes, voice_archetype_categories
 from .imports import load_audiobook_source
 from .longform import (
@@ -20,6 +27,7 @@ from .longform import (
 )
 from .renderer import LongformWorkspaceResult, render_longform_plan
 from .transcripts import TranscriptEntry, TranscriptStore
+from .stories import build_stories_workspace_editor
 
 
 _STORY_SAMPLE = """# Mở đầu
@@ -37,7 +45,11 @@ _AUDIOBOOK_SAMPLE = """# Chương 1 - Khởi đầu
 """
 
 
-class OmniVoiceWorkspaceGuiMixin:
+class OmniVoiceWorkspaceGuiMixin(
+    DubbingWorkspaceGuiMixin,
+    EditableLongformGuiMixin,
+    AudiobookWorkspaceGuiMixin,
+):
     def _init_omnivoice_workspace_state(self) -> None:
         self.omnivoice_workspace_result: LongformWorkspaceResult | None = None
         self.omnivoice_last_dub_result: LongformWorkspaceResult | None = None
@@ -46,18 +58,47 @@ class OmniVoiceWorkspaceGuiMixin:
         self.omnivoice_audiobook_title = tk.StringVar(value="")
         self.omnivoice_audiobook_author = tk.StringVar(value="")
         self.omnivoice_audiobook_export_m4b = tk.BooleanVar(value=True)
+        self.omnivoice_story_export_stems = tk.BooleanVar(value=False)
+        self.omnivoice_audiobook_export_stems = tk.BooleanVar(value=False)
         self.omnivoice_story_cast_choice = tk.StringVar(value="")
         self.omnivoice_audiobook_cast_choice = tk.StringVar(value="")
         self.omnivoice_story_cast: dict[str, str] = {}
         self.omnivoice_audiobook_cast: dict[str, str] = {}
         self.omnivoice_gallery_search = tk.StringVar(value="")
+        self.omnivoice_gallery_favorites_only = tk.BooleanVar(value=False)
+        self.omnivoice_gallery_page = 0
+        self.omnivoice_gallery_page_status = tk.StringVar(value="Trang 1/1")
+        self.omnivoice_history_search = tk.StringVar(value="")
+        self.omnivoice_history_workspace = tk.StringVar(value="Tất cả")
+        self.omnivoice_history_starred_only = tk.BooleanVar(value=False)
         self.omnivoice_gallery_category = tk.StringVar(value="Tất cả")
         self.omnivoice_transcript_search = tk.StringVar(value="")
         self.omnivoice_transcript_store = TranscriptStore(
             self.config_path.with_name("transcriptions.json")
         )
+        self.omnivoice_workspace_repository = WorkspaceRepository(
+            self.config_path.with_name("omnivoice_workspaces.json")
+        )
+        gallery_projects = self.omnivoice_workspace_repository.list_projects("gallery")
+        favorites_project = next(
+            (item for item in gallery_projects if item.name == "favorites"),
+            None,
+        )
+        raw_favorites = favorites_project.payload.get("ids") if favorites_project else []
+        self.omnivoice_gallery_favorites = (
+            {str(value) for value in raw_favorites}
+            if isinstance(raw_favorites, list)
+            else set()
+        )
+        self.omnivoice_gallery_favorites_project_id = (
+            favorites_project.project_id if favorites_project else ""
+        )
+        self._init_dubbing_workspace_state()
+        self._init_editable_longform_state()
+        self._init_audiobook_workspace_state()
 
     def _build_omnivoice_workspace_tabs(self, notebook: ttk.Notebook) -> None:
+        self._build_omnivoice_dubbing_segment_tab(self.subtitle_notebook)
         self._build_omnivoice_longform_workspace(notebook, "stories")
         self._build_omnivoice_longform_workspace(notebook, "audiobook")
         self._build_omnivoice_gallery_workspace(notebook)
@@ -89,6 +130,8 @@ class OmniVoiceWorkspaceGuiMixin:
             ("[pause]", lambda selected=kind: self._insert_workspace_token(selected, "[pause 500ms]")),
             ("Quét vai", lambda selected=kind: self._scan_workspace_cast(selected)),
         ]
+        if is_story:
+            tool_specs.insert(0, ("Nhập script", self._import_omnivoice_story))
         if not is_story:
             tool_specs.insert(0, ("Nhập sách", self._import_omnivoice_audiobook))
         for column, (label, command) in enumerate(tool_specs):
@@ -96,8 +139,15 @@ class OmniVoiceWorkspaceGuiMixin:
             button.grid(row=0, column=column, padx=(0, 5))
             self.omnivoice_mutable_widgets.append(button)
 
-        text_frame = ttk.Frame(editor, style="Surface.TFrame")
-        text_frame.grid(row=1, column=0, sticky="nsew")
+        content_notebook = ttk.Notebook(editor)
+        content_notebook.grid(row=1, column=0, sticky="nsew")
+        script_page = ttk.Frame(content_notebook)
+        script_page.columnconfigure(0, weight=1)
+        script_page.rowconfigure(0, weight=1)
+        content_notebook.add(script_page, text="Script")
+        setattr(self, f"omnivoice_{kind}_content_notebook", content_notebook)
+        text_frame = ttk.Frame(script_page, style="Surface.TFrame")
+        text_frame.grid(row=0, column=0, sticky="nsew")
         text_frame.columnconfigure(0, weight=1)
         text_frame.rowconfigure(0, weight=1)
         text_widget = tk.Text(
@@ -115,6 +165,10 @@ class OmniVoiceWorkspaceGuiMixin:
         text_widget.configure(yscrollcommand=scroll.set)
         setattr(self, f"omnivoice_{kind}_text", text_widget)
         self.omnivoice_mutable_widgets.append(text_widget)
+        if is_story:
+            build_stories_workspace_editor(self, content_notebook)
+        else:
+            self._build_audiobook_workspace_editor(content_notebook)
 
         controls = ttk.Frame(page, style="Panel.TFrame", padding=12)
         controls.grid(row=0, column=1, sticky="nsew")
@@ -195,6 +249,18 @@ class OmniVoiceWorkspaceGuiMixin:
             else self.omnivoice_audiobook_project_name
         )
         row = self._workspace_entry(controls, row, "Tên project", project_variable)
+        stems = ttk.Checkbutton(
+            controls,
+            text="Xuất từng đoạn WAV (stems)",
+            variable=(
+                self.omnivoice_story_export_stems
+                if is_story
+                else self.omnivoice_audiobook_export_stems
+            ),
+        )
+        stems.grid(row=row, column=0, columnspan=2, sticky="w", pady=3)
+        self.omnivoice_mutable_widgets.append(stems)
+        row += 1
         if not is_story:
             m4b = ttk.Checkbutton(
                 controls,
@@ -287,9 +353,37 @@ class OmniVoiceWorkspaceGuiMixin:
             width=18,
         )
         category.grid(row=0, column=1, padx=(7, 0))
-        self.omnivoice_mutable_widgets.extend((search, category))
-        search.bind("<KeyRelease>", lambda _event: self._refresh_omnivoice_gallery())
-        category.bind("<<ComboboxSelected>>", lambda _event: self._refresh_omnivoice_gallery())
+        favorites_only = ttk.Checkbutton(
+            filters,
+            text="Yêu thích",
+            variable=self.omnivoice_gallery_favorites_only,
+            command=self._reset_omnivoice_gallery_page,
+        )
+        favorites_only.grid(row=0, column=2, padx=(7, 0))
+        previous = ttk.Button(
+            filters,
+            text="‹",
+            width=3,
+            command=lambda: self._change_omnivoice_gallery_page(-1),
+        )
+        previous.grid(row=0, column=3, padx=(7, 0))
+        ttk.Label(filters, textvariable=self.omnivoice_gallery_page_status).grid(
+            row=0, column=4, padx=5
+        )
+        following = ttk.Button(
+            filters,
+            text="›",
+            width=3,
+            command=lambda: self._change_omnivoice_gallery_page(1),
+        )
+        following.grid(row=0, column=5)
+        self.omnivoice_mutable_widgets.extend(
+            (search, category, favorites_only, previous, following)
+        )
+        search.bind("<KeyRelease>", lambda _event: self._reset_omnivoice_gallery_page())
+        category.bind(
+            "<<ComboboxSelected>>", lambda _event: self._reset_omnivoice_gallery_page()
+        )
 
         tree_frame = ttk.Frame(presets, style="Panel.TFrame", padding=7)
         tree_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 9))
@@ -297,11 +391,12 @@ class OmniVoiceWorkspaceGuiMixin:
         tree_frame.rowconfigure(0, weight=1)
         self.omnivoice_gallery_tree = ttk.Treeview(
             tree_frame,
-            columns=("name", "use_case", "language"),
+            columns=("favorite", "name", "use_case", "language"),
             show="headings",
             selectmode="browse",
         )
         for column, label, width in (
+            ("favorite", "★", 42),
             ("name", "Giọng", 190),
             ("use_case", "Mục đích", 110),
             ("language", "Ngôn ngữ", 85),
@@ -332,6 +427,28 @@ class OmniVoiceWorkspaceGuiMixin:
         )
         use.grid(row=2, column=0, sticky="ew")
         self.omnivoice_mutable_widgets.append(use)
+        gallery_actions = ttk.Frame(details, style="Surface.TFrame")
+        gallery_actions.grid(row=3, column=0, sticky="ew", pady=(6, 0))
+        gallery_actions.columnconfigure((0, 1, 2), weight=1)
+        preview = ttk.Button(
+            gallery_actions,
+            text="Nghe thử",
+            command=self._preview_omnivoice_archetype,
+        )
+        preview.grid(row=0, column=0, sticky="ew", padx=(0, 3))
+        favorite = ttk.Button(
+            gallery_actions,
+            text="Yêu thích",
+            command=self._toggle_omnivoice_archetype_favorite,
+        )
+        favorite.grid(row=0, column=1, sticky="ew", padx=(3, 0))
+        create_profile = ttk.Button(
+            gallery_actions,
+            text="Tạo profile",
+            command=self._materialize_omnivoice_archetype,
+        )
+        create_profile.grid(row=0, column=2, sticky="ew", padx=(6, 0))
+        self.omnivoice_mutable_widgets.extend((preview, favorite, create_profile))
 
         self._build_omnivoice_library_tab(self.omnivoice_gallery_notebook)
         self.omnivoice_gallery_notebook.tab(self.omnivoice_library_tab, text="Giọng đã lưu")
@@ -343,6 +460,7 @@ class OmniVoiceWorkspaceGuiMixin:
         self._build_omnivoice_lora_tab(self.omnivoice_gallery_notebook)
         self._build_omnivoice_runtime_tab(self.omnivoice_gallery_notebook)
         self.omnivoice_gallery_notebook.tab(self.omnivoice_runtime_tab, text="Runtime")
+        self._build_omnivoice_history_tab(self.omnivoice_gallery_notebook)
         self._refresh_omnivoice_gallery()
 
     def _build_omnivoice_transcripts_workspace(self, notebook: ttk.Notebook) -> None:
@@ -394,6 +512,8 @@ class OmniVoiceWorkspaceGuiMixin:
             (
                 ("Đưa sang Dubbing", self._use_transcript_in_dubbing),
                 ("Xuất SRT", self._export_omnivoice_transcript),
+                ("Sao chép", self._copy_omnivoice_transcript),
+                ("Xuất tất cả", self._export_all_omnivoice_transcripts),
                 ("Xóa", self._delete_omnivoice_transcript),
                 ("Xóa lịch sử", self._clear_omnivoice_transcripts),
             )
@@ -402,6 +522,92 @@ class OmniVoiceWorkspaceGuiMixin:
             button.grid(row=index // 2, column=index % 2, sticky="ew", padx=3, pady=3)
             self.omnivoice_mutable_widgets.append(button)
         self._refresh_omnivoice_transcripts()
+
+    def _build_omnivoice_history_tab(self, notebook: ttk.Notebook) -> None:
+        page = ttk.Frame(notebook, padding=9)
+        page.columnconfigure(0, weight=3)
+        page.columnconfigure(1, weight=2)
+        page.rowconfigure(1, weight=1)
+        notebook.add(page, text="Lịch sử tạo")
+        filters = ttk.Frame(page)
+        filters.grid(row=0, column=0, columnspan=2, sticky="ew", pady=(0, 7))
+        filters.columnconfigure(0, weight=1)
+        search = ttk.Entry(filters, textvariable=self.omnivoice_history_search)
+        search.grid(row=0, column=0, sticky="ew")
+        workspace = ttk.Combobox(
+            filters,
+            textvariable=self.omnivoice_history_workspace,
+            values=(
+                "Tất cả",
+                "clone",
+                "design",
+                "auto",
+                "batch",
+                "dubbing",
+                "stories",
+                "audiobook",
+            ),
+            state="readonly",
+            width=14,
+        )
+        workspace.grid(row=0, column=1, padx=(7, 0))
+        starred = ttk.Checkbutton(
+            filters,
+            text="Đã đánh dấu",
+            variable=self.omnivoice_history_starred_only,
+            command=self._refresh_omnivoice_history,
+        )
+        starred.grid(row=0, column=2, padx=(7, 0))
+        search.bind("<KeyRelease>", lambda _event: self._refresh_omnivoice_history())
+        workspace.bind(
+            "<<ComboboxSelected>>", lambda _event: self._refresh_omnivoice_history()
+        )
+        self.omnivoice_mutable_widgets.extend((search, workspace, starred))
+
+        tree_frame = ttk.Frame(page, style="Panel.TFrame", padding=6)
+        tree_frame.grid(row=1, column=0, sticky="nsew", padx=(0, 8))
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+        tree = ttk.Treeview(
+            tree_frame,
+            columns=("star", "workspace", "title", "created"),
+            show="headings",
+            selectmode="browse",
+        )
+        for column, label, width in (
+            ("star", "★", 40),
+            ("workspace", "Tính năng", 90),
+            ("title", "Tên", 230),
+            ("created", "Ngày tạo", 145),
+        ):
+            tree.heading(column, text=label)
+            tree.column(column, width=width, stretch=column == "title")
+        tree.grid(row=0, column=0, sticky="nsew")
+        tree.bind("<<TreeviewSelect>>", lambda _event: self._show_omnivoice_history())
+        self.omnivoice_history_tree = tree
+
+        details = ttk.Frame(page, style="Panel.TFrame", padding=9)
+        details.grid(row=1, column=1, sticky="nsew")
+        details.columnconfigure(0, weight=1)
+        details.rowconfigure(0, weight=1)
+        self.omnivoice_history_details = tk.Text(
+            details, wrap="word", state="disabled", font=("Segoe UI", 9)
+        )
+        self.omnivoice_history_details.grid(row=0, column=0, sticky="nsew")
+        actions = ttk.Frame(details, style="Surface.TFrame")
+        actions.grid(row=1, column=0, sticky="ew", pady=(7, 0))
+        actions.columnconfigure((0, 1, 2), weight=1)
+        for column, (label, command) in enumerate(
+            (
+                ("Mở file", self._open_omnivoice_history),
+                ("Đánh dấu", self._toggle_omnivoice_history_star),
+                ("Xóa", self._delete_omnivoice_history),
+            )
+        ):
+            button = ttk.Button(actions, text=label, command=command)
+            button.grid(row=0, column=column, sticky="ew", padx=2)
+            self.omnivoice_mutable_widgets.append(button)
+        self._refresh_omnivoice_history()
 
     def _insert_workspace_sample(self, kind: str) -> None:
         widget = getattr(self, f"omnivoice_{kind}_text")
@@ -435,9 +641,26 @@ class OmniVoiceWorkspaceGuiMixin:
             self.omnivoice_audiobook_title.set(Path(selected).stem)
         self._scan_workspace_cast("audiobook")
 
+    def _import_omnivoice_story(self) -> None:
+        selected = filedialog.askopenfilename(
+            title="Nhập script truyện",
+            filetypes=[("Script", "*.txt *.md"), ("Tất cả file", "*.*")],
+        )
+        if not selected:
+            return
+        try:
+            content = Path(selected).read_text(encoding="utf-8-sig")
+        except (OSError, UnicodeError) as error:
+            messagebox.showerror("Không đọc được script", str(error))
+            return
+        self.omnivoice_stories_text.delete("1.0", "end")
+        self.omnivoice_stories_text.insert("1.0", content)
+        self.omnivoice_story_project_name.set(Path(selected).stem)
+        self.omnivoice_workspace_documents["stories"] = None
+        self._scan_workspace_cast("stories")
+
     def _workspace_plan(self, kind: str) -> LongformPlan:
-        source = getattr(self, f"omnivoice_{kind}_text").get("1.0", "end")
-        return parse_story_script(source) if kind == "stories" else parse_audiobook_script(source)
+        return self._load_workspace_document(kind)
 
     def _scan_workspace_cast(self, kind: str) -> None:
         try:
@@ -479,7 +702,11 @@ class OmniVoiceWorkspaceGuiMixin:
             cast[character] = profile.profile_id
         self._scan_workspace_cast(kind)
 
-    def _start_omnivoice_workspace(self, kind: str) -> None:
+    def _start_omnivoice_workspace(
+        self,
+        kind: str,
+        resume_project_dir: Path | None = None,
+    ) -> None:
         if self._active_task is not None:
             return
         if not self._require_omnivoice_runtime():
@@ -499,8 +726,32 @@ class OmniVoiceWorkspaceGuiMixin:
         self._start_omnivoice_thread(
             f"omnivoice_{kind}",
             self._run_omnivoice_workspace,
-            (kind, options, plan, cast),
+            (kind, options, plan, cast, resume_project_dir),
             f"omnivoice-{kind}",
+        )
+
+    def _start_longform_item_preview(
+        self,
+        kind: str,
+        item: EditableLongformItem,
+    ) -> None:
+        if self._active_task is not None or not self._require_omnivoice_runtime():
+            return
+        try:
+            plan = EditableLongformDocument(
+                items=[replace(item, pause_after_ms=0)],
+                chapters=[item.chapter],
+            ).to_plan()
+            options = self._workspace_options(plan, f"preview-{item.item_id}")
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Không thể nghe thử", str(error))
+            return
+        cast = dict(getattr(self, f"omnivoice_{kind}_cast"))
+        self._start_omnivoice_thread(
+            f"omnivoice_{kind}_preview",
+            self._run_omnivoice_workspace,
+            (f"{kind}_preview:{item.item_id}", options, plan, cast),
+            f"omnivoice-{kind}-preview",
         )
 
     def start_omnivoice_dubbing(self) -> None:
@@ -516,13 +767,18 @@ class OmniVoiceWorkspaceGuiMixin:
         if not self._require_omnivoice_runtime():
             return
         try:
-            subtitle_text = (
-                self.translated_subtitle_text.get("1.0", "end").strip()
-                if draft.translated_cues is not None
-                else self.source_subtitle_text.get("1.0", "end").strip()
-            )
-            cues = parse_srt(subtitle_text)
-            plan = plan_dubbing_cues(cues)
+            if self.omnivoice_dubbing_segments:
+                if self._selected_dubbing_segment() is not None:
+                    self._apply_selected_dubbing_segment()
+                plan = plan_dubbing_segments(tuple(self.omnivoice_dubbing_segments))
+            else:
+                subtitle_text = (
+                    self.translated_subtitle_text.get("1.0", "end").strip()
+                    if draft.translated_cues is not None
+                    else self.source_subtitle_text.get("1.0", "end").strip()
+                )
+                cues = parse_srt(subtitle_text)
+                plan = plan_dubbing_cues(cues)
             options = self._workspace_options(plan, f"{draft.project_name}-dubbing")
             options = replace(options, language=draft.script_language or options.language)
         except (OSError, ValueError) as error:
@@ -531,8 +787,46 @@ class OmniVoiceWorkspaceGuiMixin:
         self._start_omnivoice_thread(
             "omnivoice_dub",
             self._run_omnivoice_workspace,
-            ("dubbing", options, plan, {}),
+            ("dubbing", options, plan, dict(self.omnivoice_dubbing_cast)),
             "omnivoice-dubbing",
+        )
+
+    def _start_audiobook_chapter_preview(
+        self,
+        chapter: str,
+        plan: LongformPlan,
+    ) -> None:
+        if self._active_task is not None or not self._require_omnivoice_runtime():
+            return
+        try:
+            options = self._workspace_options(plan, f"preview-{chapter}")
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Không thể nghe thử chương", str(error))
+            return
+        self._start_omnivoice_thread(
+            "omnivoice_audiobook_chapter_preview",
+            self._run_omnivoice_workspace,
+            ("audiobook_chapter_preview", options, plan, dict(self.omnivoice_audiobook_cast)),
+            "omnivoice-audiobook-chapter-preview",
+        )
+
+    def _start_dubbing_segment_preview(self, segment) -> None:
+        if self._active_task is not None or not self._require_omnivoice_runtime():
+            return
+        try:
+            plan = plan_dubbing_segments((segment,))
+            options = self._workspace_options(plan, f"preview-{segment.segment_id}")
+            draft = self.subtitle_draft
+            if draft is not None:
+                options = replace(options, language=draft.script_language or options.language)
+        except (OSError, ValueError) as error:
+            messagebox.showerror("Khong the nghe thu", str(error))
+            return
+        self._start_omnivoice_thread(
+            "omnivoice_dubbing_preview",
+            self._run_omnivoice_workspace,
+            ("dubbing_preview", options, plan, dict(self.omnivoice_dubbing_cast)),
+            "omnivoice-dubbing-preview",
         )
 
     def _workspace_options(
@@ -555,6 +849,7 @@ class OmniVoiceWorkspaceGuiMixin:
         options: OmniVoiceGenerationOptions,
         plan: LongformPlan,
         cast: dict[str, str],
+        resume_project_dir: Path | None = None,
     ) -> None:
         try:
             result = render_longform_plan(
@@ -568,9 +863,22 @@ class OmniVoiceWorkspaceGuiMixin:
                 export_m4b=(
                     kind == "audiobook" and bool(self.omnivoice_audiobook_export_m4b.get())
                 ),
+                export_stems=(
+                    bool(self.omnivoice_story_export_stems.get())
+                    if kind == "stories"
+                    else bool(self.omnivoice_audiobook_export_stems.get())
+                    if kind == "audiobook"
+                    else False
+                ),
                 title=self.omnivoice_audiobook_title.get() if kind == "audiobook" else "",
                 author=self.omnivoice_audiobook_author.get() if kind == "audiobook" else "",
+                cover_path=(
+                    Path(self.omnivoice_audiobook_cover.get()).expanduser()
+                    if kind == "audiobook" and self.omnivoice_audiobook_cover.get().strip()
+                    else None
+                ),
                 progress=lambda message: self.events.put(("omnivoice_progress", message)),
+                resume_project_dir=resume_project_dir,
             )
         except Exception as error:
             event = "omnivoice_cancelled" if self._omnivoice_cancel_requested else "omnivoice_error"
@@ -602,6 +910,28 @@ class OmniVoiceWorkspaceGuiMixin:
             self.omnivoice_last_dub_result = result
             if hasattr(self, "dub_editor_button"):
                 self.dub_editor_button.configure(state="normal")
+        elif kind == "dubbing_preview":
+            selected = self._selected_dubbing_segment()
+            if selected is not None:
+                self._replace_dubbing_segment(
+                    replace(selected, preview_path=str(result.wav_path))
+                )
+            try:
+                os.startfile(result.wav_path)
+            except OSError:
+                pass
+        elif "_preview:" in kind:
+            workspace, item_id = kind.split("_preview:", 1)
+            self._mark_workspace_item_preview(workspace, item_id, result.wav_path)
+            try:
+                os.startfile(result.wav_path)
+            except OSError:
+                pass
+        elif kind.endswith("_preview"):
+            try:
+                os.startfile(result.wav_path)
+            except OSError:
+                pass
         self.omnivoice_job_status.set("Hoàn tất")
         self.status.set("Done")
         for button in self.omnivoice_open_buttons:
@@ -613,8 +943,28 @@ class OmniVoiceWorkspaceGuiMixin:
         self._append_omnivoice_log(f"SRT: {result.srt_path}")
         if result.m4b_path:
             self._append_omnivoice_log(f"M4B: {result.m4b_path}")
+        if result.stems_dir:
+            self._append_omnivoice_log(f"Stems: {result.stems_dir}")
         for warning in result.warnings:
             self._append_omnivoice_log(f"Cảnh báo: {warning}")
+
+        if kind.endswith("_preview") or "_preview:" in kind:
+            return
+        self.omnivoice_workspace_repository.add_history(
+            workspace=kind,
+            title=result.project_dir.name,
+            summary=f"{len(result.item_results)} đoạn đã tạo",
+            artifact_path=str(result.m4b_path or result.mp3_path or result.wav_path),
+            metadata={
+                "project_dir": str(result.project_dir),
+                "wav_path": str(result.wav_path),
+                "srt_path": str(result.srt_path),
+                "mp3_path": str(result.mp3_path or ""),
+                "m4b_path": str(result.m4b_path or ""),
+                "stems_dir": str(result.stems_dir or ""),
+            },
+        )
+        self._refresh_omnivoice_history()
 
     def send_dubbing_to_editor(self) -> None:
         draft = self.subtitle_draft
@@ -631,14 +981,42 @@ class OmniVoiceWorkspaceGuiMixin:
             self.omnivoice_gallery_search.get(),
             "" if category == "Tất cả" else category,
         )
+        if self.omnivoice_gallery_favorites_only.get():
+            items = tuple(
+                item for item in items if item.archetype_id in self.omnivoice_gallery_favorites
+            )
+        page_size = 120
+        page_count = max(1, (len(items) + page_size - 1) // page_size)
+        self.omnivoice_gallery_page = max(0, min(self.omnivoice_gallery_page, page_count - 1))
+        start = self.omnivoice_gallery_page * page_size
+        items = items[start : start + page_size]
+        self.omnivoice_gallery_page_status.set(
+            f"Trang {self.omnivoice_gallery_page + 1}/{page_count}"
+        )
         self.omnivoice_gallery_tree.delete(*self.omnivoice_gallery_tree.get_children())
         for item in items:
             self.omnivoice_gallery_tree.insert(
-                "", "end", iid=item.archetype_id, values=(item.name, item.use_case, item.language)
+                "",
+                "end",
+                iid=item.archetype_id,
+                values=(
+                    "★" if item.archetype_id in self.omnivoice_gallery_favorites else "",
+                    item.name,
+                    item.use_case,
+                    item.language,
+                ),
             )
         if items:
             self.omnivoice_gallery_tree.selection_set(items[0].archetype_id)
             self._show_omnivoice_archetype()
+
+    def _reset_omnivoice_gallery_page(self) -> None:
+        self.omnivoice_gallery_page = 0
+        self._refresh_omnivoice_gallery()
+
+    def _change_omnivoice_gallery_page(self, delta: int) -> None:
+        self.omnivoice_gallery_page = max(0, self.omnivoice_gallery_page + int(delta))
+        self._refresh_omnivoice_gallery()
 
     def _selected_omnivoice_archetype(self) -> VoiceArchetype | None:
         selection = self.omnivoice_gallery_tree.selection()
@@ -683,6 +1061,158 @@ class OmniVoiceWorkspaceGuiMixin:
         design_text.insert("1.0", item.sample_text)
         self.omnivoice_language.set(item.language)
         self.voice_feature_notebook.select(self.omnivoice_design_tab)
+
+    def _preview_omnivoice_archetype(self) -> None:
+        item = self._selected_omnivoice_archetype()
+        if item is None:
+            return
+        self._use_omnivoice_archetype()
+        self._start_omnivoice_generation(DESIGN_MODE)
+
+    def _toggle_omnivoice_archetype_favorite(self) -> None:
+        item = self._selected_omnivoice_archetype()
+        if item is None:
+            return
+        if item.archetype_id in self.omnivoice_gallery_favorites:
+            self.omnivoice_gallery_favorites.remove(item.archetype_id)
+        else:
+            self.omnivoice_gallery_favorites.add(item.archetype_id)
+        project = self.omnivoice_workspace_repository.save_project(
+            workspace="gallery",
+            name="favorites",
+            project_id=self.omnivoice_gallery_favorites_project_id,
+            payload={"ids": sorted(self.omnivoice_gallery_favorites)},
+        )
+        self.omnivoice_gallery_favorites_project_id = project.project_id
+        self._refresh_omnivoice_gallery()
+
+    def _materialize_omnivoice_archetype(self) -> None:
+        item = self._selected_omnivoice_archetype()
+        if item is None:
+            return
+        name = simpledialog.askstring(
+            "Tạo profile từ Gallery",
+            "Tên profile:",
+            initialvalue=item.name,
+            parent=self.root,
+        )
+        if not name or not name.strip():
+            return
+        self._use_omnivoice_archetype()
+        self.omnivoice_save_profile_name.set(name.strip())
+        self._start_omnivoice_generation(DESIGN_MODE)
+
+    def _selected_omnivoice_history(self):
+        if not hasattr(self, "omnivoice_history_tree"):
+            return None
+        selection = self.omnivoice_history_tree.selection()
+        if not selection:
+            return None
+        return next(
+            (
+                item
+                for item in self.omnivoice_workspace_repository.list_history()
+                if item.history_id == selection[0]
+            ),
+            None,
+        )
+
+    def _refresh_omnivoice_history(self) -> None:
+        if not hasattr(self, "omnivoice_history_tree"):
+            return
+        workspace = self.omnivoice_history_workspace.get()
+        items = self.omnivoice_workspace_repository.search_history(
+            self.omnivoice_history_search.get(),
+            workspace="" if workspace == "Tất cả" else workspace,
+            starred_only=bool(self.omnivoice_history_starred_only.get()),
+        )
+        self.omnivoice_history_tree.delete(*self.omnivoice_history_tree.get_children())
+        for item in items:
+            self.omnivoice_history_tree.insert(
+                "",
+                "end",
+                iid=item.history_id,
+                values=(
+                    "★" if item.starred else "",
+                    item.workspace,
+                    item.title,
+                    item.created_at[:19].replace("T", " "),
+                ),
+            )
+
+    def _show_omnivoice_history(self) -> None:
+        item = self._selected_omnivoice_history()
+        if item is None:
+            return
+        details = (
+            f"{item.title}\n\nTính năng: {item.workspace}\n"
+            f"Tạo lúc: {item.created_at[:19].replace('T', ' ')}\n"
+            f"File: {item.artifact_path}\n\n{item.summary}"
+        )
+        self.omnivoice_history_details.configure(state="normal")
+        self.omnivoice_history_details.delete("1.0", "end")
+        self.omnivoice_history_details.insert("1.0", details)
+        self.omnivoice_history_details.configure(state="disabled")
+
+    def _open_omnivoice_history(self) -> None:
+        item = self._selected_omnivoice_history()
+        if item is None:
+            return
+        path = Path(item.artifact_path)
+        target = path if path.exists() else Path(str(item.metadata.get("project_dir") or ""))
+        if target.exists():
+            os.startfile(target)
+        else:
+            messagebox.showwarning("Lịch sử tạo", "File này không còn tồn tại trên máy.")
+
+    def _toggle_omnivoice_history_star(self) -> None:
+        item = self._selected_omnivoice_history()
+        if item is None:
+            return
+        self.omnivoice_workspace_repository.set_history_starred(
+            item.history_id, not item.starred
+        )
+        self._refresh_omnivoice_history()
+
+    def _delete_omnivoice_history(self) -> None:
+        item = self._selected_omnivoice_history()
+        if item is None:
+            return
+        self.omnivoice_workspace_repository.delete_history(item.history_id)
+        self._refresh_omnivoice_history()
+
+    def record_omnivoice_generation_result(self, result) -> None:
+        payload = read_json(result.manifest_path)
+        options = payload.get("options") if isinstance(payload, dict) else {}
+        options = options if isinstance(options, dict) else {}
+        mode = str(options.get("mode") or "voice")
+        text = str(options.get("text") or "")
+        artifact = result.mp3_path or result.wav_path
+        self.omnivoice_workspace_repository.add_history(
+            workspace=mode,
+            title=result.project_dir.name,
+            summary=text[:240],
+            artifact_path=str(artifact),
+            metadata={
+                "project_dir": str(result.project_dir),
+                "profile_id": result.profile_id,
+                "language": str(options.get("language") or ""),
+            },
+        )
+        self._refresh_omnivoice_history()
+
+    def record_omnivoice_batch_result(self, result) -> None:
+        artifact = result.combined_mp3_path or result.combined_wav_path
+        if artifact is None and result.item_results:
+            artifact = result.item_results[0].wav_path
+        self.omnivoice_workspace_repository.add_history(
+            workspace="batch",
+            title=result.project_dir.name,
+            summary=f"{len(result.item_results)} mục đã tạo",
+            artifact_path=str(artifact or result.project_dir),
+            metadata={"project_dir": str(result.project_dir)},
+        )
+        self._refresh_omnivoice_history()
 
     def record_omnivoice_transcript(self, draft: VideoSubtitleDraft) -> None:
         try:
@@ -757,6 +1287,7 @@ class OmniVoiceWorkspaceGuiMixin:
         )
         self._replace_subtitle_draft(draft)
         self._load_subtitle_draft(draft)
+        self.load_dubbing_segments_from_draft(draft)
         self._set_busy(False)
         self.voice_feature_notebook.select(self.classic_voice_tab)
 
@@ -778,6 +1309,35 @@ class OmniVoiceWorkspaceGuiMixin:
             else entry.translated_srt or entry.source_srt
         )
         destination.write_text(content, encoding="utf-8")
+
+    def _copy_omnivoice_transcript(self) -> None:
+        entry = self._selected_omnivoice_transcript()
+        if entry is None:
+            return
+        self.root.clipboard_clear()
+        self.root.clipboard_append(entry.text)
+        self.status.set("Đã sao chép transcript")
+
+    def _export_all_omnivoice_transcripts(self) -> None:
+        selected = filedialog.askdirectory(title="Chọn thư mục xuất transcript")
+        if not selected:
+            return
+        output_dir = Path(selected)
+        exported = 0
+        for index, entry in enumerate(self.omnivoice_transcript_store.list(), start=1):
+            source_name = Path(entry.source_path).stem or f"transcript-{index:03d}"
+            base = output_dir / f"{index:03d}-{source_name}"
+            (base.with_suffix(".txt")).write_text(entry.text, encoding="utf-8")
+            if entry.source_srt:
+                (base.with_name(base.name + "-source").with_suffix(".srt")).write_text(
+                    entry.source_srt, encoding="utf-8"
+                )
+            if entry.translated_srt:
+                (base.with_name(base.name + "-translated").with_suffix(".srt")).write_text(
+                    entry.translated_srt, encoding="utf-8"
+                )
+            exported += 1
+        messagebox.showinfo("Xuất transcript", f"Đã xuất {exported} transcript.")
 
     def _delete_omnivoice_transcript(self) -> None:
         entry = self._selected_omnivoice_transcript()

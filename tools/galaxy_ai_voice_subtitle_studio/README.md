@@ -1,6 +1,6 @@
 # Galaxy AI Voice & Subtitle Studio
 
-MVP desktop cho workflow:
+Ứng dụng desktop gọn nhẹ cho workflow:
 
 1. Dán kịch bản.
 2. Chọn Edge TTS online hoặc Windows SAPI offline.
@@ -10,6 +10,7 @@ MVP desktop cho workflow:
 6. Trích audio `.wav` / `.mp3` từ video bằng `ffmpeg`.
 7. Tạo phụ đề từ giọng nói trong video bằng `faster-whisper`, rồi dịch phụ đề bằng AI qua API OpenAI-compatible.
 8. Tạo giọng local bằng OmniVoice với Auto Voice, nhái giọng, thiết kế giọng và thư viện profile.
+9. Quản lý project lồng tiếng, Stories, Audiobook, catalog hơn 1.000 voice design và lịch sử tạo cục bộ.
 
 Edge TTS dùng dịch vụ giọng đọc online của Microsoft Edge nhưng không cần API key. Windows SAPI vẫn hoạt động hoàn toàn offline. Phần dịch phụ đề chỉ gọi cloud khi người dùng chọn dịch bằng OpenAI hoặc DeepSeek.
 
@@ -252,9 +253,9 @@ Trên Windows, app cũng đọc `OPENAI_API_KEY` và `DEEPSEEK_API_KEY` từ Use
 
 Main tab `Voice` đi theo bảy workspace của OmniVoice Studio: `Voice Clone`, `Voice Design`, `Video Dubbing`, `Stories`, `Audiobook`, `Voice Gallery` và `Transcripts`. Các công cụ kỹ thuật `Auto Voice`, `Batch`, `LoRA`, runtime và profile đã lưu nằm gọn trong `Voice Gallery`, nên màn hình chính tập trung vào công việc thay vì cấu hình engine.
 
-`Video Dubbing` dùng sub dịch đang mở, giữ timing từng cue khi tạo voice và có thể đưa một lần video, voice cùng SRT sang timeline dựng video. `Stories` hỗ trợ vai theo cú pháp `Nhân vật: lời thoại`, `[voice:Tên]`, `[pause 500ms]`, `[slow]`, `[fast]` và `[spell]`. `Audiobook` nhập TXT, Markdown, EPUB hoặc PDF, chia chương bằng heading `#`, phân vai và xuất WAV/MP3 hoặc M4B có chapter metadata. `Transcripts` tự lưu lịch sử mỗi lần tạo sub, cho phép tìm kiếm, mở lại và xuất SRT.
+`Video Dubbing` dùng sub dịch đang mở hoặc SRT nhập ngoài, giữ timing từng cue, hỗ trợ speaker/profile riêng, sửa lời, tốc độ, âm lượng, tách-ghép câu, preview, QC và lưu project trước khi đưa video, voice cùng SRT sang timeline dựng video. `Stories` hỗ trợ vai theo cú pháp `Nhân vật: lời thoại`, `[voice:Tên]`, `[pause 500ms]`, `[slow]`, `[fast]` và `[spell]`; sau khi lập kế hoạch có thể sửa, sắp xếp, preview và xuất stems từng đoạn. `Audiobook` nhập TXT, Markdown, EPUB hoặc PDF, chia chương bằng heading `#`, có từ điển phát âm, override tốc độ/pause theo chương, ảnh bìa, preview chương, checkpoint chạy tiếp và xuất WAV/MP3 hoặc M4B có chapter metadata. `Transcripts` tự lưu lịch sử mỗi lần tạo sub, cho phép tìm kiếm, sao chép, mở lại và xuất riêng hoặc hàng loạt.
 
-Voice Gallery có preset thiết kế giọng theo mục đích và ngôn ngữ. Thanh công cụ nội dung của các trang tạo voice vẫn chèn được non-verbal tag như `[laughter]`, `[sigh]`, CMU phoneme tiếng Anh và pinyin có thanh điệu tiếng Trung. `Batch` nhận mỗi dòng là một câu hoặc JSONL theo format CLI gốc (`id`, `text`, `language_id`, `speed`, `duration`).
+Voice Gallery sinh hơn 1.000 preset hợp lệ từ taxonomy gender, age, pitch, accent và dialect của OmniVoice; có tìm kiếm, nhóm mục đích, yêu thích, preview, tạo profile và lịch sử artifact. Thanh công cụ nội dung của các trang tạo voice vẫn chèn được non-verbal tag như `[laughter]`, `[sigh]`, CMU phoneme tiếng Anh và pinyin có thanh điệu tiếng Trung. `Batch` nhận mỗi dòng là một câu hoặc JSONL theo format CLI gốc (`id`, `text`, `language_id`, `speed`, `duration`). Project và lịch sử được lưu trong `omnivoice_workspaces.json` cạnh config, không lưu API key.
 
 OmniVoice chạy trong worker riêng và giữ model trong RAM/VRAM giữa các lần Generate. Runtime, checkpoint, Hugging Face cache và profile nằm tại `%LOCALAPPDATA%\GalaxyAIStudio\models\OmniVoice`, không dùng chung Python với app chính. Cài hoặc sửa runtime bằng nút trong GUI, hoặc chạy:
 

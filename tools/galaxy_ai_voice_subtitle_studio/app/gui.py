@@ -779,6 +779,7 @@ class GalaxyStudioApp(
                     self._pending_subtitle_draft = None
             self._replace_subtitle_draft(result)
             self._load_subtitle_draft(result)
+            self.load_dubbing_segments_from_draft(result)
             self.record_omnivoice_transcript(result)
             self.subtitle_export_button.configure(state="normal")
             self.open_button.configure(state="disabled")

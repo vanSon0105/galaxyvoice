@@ -109,8 +109,8 @@ class AppConfig:
     omnivoice_postprocess_output: bool = True
     omnivoice_audio_chunk_duration: float = 15.0
     omnivoice_audio_chunk_threshold: float = 30.0
-    omnivoice_pad_duration: float = 0.1
-    omnivoice_fade_duration: float = 0.1
+    omnivoice_pad_duration: float = 0.0
+    omnivoice_fade_duration: float = 0.02
     omnivoice_export_mp3: bool = True
     omnivoice_profile_id: str = ""
     omnivoice_design_gender: str = ""

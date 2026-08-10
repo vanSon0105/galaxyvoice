@@ -40,8 +40,8 @@ class OmniVoiceGenerationOptions:
     postprocess_output: bool = True
     audio_chunk_duration: float = 15.0
     audio_chunk_threshold: float = 30.0
-    pad_duration: float = 0.1
-    fade_duration: float = 0.1
+    pad_duration: float = 0.0
+    fade_duration: float = 0.02
     export_mp3: bool = False
 
 

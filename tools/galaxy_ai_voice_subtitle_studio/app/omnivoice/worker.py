@@ -14,6 +14,46 @@ _model: Any | None = None
 _model_identity: tuple[str, str] | None = None
 
 
+def _finalize_generated_audio(
+    audio: Any,
+    sample_rate: int,
+    *,
+    trim_edges: bool,
+    pad_duration: float,
+    fade_duration: float,
+    silence_threshold_db: float = -50.0,
+) -> Any:
+    import numpy as np
+
+    if hasattr(audio, "detach"):
+        audio = audio.detach().cpu().numpy()
+    samples = np.asarray(audio, dtype=np.float32).squeeze()
+    if samples.ndim != 1:
+        raise ValueError(f"OmniVoice output must be mono, got shape {samples.shape}.")
+    if samples.size == 0:
+        return samples
+
+    if trim_edges:
+        threshold = 10.0 ** (silence_threshold_db / 20.0)
+        active = np.flatnonzero(np.abs(samples) > threshold)
+        if active.size:
+            samples = samples[int(active[0]) : int(active[-1]) + 1]
+
+    fade_samples = min(
+        max(0, int(round(fade_duration * sample_rate))),
+        samples.size // 2,
+    )
+    if fade_samples:
+        samples = samples.copy()
+        samples[:fade_samples] *= np.linspace(0.0, 1.0, fade_samples, dtype=np.float32)
+        samples[-fade_samples:] *= np.linspace(1.0, 0.0, fade_samples, dtype=np.float32)
+
+    pad_samples = max(0, int(round(pad_duration * sample_rate)))
+    if pad_samples:
+        samples = np.pad(samples, (pad_samples, pad_samples))
+    return samples
+
+
 def _send(request_id: str, message_type: str, payload: dict[str, Any]) -> None:
     target = sys.__stdout__
     target.write(
@@ -111,6 +151,9 @@ def _generate(request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
 
         mode = str(payload.get("mode") or "auto")
         language = str(payload.get("language") or "auto")
+        postprocess_output = bool(payload.get("postprocess_output", True))
+        pad_duration = max(0.0, float(payload.get("pad_duration", 0.0)))
+        fade_duration = max(0.0, float(payload.get("fade_duration", 0.02)))
         kwargs: dict[str, Any] = {
             "text": str(payload.get("text") or ""),
             "language": None if language == "auto" else language,
@@ -124,11 +167,12 @@ def _generate(request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
             "denoise": bool(payload.get("denoise", True)),
             "normalize_text": bool(payload.get("normalize_text", False)),
             "preprocess_prompt": bool(payload.get("preprocess_prompt", True)),
-            "postprocess_output": bool(payload.get("postprocess_output", True)),
+            "postprocess_output": postprocess_output,
             "audio_chunk_duration": float(payload.get("audio_chunk_duration", 15.0)),
             "audio_chunk_threshold": float(payload.get("audio_chunk_threshold", 30.0)),
-            "pad_duration": float(payload.get("pad_duration", 0.1)),
-            "fade_duration": float(payload.get("fade_duration", 0.1)),
+            # Apply edge padding and fades ourselves so trimming has predictable results.
+            "pad_duration": 0.0,
+            "fade_duration": 0.0,
         }
         duration = payload.get("duration")
         if duration is not None:
@@ -163,7 +207,14 @@ def _generate(request_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         output_path = Path(str(payload["output_path"]))
         output_path.parent.mkdir(parents=True, exist_ok=True)
         _progress(request_id, "Đang lưu file WAV...")
-        sf.write(output_path, audio[0], _model.sampling_rate)
+        finalized_audio = _finalize_generated_audio(
+            audio[0],
+            int(_model.sampling_rate),
+            trim_edges=postprocess_output,
+            pad_duration=pad_duration,
+            fade_duration=fade_duration,
+        )
+        sf.write(output_path, finalized_audio, _model.sampling_rate)
         return {
             **model_info,
             "output_path": str(output_path),

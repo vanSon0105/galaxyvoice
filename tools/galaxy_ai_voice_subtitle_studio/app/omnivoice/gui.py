@@ -159,10 +159,10 @@ class OmniVoiceTabMixin:
             value=getattr(saved_config, "omnivoice_audio_chunk_threshold", 30.0)
         )
         self.omnivoice_pad_duration = tk.DoubleVar(
-            value=getattr(saved_config, "omnivoice_pad_duration", 0.1)
+            value=getattr(saved_config, "omnivoice_pad_duration", 0.0)
         )
         self.omnivoice_fade_duration = tk.DoubleVar(
-            value=getattr(saved_config, "omnivoice_fade_duration", 0.1)
+            value=getattr(saved_config, "omnivoice_fade_duration", 0.02)
         )
         self.omnivoice_export_mp3 = tk.BooleanVar(
             value=getattr(saved_config, "omnivoice_export_mp3", True)
@@ -464,8 +464,8 @@ class OmniVoiceTabMixin:
             ("Class temperature", self.omnivoice_class_temperature),
             ("Độ dài chunk", self.omnivoice_audio_chunk_duration),
             ("Ngưỡng chia chunk", self.omnivoice_audio_chunk_threshold),
-            ("Silence padding", self.omnivoice_pad_duration),
-            ("Fade", self.omnivoice_fade_duration),
+            ("Đệm đầu/cuối (0 = cắt sát)", self.omnivoice_pad_duration),
+            ("Fade chống click", self.omnivoice_fade_duration),
         )
         advanced_widgets: list[ttk.Entry] = []
         for label, variable in advanced_fields:
@@ -733,8 +733,8 @@ class OmniVoiceTabMixin:
             audio_chunk_threshold=self._safe_float(
                 self.omnivoice_audio_chunk_threshold, 30.0
             ),
-            pad_duration=self._safe_float(self.omnivoice_pad_duration, 0.1),
-            fade_duration=self._safe_float(self.omnivoice_fade_duration, 0.1),
+            pad_duration=self._safe_float(self.omnivoice_pad_duration, 0.0),
+            fade_duration=self._safe_float(self.omnivoice_fade_duration, 0.02),
             export_mp3=bool(self.omnivoice_export_mp3.get()),
         )
         self._omnivoice_cancel_requested = False
@@ -1108,10 +1108,10 @@ class OmniVoiceTabMixin:
                 self.omnivoice_audio_chunk_threshold, 30.0, 0.0, 600.0
             ),
             "omnivoice_pad_duration": self._bounded_float(
-                self.omnivoice_pad_duration, 0.1, 0.0, 5.0
+                self.omnivoice_pad_duration, 0.0, 0.0, 5.0
             ),
             "omnivoice_fade_duration": self._bounded_float(
-                self.omnivoice_fade_duration, 0.1, 0.0, 5.0
+                self.omnivoice_fade_duration, 0.02, 0.0, 5.0
             ),
             "omnivoice_export_mp3": bool(self.omnivoice_export_mp3.get()),
             "omnivoice_profile_id": (

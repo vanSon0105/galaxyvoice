@@ -11,11 +11,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Iterable
 
-from .cache import read_json, write_json_atomic
-from .compute import detect_nvidia_hardware
-from .ffmpeg import ffmpeg_missing_message, find_ffmpeg
-from .paths import unique_project_dir
-from .processes import managed_media_processes, terminate_process_tree
+from ..common.cache import read_json, write_json_atomic
+from ..common.compute import detect_nvidia_hardware
+from ..common.ffmpeg import ffmpeg_missing_message, find_ffmpeg
+from ..common.paths import unique_project_dir
+from ..common.processes import managed_media_processes, terminate_process_tree
 
 MDX_METHOD = "mdx"
 VR_METHOD = "vr"

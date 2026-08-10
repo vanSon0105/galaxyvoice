@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Callable
 
 from .audio import concatenate_wavs, try_convert_to_mp3
-from .paths import unique_project_dir
+from ..common.paths import unique_project_dir
 from .srt import SubtitleCue, render_srt
 from .text_splitter import split_text
 from .tts import EdgeTTS, TTSEngine

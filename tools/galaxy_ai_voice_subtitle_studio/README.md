@@ -241,7 +241,23 @@ Trên Windows, app cũng đọc `OPENAI_API_KEY` và `DEEPSEEK_API_KEY` từ Use
 
 ## Ghi chú về voice clone
 
-Voice clone chưa được bật trong MVP này. Phần đó nên làm thành engine riêng sau khi chọn model/license rõ ràng, có kiểm soát quyền sử dụng giọng, và có UI quản lý sample voice. Core hiện đã tách `tts.py` để sau này thêm engine khác mà không phải viết lại GUI/SRT.
+Voice clone chưa được bật trong MVP này. Phần đó nên làm thành engine riêng sau khi chọn model/license rõ ràng, có kiểm soát quyền sử dụng giọng, và có UI quản lý sample voice. Core hiện đã tách `app/voice/tts.py` để sau này thêm engine khác mà không phải viết lại GUI/SRT.
+
+## Cấu trúc code
+
+Code được nhóm theo tab để thay đổi một workflow không phải đọc toàn bộ ứng dụng:
+
+```text
+app/
+|-- common/                  # config, cache, FFmpeg, logging, process và path
+|-- voice/                   # TTS, transcription, dịch AI, SRT và UI tab Voice
+|-- audio_separation/        # backend UVR/audio-separator và UI tab Tách âm thanh
+|-- subtitle_removal/        # blur, ProPainter và UI tab Xóa phụ đề
+|-- gui.py                   # composition root, vòng đời app và event chung
+`-- cli.py                   # entry point dòng lệnh
+```
+
+Mỗi package tab có `gui.py` cho phần giao diện và module backend riêng. `app/gui.py` chỉ ghép các mixin tab, quản lý config chung, trạng thái tác vụ và đóng ứng dụng. Test backend mirror cấu trúc này dưới `tests/`; `tests/test_gui_layout.py` là bộ integration test cho ứng dụng đã ghép.
 
 ## Test
 

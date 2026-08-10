@@ -4,10 +4,10 @@ import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app.text_splitter import normalize_text, split_text  # noqa: E402
+from app.voice.text_splitter import normalize_text, split_text  # noqa: E402
 
 
 class TextSplitterTests(unittest.TestCase):

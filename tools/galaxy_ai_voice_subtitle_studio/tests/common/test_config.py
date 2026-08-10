@@ -7,10 +7,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app.config import AppConfig, load_app_config, save_app_config  # noqa: E402
+from app.common.config import AppConfig, load_app_config, save_app_config  # noqa: E402
 
 
 class ConfigTests(unittest.TestCase):

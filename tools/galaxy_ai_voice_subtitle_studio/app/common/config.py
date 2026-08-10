@@ -8,7 +8,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
 
-from .audio_separation import (
+from ..audio_separation.service import (
     AUDIO_OUTPUT_FORMATS,
     AUTO_AUDIO_DEVICE,
     MDX_METHOD,
@@ -16,10 +16,10 @@ from .audio_separation import (
     normalize_audio_method,
 )
 from .compute import AUTO_DEVICE, normalize_processing_device
-from .subtitle_removal import BLUR_MODE, SUBTITLE_REMOVAL_MODES
-from .transcription import WHISPER_MODELS
-from .translator import translation_provider_codes
-from .tts import tts_engine_codes
+from ..subtitle_removal.service import BLUR_MODE, SUBTITLE_REMOVAL_MODES
+from ..voice.transcription import WHISPER_MODELS
+from ..voice.translator import translation_provider_codes
+from ..voice.tts import tts_engine_codes
 
 
 CONFIG_VERSION = 3

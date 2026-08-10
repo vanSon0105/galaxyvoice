@@ -4,12 +4,12 @@ import argparse
 import sys
 from pathlib import Path
 
-from .diagnostics import configure_logging
-from .engine import GenerationOptions, generate_package
-from .media import MediaExtractionOptions, extract_audio_from_video
-from .transcription import VideoSubtitleOptions, create_subtitles_from_video
-from .translator import default_translation_provider, translation_provider_codes
-from .tts import EDGE_ENGINE_CODE, create_tts_engine, tts_engine_codes
+from .common.diagnostics import configure_logging
+from .voice.engine import GenerationOptions, generate_package
+from .voice.media import MediaExtractionOptions, extract_audio_from_video
+from .voice.transcription import VideoSubtitleOptions, create_subtitles_from_video
+from .voice.translator import default_translation_provider, translation_provider_codes
+from .voice.tts import EDGE_ENGINE_CODE, create_tts_engine, tts_engine_codes
 
 
 def main(argv: list[str] | None = None) -> int:

@@ -9,12 +9,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app.ffmpeg import find_ffmpeg, find_ffprobe  # noqa: E402
-from app.processes import managed_media_processes  # noqa: E402
-from app.subtitle_removal import (  # noqa: E402
+from app.common.ffmpeg import find_ffmpeg, find_ffprobe  # noqa: E402
+from app.common.processes import managed_media_processes  # noqa: E402
+from app.subtitle_removal.service import (  # noqa: E402
     AI_INPAINT_MODE,
     BLUR_MODE,
     FAST_AI_INPAINT_MODE,
@@ -59,7 +59,7 @@ class SubtitleRemovalTests(unittest.TestCase):
 
             with (
                 patch(
-                    "app.propainter.resolve_propainter_runtime",
+                    "app.subtitle_removal.propainter.resolve_propainter_runtime",
                     side_effect=RuntimeError("ProPainter is not installed completely."),
                 ),
                 self.assertRaisesRegex(RuntimeError, "not installed"),

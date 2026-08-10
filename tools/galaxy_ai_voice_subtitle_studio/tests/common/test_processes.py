@@ -6,10 +6,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app.processes import ManagedProcessRegistry  # noqa: E402
+from app.common.processes import ManagedProcessRegistry  # noqa: E402
 
 
 class ProcessRegistryTests(unittest.TestCase):
@@ -28,7 +28,7 @@ class ProcessRegistryTests(unittest.TestCase):
         registry.terminate_all()
         process = FakeProcess()
 
-        with patch("app.processes.subprocess.run") as run:
+        with patch("app.common.processes.subprocess.run") as run:
             registry.add(process)
 
         with self.assertRaisesRegex(RuntimeError, "cancelled"):

@@ -4,10 +4,10 @@ import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app.propainter_mask_worker import _validate_frame_count  # noqa: E402
+from app.subtitle_removal.propainter_mask_worker import _validate_frame_count  # noqa: E402
 
 
 class ProPainterMaskWorkerTests(unittest.TestCase):

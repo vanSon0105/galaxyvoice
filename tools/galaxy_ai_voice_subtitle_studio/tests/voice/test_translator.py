@@ -10,11 +10,11 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app.srt import SubtitleCue  # noqa: E402
-from app.translator import (  # noqa: E402
+from app.voice.srt import SubtitleCue  # noqa: E402
+from app.voice.translator import (  # noqa: E402
     AITranslationOptions,
     _extract_translations,
     _salvage_json_translations,
@@ -310,7 +310,7 @@ class TranslatorTests(unittest.TestCase):
             )
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            with patch("app.translator.write_json_atomic", side_effect=PermissionError("file is locked")):
+            with patch("app.voice.translator.write_json_atomic", side_effect=PermissionError("file is locked")):
                 translated = translate_cues(
                     cues,
                     AITranslationOptions(
@@ -1137,7 +1137,7 @@ class TranslatorTests(unittest.TestCase):
             return json.dumps({"translations": ["Xin ch\u00e0o."]}, ensure_ascii=False)
 
         with patch.dict(os.environ, {}, clear=True):
-            with patch("app.env_config._read_windows_environment", return_value=""):
+            with patch("app.common.env_config._read_windows_environment", return_value=""):
                 translated = translate_cues(
                     cues,
                     AITranslationOptions(
@@ -1173,7 +1173,7 @@ class TranslatorTests(unittest.TestCase):
 
     def test_default_translation_api_key_reads_windows_user_environment(self) -> None:
         with patch.dict(os.environ, {}, clear=True):
-            with patch("app.env_config._read_windows_environment", side_effect=lambda name: "user-key" if name == "OPENAI_API_KEY" else ""):
+            with patch("app.common.env_config._read_windows_environment", side_effect=lambda name: "user-key" if name == "OPENAI_API_KEY" else ""):
                 self.assertEqual(default_translation_api_key(), "user-key")
 
     def test_deepseek_provider_uses_deepseek_defaults_and_key(self) -> None:
@@ -1186,7 +1186,7 @@ class TranslatorTests(unittest.TestCase):
             },
             clear=True,
         ):
-            with patch("app.env_config._read_windows_environment", return_value=""):
+            with patch("app.common.env_config._read_windows_environment", return_value=""):
                 self.assertEqual(default_translation_provider(), "deepseek")
                 self.assertEqual(default_translation_api_key("deepseek"), "deepseek-key")
                 self.assertEqual(default_translation_model("deepseek"), "deepseek-v4-flash")

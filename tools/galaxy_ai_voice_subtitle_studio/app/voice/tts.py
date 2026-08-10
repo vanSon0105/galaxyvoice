@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
-from .ffmpeg import find_ffmpeg
+from ..common.ffmpeg import find_ffmpeg
 
 
 EDGE_ENGINE_CODE = "edge"

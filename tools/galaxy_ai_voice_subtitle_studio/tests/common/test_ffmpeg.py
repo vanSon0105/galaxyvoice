@@ -5,10 +5,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app.ffmpeg import find_ffmpeg, find_ffplay, find_ffprobe  # noqa: E402
+from app.common.ffmpeg import find_ffmpeg, find_ffplay, find_ffprobe  # noqa: E402
 
 
 class FfmpegTests(unittest.TestCase):

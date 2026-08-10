@@ -6,10 +6,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app.media import (  # noqa: E402
+from app.voice.media import (  # noqa: E402
     MediaExtractionOptions,
     build_extract_wav_command,
     extract_audio_from_video,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import os
 from datetime import datetime
 from pathlib import Path
 
@@ -33,3 +34,8 @@ def slugify(value: str) -> str:
     lowered = re.sub(r"[^a-z0-9._ -]+", "", lowered)
     lowered = re.sub(r"[\s.]+", "-", lowered).strip("-_")
     return lowered or datetime.now().strftime("galaxy_%Y%m%d_%H%M%S")
+
+
+def same_path(first: Path, second: Path) -> bool:
+    """Compare paths without requiring either path to exist."""
+    return os.path.normcase(os.path.abspath(first)) == os.path.normcase(os.path.abspath(second))

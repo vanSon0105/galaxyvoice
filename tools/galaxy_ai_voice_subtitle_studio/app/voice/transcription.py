@@ -9,11 +9,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from .cache import default_cache_dir, file_digest, read_json, stable_digest, write_json_atomic
-from .compute import AUTO_DEVICE, normalize_processing_device, resolve_whisper_runtime
-from .ffmpeg import ffmpeg_missing_message, find_ffmpeg
+from ..common.cache import default_cache_dir, file_digest, read_json, stable_digest, write_json_atomic
+from ..common.compute import AUTO_DEVICE, normalize_processing_device, resolve_whisper_runtime
+from ..common.ffmpeg import ffmpeg_missing_message, find_ffmpeg
 from .media import Runner, _run_command, _run_ffmpeg, build_extract_wav_command
-from .paths import unique_project_dir
+from ..common.paths import unique_project_dir
 from .srt import SubtitleCue, parse_srt, render_srt
 from .translator import (
     AITranslationOptions,

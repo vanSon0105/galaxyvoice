@@ -7,10 +7,10 @@ import wave
 from pathlib import Path
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app.tts import EdgeTTS  # noqa: E402
+from app.voice.tts import EdgeTTS  # noqa: E402
 
 
 class FakeCommunicate:
@@ -99,8 +99,8 @@ class EdgeTTSTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = Path(temp_dir) / "voice.wav"
-            with patch("app.tts.find_ffmpeg", return_value="ffmpeg"):
-                with patch("app.tts._convert_edge_audio_to_wav", side_effect=write_wav) as convert:
+            with patch("app.voice.tts.find_ffmpeg", return_value="ffmpeg"):
+                with patch("app.voice.tts._convert_edge_audio_to_wav", side_effect=write_wav) as convert:
                     engine.synthesize_to_wav(
                         "Xin chao Viet Nam.",
                         output_path,
@@ -124,15 +124,15 @@ class EdgeTTSTests(unittest.TestCase):
             convert.assert_called_once()
 
     def test_reports_unavailable_without_ffmpeg(self) -> None:
-        with patch("app.tts.find_ffmpeg", return_value=None):
+        with patch("app.voice.tts.find_ffmpeg", return_value=None):
             engine = EdgeTTS(edge_module=FakeEdgeModule)
 
             self.assertFalse(engine.available())
             self.assertIn("ffmpeg", engine.unavailable_reason())
 
     def test_reports_install_command_when_package_is_missing(self) -> None:
-        with patch("app.tts.find_ffmpeg", return_value="ffmpeg"):
-            with patch("app.tts.importlib.import_module", side_effect=ImportError):
+        with patch("app.voice.tts.find_ffmpeg", return_value="ffmpeg"):
+            with patch("app.voice.tts.importlib.import_module", side_effect=ImportError):
                 reason = EdgeTTS().unavailable_reason()
 
         self.assertIn("pip install -r requirements-voice.txt", reason)
@@ -149,9 +149,9 @@ class EdgeTTSTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             output_path = Path(temp_dir) / "voice.wav"
-            with patch("app.tts.find_ffmpeg", return_value="ffmpeg"):
-                with patch("app.tts.time.sleep") as sleep:
-                    with patch("app.tts._convert_edge_audio_to_wav", side_effect=write_wav):
+            with patch("app.voice.tts.find_ffmpeg", return_value="ffmpeg"):
+                with patch("app.voice.tts.time.sleep") as sleep:
+                    with patch("app.voice.tts._convert_edge_audio_to_wav", side_effect=write_wav):
                         engine.synthesize_to_wav("Xin chao.", output_path)
 
         self.assertEqual(FlakyCommunicate.attempts, 2)

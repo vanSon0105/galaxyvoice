@@ -9,10 +9,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app.audio_separation import (  # noqa: E402
+from app.audio_separation.service import (  # noqa: E402
     CPU_AUDIO_DEVICE,
     CUDA_AUDIO_DEVICE,
     DEMUCS_METHOD,
@@ -220,7 +220,7 @@ class AudioSeparationTests(unittest.TestCase):
             python_path.write_bytes(b"runtime")
             runtime = AudioSeparatorRuntime(python_path)
             completed = subprocess.CompletedProcess([], 0, "ready\n", "")
-            with patch("app.audio_separation.subprocess.run", return_value=completed) as run:
+            with patch("app.audio_separation.service.subprocess.run", return_value=completed) as run:
                 ready, _message = audio_separator_runtime_ready(
                     runtime,
                     DIRECTML_AUDIO_DEVICE,
@@ -238,11 +238,11 @@ class AudioSeparationTests(unittest.TestCase):
         stop_event = threading.Event()
 
         with (
-            patch("app.audio_separation.subprocess.Popen", return_value=process),
-            patch("app.audio_separation.managed_media_processes.ensure_running"),
-            patch("app.audio_separation.managed_media_processes.add"),
-            patch("app.audio_separation.managed_media_processes.discard") as discard,
-            patch("app.audio_separation.terminate_process_tree") as terminate,
+            patch("app.audio_separation.service.subprocess.Popen", return_value=process),
+            patch("app.audio_separation.service.managed_media_processes.ensure_running"),
+            patch("app.audio_separation.service.managed_media_processes.add"),
+            patch("app.audio_separation.service.managed_media_processes.discard") as discard,
+            patch("app.audio_separation.service.terminate_process_tree") as terminate,
         ):
             with self.assertRaisesRegex(RuntimeError, "callback failed"):
                 _run_streaming_command(
@@ -298,9 +298,9 @@ class AudioSeparationTests(unittest.TestCase):
                 (project_dir / "song_(Instrumental)_Kim_Vocal_2.wav").write_bytes(b"stem")
 
             with (
-                patch("app.audio_separation.audio_separator_runtime_ready", return_value=(True, "ready")),
-                patch("app.audio_separation.resolve_audio_device", return_value=CPU_AUDIO_DEVICE),
-                patch("app.audio_separation._run_streaming_command", side_effect=fake_run),
+                patch("app.audio_separation.service.audio_separator_runtime_ready", return_value=(True, "ready")),
+                patch("app.audio_separation.service.resolve_audio_device", return_value=CPU_AUDIO_DEVICE),
+                patch("app.audio_separation.service._run_streaming_command", side_effect=fake_run),
             ):
                 result = separate_audio(options, uvr_root=uvr_root, runtime=runtime)
 
@@ -313,7 +313,7 @@ class AudioSeparationTests(unittest.TestCase):
 
 
 def discover_uvr_models_from_paths_for_test(method: str, path: Path):
-    from app.audio_separation import UVRModel
+    from app.audio_separation.service import UVRModel
 
     return UVRModel(
         method=method,

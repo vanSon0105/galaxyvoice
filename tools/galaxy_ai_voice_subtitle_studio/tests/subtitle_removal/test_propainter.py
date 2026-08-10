@@ -8,12 +8,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app.compute import AUTO_DEVICE, CPU_DEVICE, CUDA_DEVICE  # noqa: E402
-from app.processes import managed_media_processes  # noqa: E402
-from app.propainter import (  # noqa: E402
+from app.common.compute import AUTO_DEVICE, CPU_DEVICE, CUDA_DEVICE  # noqa: E402
+from app.common.processes import managed_media_processes  # noqa: E402
+from app.subtitle_removal.propainter import (  # noqa: E402
     FAST_AI_PROFILE,
     QUALITY_AI_PROFILE,
     ProPainterRuntime,
@@ -194,7 +194,7 @@ class ProPainterTests(unittest.TestCase):
     def test_cuda_probe_requires_cudnn_like_propainter(self) -> None:
         runtime = ProPainterRuntime(Path("repo"), Path("python"), Path("inference.py"))
         completed = subprocess.CompletedProcess([], 0, "1\n", "")
-        with patch("app.propainter.subprocess.run", return_value=completed) as run:
+        with patch("app.subtitle_removal.propainter.subprocess.run", return_value=completed) as run:
             available = propainter_cuda_available(runtime)
 
         self.assertTrue(available)
@@ -203,7 +203,7 @@ class ProPainterTests(unittest.TestCase):
     def test_cuda_memory_probe_uses_currently_free_memory(self) -> None:
         runtime = ProPainterRuntime(Path("repo"), Path("python"), Path("inference.py"))
         completed = subprocess.CompletedProcess([], 0, "5.5\n", "")
-        with patch("app.propainter.subprocess.run", return_value=completed) as run:
+        with patch("app.subtitle_removal.propainter.subprocess.run", return_value=completed) as run:
             memory = propainter_cuda_memory_gb(runtime)
 
         self.assertEqual(memory, 5.5)
@@ -238,10 +238,10 @@ class ProPainterTests(unittest.TestCase):
                 FakeProcess(0, [], create_result=True),
             ]
             with (
-                patch("app.propainter.subprocess.Popen", side_effect=processes) as popen,
-                patch("app.propainter.managed_media_processes.ensure_running"),
-                patch("app.propainter.managed_media_processes.add"),
-                patch("app.propainter.managed_media_processes.discard"),
+                patch("app.subtitle_removal.propainter.subprocess.Popen", side_effect=processes) as popen,
+                patch("app.subtitle_removal.propainter.managed_media_processes.ensure_running"),
+                patch("app.subtitle_removal.propainter.managed_media_processes.add"),
+                patch("app.subtitle_removal.propainter.managed_media_processes.discard"),
             ):
                 result = run_propainter(
                     video,
@@ -360,10 +360,10 @@ class ProPainterTests(unittest.TestCase):
                 raise RuntimeError("progress callback failed")
 
             with (
-                patch("app.propainter.subprocess.Popen", return_value=process),
-                patch("app.propainter.managed_media_processes.ensure_running"),
-                patch("app.propainter.managed_media_processes.add"),
-                patch("app.propainter.managed_media_processes.discard") as discard,
+                patch("app.subtitle_removal.propainter.subprocess.Popen", return_value=process),
+                patch("app.subtitle_removal.propainter.managed_media_processes.ensure_running"),
+                patch("app.subtitle_removal.propainter.managed_media_processes.add"),
+                patch("app.subtitle_removal.propainter.managed_media_processes.discard") as discard,
                 self.assertRaisesRegex(RuntimeError, "progress callback failed"),
             ):
                 generate_dynamic_subtitle_masks(
@@ -453,7 +453,7 @@ class ProPainterTests(unittest.TestCase):
         managed_media_processes.reset()
         managed_media_processes.add(process)
         try:
-            with patch("app.processes.subprocess.run") as run:
+            with patch("app.common.processes.subprocess.run") as run:
                 managed_media_processes.terminate_all()
             if os.name == "nt":
                 self.assertEqual(run.call_args.args[0][:2], ["taskkill", "/PID"])

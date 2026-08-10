@@ -4,10 +4,10 @@ import sys
 import unittest
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app.compute import (  # noqa: E402
+from app.common.compute import (  # noqa: E402
     AUTO_DEVICE,
     CPU_DEVICE,
     CUDA_DEVICE,

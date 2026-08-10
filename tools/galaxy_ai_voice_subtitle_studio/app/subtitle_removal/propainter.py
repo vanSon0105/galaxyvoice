@@ -8,8 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
 
-from .compute import AUTO_DEVICE, CPU_DEVICE, CUDA_DEVICE, normalize_processing_device, resolve_torch_device
-from .processes import managed_media_processes
+from ..common.compute import AUTO_DEVICE, CPU_DEVICE, CUDA_DEVICE, normalize_processing_device, resolve_torch_device
+from ..common.processes import managed_media_processes
 
 ProgressCallback = Callable[[str], None]
 Region = tuple[int, int, int, int]

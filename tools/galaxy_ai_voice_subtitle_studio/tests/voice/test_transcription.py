@@ -10,13 +10,13 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app.cache import stable_digest  # noqa: E402
-from app.compute import CPU_DEVICE, CUDA_DEVICE  # noqa: E402
-from app.srt import SubtitleCue  # noqa: E402
-from app.transcription import (  # noqa: E402
+from app.common.cache import stable_digest  # noqa: E402
+from app.common.compute import CPU_DEVICE, CUDA_DEVICE  # noqa: E402
+from app.voice.srt import SubtitleCue  # noqa: E402
+from app.voice.transcription import (  # noqa: E402
     VideoSubtitleDraft,
     VideoSubtitleOptions,
     create_subtitles_from_video,
@@ -498,7 +498,7 @@ class TranscriptionTests(unittest.TestCase):
             draft = _draft_for_export(audio)
             output_dir = root / "exports"
 
-            with patch("app.transcription.shutil.copy2", side_effect=OSError("copy failed")):
+            with patch("app.voice.transcription.shutil.copy2", side_effect=OSError("copy failed")):
                 with self.assertRaisesRegex(OSError, "copy failed"):
                     export_subtitle_package(draft, output_dir, "clip")
 
@@ -512,8 +512,8 @@ class TranscriptionTests(unittest.TestCase):
             draft = _draft_for_export(audio)
 
             with (
-                patch("app.transcription.shutil.copy2", side_effect=OSError("copy failed")),
-                patch("app.transcription.shutil.rmtree", side_effect=PermissionError("folder locked")),
+                patch("app.voice.transcription.shutil.copy2", side_effect=OSError("copy failed")),
+                patch("app.voice.transcription.shutil.rmtree", side_effect=PermissionError("folder locked")),
             ):
                 with self.assertRaisesRegex(RuntimeError, "folder locked"):
                     export_subtitle_package(draft, root / "exports", "clip")
@@ -544,7 +544,7 @@ class TranscriptionTests(unittest.TestCase):
                 ]
 
             with patch.dict(os.environ, {}, clear=True):
-                with patch("app.env_config._read_windows_environment", return_value=""):
+                with patch("app.common.env_config._read_windows_environment", return_value=""):
                     result = create_subtitles_from_video(
                         VideoSubtitleOptions(
                             video_path=video,

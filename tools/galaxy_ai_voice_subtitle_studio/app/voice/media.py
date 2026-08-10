@@ -7,8 +7,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
-from .ffmpeg import ffmpeg_missing_message, find_ffmpeg
-from .paths import unique_project_dir
+from ..common.ffmpeg import ffmpeg_missing_message, find_ffmpeg
+from ..common.paths import unique_project_dir
 
 ProgressCallback = Callable[[str], None]
 Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]

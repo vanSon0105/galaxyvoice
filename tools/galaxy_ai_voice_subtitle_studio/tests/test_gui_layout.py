@@ -13,18 +13,18 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from app.gui import GalaxyStudioApp  # noqa: E402
-from app.config import AppConfig, load_app_config, save_app_config  # noqa: E402
-from app.engine import GenerationOptions, GenerationResult  # noqa: E402
-from app.srt import SubtitleCue  # noqa: E402
-from app.subtitle_removal import (  # noqa: E402
+from app.common.config import AppConfig, load_app_config, save_app_config  # noqa: E402
+from app.voice.engine import GenerationOptions, GenerationResult  # noqa: E402
+from app.voice.srt import SubtitleCue  # noqa: E402
+from app.subtitle_removal.service import (  # noqa: E402
     AI_INPAINT_MODE,
     BLUR_MODE,
     FAST_AI_INPAINT_MODE,
     SubtitleRemovalResult,
 )
-from app.transcription import VideoSubtitleDraft, VideoSubtitleResult  # noqa: E402
-from app.translator import AITranslationOptions  # noqa: E402
-from app.tts import EDGE_ENGINE_LABEL, EdgeTTS, Voice  # noqa: E402
+from app.voice.transcription import VideoSubtitleDraft, VideoSubtitleResult  # noqa: E402
+from app.voice.translator import AITranslationOptions  # noqa: E402
+from app.voice.tts import EDGE_ENGINE_LABEL, EdgeTTS, Voice  # noqa: E402
 
 
 class GuiLayoutTests(unittest.TestCase):
@@ -109,7 +109,7 @@ class GuiLayoutTests(unittest.TestCase):
         ]
 
         try:
-            with patch("app.gui.EdgeTTS.initial_voices", return_value=voices):
+            with patch("app.voice.tts.EdgeTTS.initial_voices", return_value=voices):
                 app = GalaxyStudioApp(root, config_path=self.config_path)
 
             self.assertEqual(app.tts_engine_name.get(), EDGE_ENGINE_LABEL)
@@ -292,7 +292,7 @@ class GuiLayoutTests(unittest.TestCase):
             app.audio_format.set("MP3")
             app.audio_sample_mode.set(True)
             app.audio_vocals_only.set(True)
-            with patch("app.gui.simpledialog.askstring", return_value="Podcast Voice"):
+            with patch("app.audio_separation.gui.simpledialog.askstring", return_value="Podcast Voice"):
                 app.save_current_audio_preset()
 
             self.assertIn("Podcast Voice", app.audio_preset_combo.cget("values"))
@@ -385,10 +385,10 @@ class GuiLayoutTests(unittest.TestCase):
             process.poll.return_value = None
 
             with (
-                patch("app.gui.find_ffmpeg", return_value="ffmpeg"),
-                patch("app.gui.find_ffplay", return_value=None),
-                patch("app.gui.subprocess.Popen", return_value=process) as popen,
-                patch("app.gui.threading.Thread") as thread,
+                patch("app.subtitle_removal.gui.find_ffmpeg", return_value="ffmpeg"),
+                patch("app.subtitle_removal.gui.find_ffplay", return_value=None),
+                patch("app.subtitle_removal.gui.subprocess.Popen", return_value=process) as popen,
+                patch("app.subtitle_removal.gui.threading.Thread") as thread,
             ):
                 app.toggle_removal_playback()
 
@@ -468,7 +468,7 @@ class GuiLayoutTests(unittest.TestCase):
             app._playback_process = video_process
             app._playback_audio_process = audio_process
 
-            with patch("app.gui.threading.Thread") as thread:
+            with patch("app.subtitle_removal.gui.threading.Thread") as thread:
                 app._stop_removal_playback()
 
             video_process.terminate.assert_called_once_with()
@@ -502,7 +502,7 @@ class GuiLayoutTests(unittest.TestCase):
             app.removal_processing_device.set("CPU (không dùng GPU)")
 
             with (
-                patch("app.gui.threading.Thread") as thread,
+                patch("app.subtitle_removal.gui.threading.Thread") as thread,
                 patch.object(app.removal_progress, "start"),
             ):
                 app.start_remove_subtitles()
@@ -532,8 +532,8 @@ class GuiLayoutTests(unittest.TestCase):
             app.propainter_license_accepted.set(True)
 
             with (
-                patch("app.propainter.resolve_propainter_runtime"),
-                patch("app.gui.threading.Thread") as thread,
+                patch("app.subtitle_removal.propainter.resolve_propainter_runtime"),
+                patch("app.subtitle_removal.gui.threading.Thread") as thread,
                 patch.object(app.removal_progress, "start"),
             ):
                 app.start_remove_subtitles()
@@ -556,7 +556,7 @@ class GuiLayoutTests(unittest.TestCase):
             app.voice_processing_device.set("CPU (không dùng GPU)")
 
             with (
-                patch("app.gui.threading.Thread") as thread,
+                patch("app.voice.gui.threading.Thread") as thread,
                 patch.object(app.progress, "start"),
             ):
                 app.start_create_video_subtitles()
@@ -579,8 +579,8 @@ class GuiLayoutTests(unittest.TestCase):
             app.removal_mode.set("AI ProPainter")
 
             with (
-                patch("app.gui.messagebox.askyesno", return_value=False) as confirm,
-                patch("app.gui.threading.Thread") as thread,
+                patch("app.subtitle_removal.gui.messagebox.askyesno", return_value=False) as confirm,
+                patch("app.subtitle_removal.gui.threading.Thread") as thread,
             ):
                 app.start_remove_subtitles()
 
@@ -603,11 +603,11 @@ class GuiLayoutTests(unittest.TestCase):
 
             with (
                 patch(
-                    "app.propainter.resolve_propainter_runtime",
+                    "app.subtitle_removal.propainter.resolve_propainter_runtime",
                     side_effect=RuntimeError("ProPainter is not installed completely."),
                 ) as runtime_check,
-                patch("app.gui.messagebox.askyesno", return_value=False) as install_prompt,
-                patch("app.gui.threading.Thread") as thread,
+                patch("app.subtitle_removal.gui.messagebox.askyesno", return_value=False) as install_prompt,
+                patch("app.subtitle_removal.gui.threading.Thread") as thread,
             ):
                 app.start_remove_subtitles()
 
@@ -632,12 +632,12 @@ class GuiLayoutTests(unittest.TestCase):
 
             with (
                 patch(
-                    "app.propainter.resolve_propainter_runtime",
+                    "app.subtitle_removal.propainter.resolve_propainter_runtime",
                     side_effect=RuntimeError("ProPainter is not installed completely."),
                 ),
-                patch("app.gui.messagebox.askyesno", return_value=True),
+                patch("app.subtitle_removal.gui.messagebox.askyesno", return_value=True),
                 patch.object(app, "install_propainter") as install,
-                patch("app.gui.threading.Thread") as thread,
+                patch("app.subtitle_removal.gui.threading.Thread") as thread,
             ):
                 app.start_remove_subtitles()
 
@@ -682,7 +682,7 @@ class GuiLayoutTests(unittest.TestCase):
         ]
 
         try:
-            with patch("app.gui.EdgeTTS.initial_voices", return_value=voices):
+            with patch("app.voice.tts.EdgeTTS.initial_voices", return_value=voices):
                 app = GalaxyStudioApp(root, config_path=self.config_path)
                 source_cues = (
                     SubtitleCue(index=1, start_ms=0, end_ms=1000, text="Hello."),
@@ -756,7 +756,7 @@ class GuiLayoutTests(unittest.TestCase):
                 "1\n00:00:00,000 --> 00:00:01,000\nBan dich da sua.\n",
             )
 
-            with patch("app.gui.threading.Thread") as thread:
+            with patch("app.voice.gui.threading.Thread") as thread:
                 app.start_export_subtitles()
 
             self.assertEqual(thread.call_args.kwargs["target"], app._run_subtitle_export)
@@ -780,7 +780,7 @@ class GuiLayoutTests(unittest.TestCase):
             app._subtitle_draft_dirty = True
 
             with (
-                patch("app.gui.messagebox.askyesno", return_value=False) as confirm,
+                patch("app.voice.gui.messagebox.askyesno", return_value=False) as confirm,
                 patch.object(app, "_save_config_now") as save_config,
                 patch.object(root, "destroy") as destroy,
             ):
@@ -808,8 +808,8 @@ class GuiLayoutTests(unittest.TestCase):
             app._set_editor_text(app.translated_subtitle_text, "old translation")
 
             with (
-                patch("app.gui.filedialog.askopenfilename", return_value="new.mp4"),
-                patch("app.gui.messagebox.askyesno", return_value=True),
+                patch("app.voice.gui.filedialog.askopenfilename", return_value="new.mp4"),
+                patch("app.voice.gui.messagebox.askyesno", return_value=True),
             ):
                 app.browse_video()
 
@@ -837,8 +837,8 @@ class GuiLayoutTests(unittest.TestCase):
             app.video_path.set("new.mp4")
 
             with (
-                patch("app.gui.messagebox.showwarning") as warning,
-                patch("app.gui.threading.Thread") as thread,
+                patch("app.voice.gui.messagebox.showwarning") as warning,
+                patch("app.voice.gui.threading.Thread") as thread,
             ):
                 app.start_export_subtitles()
 
@@ -901,7 +901,7 @@ class GuiLayoutTests(unittest.TestCase):
             app = GalaxyStudioApp(root, config_path=self.config_path)
             draft = Mock(spec=VideoSubtitleDraft)
             app._closing = True
-            with patch("app.gui.export_subtitle_package", side_effect=OSError("closed")):
+            with patch("app.voice.gui.export_subtitle_package", side_effect=OSError("closed")):
                 app._run_subtitle_export(draft, Path("exports"), "clip", "source", "translated")
 
             draft.cleanup.assert_called_once()
@@ -916,7 +916,7 @@ class GuiLayoutTests(unittest.TestCase):
 
         app = GalaxyStudioApp(root, config_path=self.config_path)
         draft = Mock(spec=VideoSubtitleDraft)
-        with patch("app.gui.prepare_subtitles_from_video", return_value=draft):
+        with patch("app.voice.gui.prepare_subtitles_from_video", return_value=draft):
             app._run_video_subtitles(Mock())
 
         root.destroy()
@@ -933,7 +933,7 @@ class GuiLayoutTests(unittest.TestCase):
             app = GalaxyStudioApp(root, config_path=self.config_path)
             app._closing = True
             draft = Mock(spec=VideoSubtitleDraft)
-            with patch("app.gui.prepare_subtitles_from_video", return_value=draft):
+            with patch("app.voice.gui.prepare_subtitles_from_video", return_value=draft):
                 app._run_video_subtitles(Mock())
 
             draft.cleanup.assert_called_once()
@@ -959,7 +959,7 @@ class GuiLayoutTests(unittest.TestCase):
         )
 
         try:
-            with patch("app.gui.EdgeTTS.initial_voices", return_value=[]):
+            with patch("app.voice.tts.EdgeTTS.initial_voices", return_value=[]):
                 app = GalaxyStudioApp(root, config_path=self.config_path)
                 options = GenerationOptions(text="Hello.", output_dir=Path("exports"), project_name="clip")
                 translation_options = AITranslationOptions(
@@ -968,8 +968,8 @@ class GuiLayoutTests(unittest.TestCase):
                     api_key="test-key",
                 )
 
-                with patch("app.gui.translate_script_text", return_value="Xin chao.") as translate:
-                    with patch("app.gui.generate_package", return_value=result) as generate:
+                with patch("app.voice.gui.translate_script_text", return_value="Xin chao.") as translate:
+                    with patch("app.voice.gui.generate_package", return_value=result) as generate:
                         app._run_generation(options, translation_options)
 
                 translate.assert_called_once()
@@ -995,14 +995,14 @@ class GuiLayoutTests(unittest.TestCase):
         ]
 
         try:
-            with patch("app.gui.EdgeTTS.initial_voices", return_value=voices):
+            with patch("app.voice.tts.EdgeTTS.initial_voices", return_value=voices):
                 app = GalaxyStudioApp(root, config_path=self.config_path)
                 app.script_text.insert("1.0", "Hello.")
                 app.script_language_code = "en"
                 app.voice_name.set("English Voice")
                 app.ai_api_key.set("test-key")
 
-                with patch("app.gui.threading.Thread") as thread:
+                with patch("app.voice.gui.threading.Thread") as thread:
                     app.start_generate()
 
                 generation_options, translation_options, tts_engine = thread.call_args.kwargs["args"]
@@ -1024,14 +1024,14 @@ class GuiLayoutTests(unittest.TestCase):
         ]
 
         try:
-            with patch("app.gui.EdgeTTS.initial_voices", return_value=voices):
+            with patch("app.voice.tts.EdgeTTS.initial_voices", return_value=voices):
                 app = GalaxyStudioApp(root, config_path=self.config_path)
                 app.script_text.insert("1.0", "Hello.")
                 app.video_source_language.set("English")
                 app.video_target_language.set("Vietnamese")
                 app.ai_api_key.set("test-key")
 
-                with patch("app.gui.threading.Thread") as thread:
+                with patch("app.voice.gui.threading.Thread") as thread:
                     app.start_generate()
 
                 _generation_options, translation_options, _tts_engine = thread.call_args.kwargs["args"]
@@ -1052,7 +1052,7 @@ class GuiLayoutTests(unittest.TestCase):
         ]
 
         try:
-            with patch("app.gui.EdgeTTS.initial_voices", return_value=vietnamese_voices):
+            with patch("app.voice.tts.EdgeTTS.initial_voices", return_value=vietnamese_voices):
                 app = GalaxyStudioApp(root, config_path=self.config_path)
                 app.script_text.insert("1.0", "Hello.")
                 app.script_language_code = "en"
@@ -1061,8 +1061,8 @@ class GuiLayoutTests(unittest.TestCase):
 
                 with (
                     patch.object(app, "refresh_voices") as refresh,
-                    patch("app.gui.messagebox.showwarning") as warning,
-                    patch("app.gui.threading.Thread") as thread,
+                    patch("app.voice.gui.messagebox.showwarning") as warning,
+                    patch("app.voice.gui.threading.Thread") as thread,
                 ):
                     app.start_generate()
 
@@ -1083,7 +1083,7 @@ class GuiLayoutTests(unittest.TestCase):
         ]
 
         try:
-            with patch("app.gui.EdgeTTS.initial_voices", return_value=vietnamese_voices):
+            with patch("app.voice.tts.EdgeTTS.initial_voices", return_value=vietnamese_voices):
                 app = GalaxyStudioApp(root, config_path=self.config_path)
                 app.script_text.insert("1.0", "こんにちは")
                 app.script_language_code = "ja"
@@ -1091,8 +1091,8 @@ class GuiLayoutTests(unittest.TestCase):
 
                 with (
                     patch.object(app, "refresh_voices") as refresh,
-                    patch("app.gui.messagebox.showwarning") as warning,
-                    patch("app.gui.threading.Thread") as thread,
+                    patch("app.voice.gui.messagebox.showwarning") as warning,
+                    patch("app.voice.gui.threading.Thread") as thread,
                 ):
                     app.start_generate()
 
@@ -1110,7 +1110,7 @@ class GuiLayoutTests(unittest.TestCase):
 
         try:
             app = GalaxyStudioApp(root, config_path=self.config_path)
-            with patch("app.gui.threading.Thread") as thread:
+            with patch("app.voice.gui.threading.Thread") as thread:
                 app.refresh_voices()
 
             self.assertEqual(thread.call_args.kwargs["target"], app._run_voice_refresh)

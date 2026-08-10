@@ -6,10 +6,10 @@ import unittest
 import wave
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app.audio import concatenate_wavs, wav_duration_ms  # noqa: E402
+from app.voice.audio import concatenate_wavs, wav_duration_ms  # noqa: E402
 
 
 class AudioTests(unittest.TestCase):

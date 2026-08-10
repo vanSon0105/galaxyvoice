@@ -11,9 +11,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 
-from .cache import read_json, stable_digest, write_json_atomic
-from .diagnostics import get_logger
-from .env_config import first_env
+from ..common.cache import read_json, stable_digest, write_json_atomic
+from ..common.diagnostics import get_logger
+from ..common.env_config import first_env
 from .languages import label_from_code
 from .srt import SubtitleCue
 

@@ -8,10 +8,10 @@ import wave
 from pathlib import Path
 from unittest.mock import patch
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
-from app.engine import GenerationOptions, generate_package  # noqa: E402
+from app.voice.engine import GenerationOptions, generate_package  # noqa: E402
 
 
 class FakeTTS:
@@ -76,7 +76,7 @@ class EngineTests(unittest.TestCase):
         edge.label = "Edge TTS (Online)"
 
         with tempfile.TemporaryDirectory() as temp_dir:
-            with patch("app.engine.EdgeTTS", return_value=edge):
+            with patch("app.voice.engine.EdgeTTS", return_value=edge):
                 result = generate_package(
                     GenerationOptions(
                         text="Xin chao.",

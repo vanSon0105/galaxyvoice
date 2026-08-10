@@ -5,7 +5,7 @@ import wave
 from dataclasses import dataclass
 from pathlib import Path
 
-from .ffmpeg import find_ffmpeg
+from ..common.ffmpeg import find_ffmpeg
 
 
 @dataclass(frozen=True)

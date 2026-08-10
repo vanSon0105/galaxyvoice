@@ -9,9 +9,9 @@ from pathlib import Path
 from typing import Callable
 
 from . import propainter
-from .ffmpeg import ffmpeg_missing_message, find_ffmpeg, find_ffprobe
-from .paths import unique_project_dir
-from .processes import managed_media_processes
+from ..common.ffmpeg import ffmpeg_missing_message, find_ffmpeg, find_ffprobe
+from ..common.paths import unique_project_dir
+from ..common.processes import managed_media_processes
 from .propainter import (
     FAST_CHUNK_SECONDS,
     FAST_AI_PROFILE,

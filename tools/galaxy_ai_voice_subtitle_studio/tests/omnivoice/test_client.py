@@ -32,7 +32,7 @@ class OmniVoiceWorkerClientTests(unittest.TestCase):
                             "request_id": request["request_id"],
                         }
                         print(json.dumps({**base, "type": "progress", "payload": {"message": "working"}}), flush=True)
-                        print(json.dumps({**base, "type": "result", "payload": {"pid": os.getpid(), "path": os.environ["PATH"]}}), flush=True)
+                        print(json.dumps({**base, "type": "result", "payload": {"pid": os.getpid(), "path": os.environ["PATH"], "python_utf8": os.environ.get("PYTHONUTF8"), "python_io_encoding": os.environ.get("PYTHONIOENCODING")}}), flush=True)
                     """
                 ),
                 encoding="utf-8",
@@ -67,6 +67,8 @@ class OmniVoiceWorkerClientTests(unittest.TestCase):
 
         self.assertEqual(first["pid"], second["pid"])
         self.assertTrue(str(first["path"]).startswith(str(bundled_bin)))
+        self.assertEqual(first["python_utf8"], "1")
+        self.assertEqual(first["python_io_encoding"], "utf-8")
         self.assertEqual(progress, ["working", "working"])
         self.assertFalse(client.is_running)
 

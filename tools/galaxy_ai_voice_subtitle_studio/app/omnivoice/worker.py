@@ -24,7 +24,7 @@ def _send(request_id: str, message_type: str, payload: dict[str, Any]) -> None:
                 "type": message_type,
                 "payload": payload,
             },
-            ensure_ascii=False,
+            ensure_ascii=True,
             separators=(",", ":"),
         )
         + "\n"

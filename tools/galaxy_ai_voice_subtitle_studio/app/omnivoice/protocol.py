@@ -13,7 +13,7 @@ class ProtocolError(ValueError):
 
 def encode_message(message: dict[str, Any]) -> str:
     _validate_message(message)
-    return json.dumps(message, ensure_ascii=False, separators=(",", ":")) + "\n"
+    return json.dumps(message, ensure_ascii=True, separators=(",", ":")) + "\n"
 
 
 def decode_message(raw: str) -> dict[str, Any]:

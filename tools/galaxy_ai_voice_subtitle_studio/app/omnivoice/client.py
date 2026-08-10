@@ -119,6 +119,8 @@ class OmniVoiceWorkerClient:
             except queue.Empty:
                 break
         environment = os.environ.copy()
+        environment["PYTHONUTF8"] = "1"
+        environment["PYTHONIOENCODING"] = "utf-8"
         environment["HF_HOME"] = str(self.runtime.cache_dir / "huggingface")
         environment["HF_HUB_CACHE"] = str(self.runtime.cache_dir / "huggingface" / "hub")
         bundled_bin = studio_root() / "bin"

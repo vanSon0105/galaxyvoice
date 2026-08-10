@@ -2,13 +2,15 @@ param(
     [ValidateSet("auto", "cuda", "xpu", "cpu")]
     [string]$Device = "auto",
     [switch]$DownloadModel,
-    [string]$Model = "k2-fsa/OmniVoice"
+    [string]$Model = "k2-fsa/OmniVoice",
+    [switch]$NonInteractive
 )
 
 $ErrorActionPreference = "Stop"
 $runtimeRoot = Join-Path $env:LOCALAPPDATA "GalaxyAIStudio\models\OmniVoice"
 $venvRoot = Join-Path $runtimeRoot ".venv"
 $runtimePython = Join-Path $venvRoot "Scripts\python.exe"
+$runtimeSource = Join-Path $runtimeRoot "source"
 $sourceRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot "..\..\omnivoice"))
 
 function Find-PythonRuntime {
@@ -55,6 +57,16 @@ New-Item -ItemType Directory -Path $runtimeRoot -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $runtimeRoot "checkpoints") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $runtimeRoot "voices") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $runtimeRoot "cache") -Force | Out-Null
+Remove-Item -LiteralPath (Join-Path $runtimeRoot "runtime.json") -Force -ErrorAction SilentlyContinue
+
+if (Test-Path $runtimeSource) {
+    Remove-Item -LiteralPath $runtimeSource -Recurse -Force
+}
+New-Item -ItemType Directory -Path $runtimeSource -Force | Out-Null
+Copy-Item -LiteralPath (Join-Path $sourceRoot "pyproject.toml") -Destination $runtimeSource
+Copy-Item -LiteralPath (Join-Path $sourceRoot "README.md") -Destination $runtimeSource
+Copy-Item -LiteralPath (Join-Path $sourceRoot "LICENSE") -Destination $runtimeSource
+Copy-Item -LiteralPath (Join-Path $sourceRoot "omnivoice") -Destination $runtimeSource -Recurse
 
 if (-not (Test-Path $runtimePython)) {
     $pythonCommand = Find-PythonRuntime
@@ -89,23 +101,20 @@ else {
 }
 
 Invoke-Checked "Installing OmniVoice" {
-    & $runtimePython -m pip install $sourceRoot
+    & $runtimePython -m pip install --force-reinstall --no-deps $runtimeSource
 }
 Invoke-Checked "Installing multilingual text normalization" {
     & $runtimePython -m pip install num2words
 }
-& $runtimePython -m pip install WeTextProcessing
-if ($LASTEXITCODE -ne 0) {
-    Write-Warning "WeTextProcessing could not be installed. English/Chinese text normalization will be unavailable."
+if ($env:OS -eq "Windows_NT") {
+    Write-Warning "WeTextProcessing is skipped on Windows because pynini has no compatible wheel. Basic normalization remains available through num2words."
 }
-
-$metadata = @{
-    version = 1
-    device = $Device
-    source = $sourceRoot
-    installed_at = [DateTimeOffset]::UtcNow.ToString("o")
-} | ConvertTo-Json
-Set-Content -LiteralPath (Join-Path $runtimeRoot "runtime.json") -Value $metadata -Encoding UTF8
+else {
+    & $runtimePython -m pip install WeTextProcessing
+    if ($LASTEXITCODE -ne 0) {
+        Write-Warning "WeTextProcessing could not be installed. English/Chinese text normalization will be unavailable."
+    }
+}
 
 if ($DownloadModel) {
     $env:HF_HOME = Join-Path $runtimeRoot "cache\huggingface"
@@ -119,6 +128,17 @@ if ($DownloadModel) {
 Invoke-Checked "Validating OmniVoice runtime" {
     & $runtimePython -c "import torch, omnivoice; print('OmniVoice runtime ready'); print('torch:', torch.__version__); print('cuda:', torch.cuda.is_available()); print('xpu:', bool(hasattr(torch, 'xpu') and torch.xpu.is_available()))"
 }
+
+$metadata = @{
+    version = 1
+    device = $Device
+    source = $sourceRoot
+    installed_at = [DateTimeOffset]::UtcNow.ToString("o")
+} | ConvertTo-Json
+Set-Content -LiteralPath (Join-Path $runtimeRoot "runtime.json") -Value $metadata -Encoding UTF8
+
 Write-Host ""
 Write-Host "OmniVoice installation completed at $runtimeRoot" -ForegroundColor Green
-Read-Host "Press Enter to close"
+if (-not $NonInteractive) {
+    Read-Host "Press Enter to close"
+}

@@ -9,6 +9,7 @@ from collections import deque
 from pathlib import Path
 from typing import Callable
 
+from ..common.paths import studio_root
 from ..common.processes import managed_media_processes, terminate_process_tree
 from .protocol import decode_message, encode_message, request_message
 from .runtime import OmniVoiceRuntime, inspect_runtime
@@ -120,6 +121,11 @@ class OmniVoiceWorkerClient:
         environment = os.environ.copy()
         environment["HF_HOME"] = str(self.runtime.cache_dir / "huggingface")
         environment["HF_HUB_CACHE"] = str(self.runtime.cache_dir / "huggingface" / "hub")
+        bundled_bin = studio_root() / "bin"
+        if bundled_bin.is_dir():
+            environment["PATH"] = os.pathsep.join(
+                (str(bundled_bin), environment.get("PATH", ""))
+            )
         process = subprocess.Popen(
             [str(self.runtime.python_path), "-u", str(self.worker_path)],
             stdin=subprocess.PIPE,

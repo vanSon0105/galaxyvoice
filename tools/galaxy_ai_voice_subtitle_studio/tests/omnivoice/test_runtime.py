@@ -3,6 +3,8 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from subprocess import CompletedProcess
+from unittest.mock import patch
 
 from app.omnivoice.runtime import (
     CPU_DEVICE,
@@ -25,6 +27,7 @@ class OmniVoiceRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.python_path, runtime.root / ".venv" / "Scripts" / "python.exe")
         self.assertEqual(runtime.profiles_dir, runtime.root / "voices")
         self.assertEqual(runtime.cache_dir, runtime.root / "cache")
+        self.assertEqual(runtime.source_dir, runtime.root / "source")
 
     def test_missing_python_marks_runtime_as_not_installed(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -32,6 +35,35 @@ class OmniVoiceRuntimeTests(unittest.TestCase):
 
         self.assertFalse(status.installed)
         self.assertIn("chưa được cài", status.message)
+
+    def test_created_venv_without_completed_install_is_not_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = OmniVoiceRuntime.from_base(Path(temp_dir))
+            runtime.python_path.parent.mkdir(parents=True)
+            runtime.python_path.write_text("partial runtime", encoding="utf-8")
+
+            status = inspect_runtime(runtime)
+
+        self.assertFalse(status.installed)
+        self.assertIn("chưa hoàn tất", status.message)
+
+    def test_runtime_with_marker_but_missing_package_is_not_ready(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = OmniVoiceRuntime.from_base(Path(temp_dir))
+            runtime.python_path.parent.mkdir(parents=True)
+            runtime.python_path.write_text("partial runtime", encoding="utf-8")
+            runtime.metadata_path.write_text("{}", encoding="utf-8")
+            completed = CompletedProcess(
+                args=[],
+                returncode=1,
+                stdout="omnivoice\n",
+                stderr="",
+            )
+            with patch("app.omnivoice.runtime.subprocess.run", return_value=completed):
+                status = inspect_runtime(runtime)
+
+        self.assertFalse(status.installed)
+        self.assertIn("omnivoice", status.message)
 
     def test_device_codes_are_normalized(self) -> None:
         self.assertEqual(normalize_omnivoice_device("CUDA"), CUDA_DEVICE)
@@ -47,6 +79,7 @@ class OmniVoiceRuntimeTests(unittest.TestCase):
             runtime.models_dir.mkdir(parents=True)
             runtime.cache_dir.mkdir(parents=True)
             runtime.profiles_dir.mkdir(parents=True)
+            runtime.source_dir.mkdir(parents=True)
             profile = runtime.profiles_dir / "narrator.pt"
             profile.write_bytes(b"voice")
 
@@ -55,6 +88,7 @@ class OmniVoiceRuntimeTests(unittest.TestCase):
             self.assertTrue(profile.is_file())
             self.assertFalse(runtime.python_path.exists())
             self.assertFalse(runtime.cache_dir.exists())
+            self.assertFalse(runtime.source_dir.exists())
 
     def test_clearing_model_cache_recreates_empty_cache_directories(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

@@ -946,6 +946,7 @@ class OmniVoiceTabMixin:
             messagebox.showerror("Thiếu bộ cài", f"Không tìm thấy {installer}")
             return
         device = normalize_omnivoice_device(self.omnivoice_device.get())
+        self.omnivoice_client.stop()
         try:
             subprocess.Popen(
                 [

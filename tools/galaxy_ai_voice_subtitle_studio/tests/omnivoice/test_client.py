@@ -5,10 +5,11 @@ import tempfile
 import textwrap
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from app.common.processes import managed_media_processes
 from app.omnivoice.client import OmniVoiceWorkerClient
-from app.omnivoice.runtime import OmniVoiceRuntime
+from app.omnivoice.runtime import OmniVoiceRuntime, OmniVoiceRuntimeStatus
 
 
 class OmniVoiceWorkerClientTests(unittest.TestCase):
@@ -31,7 +32,7 @@ class OmniVoiceWorkerClientTests(unittest.TestCase):
                             "request_id": request["request_id"],
                         }
                         print(json.dumps({**base, "type": "progress", "payload": {"message": "working"}}), flush=True)
-                        print(json.dumps({**base, "type": "result", "payload": {"pid": os.getpid()}}), flush=True)
+                        print(json.dumps({**base, "type": "result", "payload": {"pid": os.getpid(), "path": os.environ["PATH"]}}), flush=True)
                     """
                 ),
                 encoding="utf-8",
@@ -46,13 +47,26 @@ class OmniVoiceWorkerClientTests(unittest.TestCase):
             )
             progress: list[str] = []
             client = OmniVoiceWorkerClient(runtime, worker)
+            studio = root / "studio"
+            bundled_bin = studio / "bin"
+            bundled_bin.mkdir(parents=True)
             try:
-                first = client.request("ping", {}, on_progress=progress.append)
-                second = client.request("ping", {}, on_progress=progress.append)
+                ready = OmniVoiceRuntimeStatus(
+                    installed=True,
+                    message="ready",
+                    python_path=runtime.python_path,
+                )
+                with (
+                    patch("app.omnivoice.client.inspect_runtime", return_value=ready),
+                    patch("app.omnivoice.client.studio_root", return_value=studio),
+                ):
+                    first = client.request("ping", {}, on_progress=progress.append)
+                    second = client.request("ping", {}, on_progress=progress.append)
             finally:
                 client.close()
 
         self.assertEqual(first["pid"], second["pid"])
+        self.assertTrue(str(first["path"]).startswith(str(bundled_bin)))
         self.assertEqual(progress, ["working", "working"])
         self.assertFalse(client.is_running)
 

@@ -8,6 +8,8 @@ from unittest.mock import patch
 
 from app.gui import GalaxyStudioApp
 from app.omnivoice.runtime import OmniVoiceRuntimeStatus
+from app.voice.srt import SubtitleCue, render_srt
+from app.voice.transcription import VideoSubtitleDraft
 
 
 class OmniVoiceGuiTests(unittest.TestCase):
@@ -31,26 +33,23 @@ class OmniVoiceGuiTests(unittest.TestCase):
             self.assertEqual(
                 labels,
                 [
-                    "Voice & Subtitle",
-                    "Auto Voice",
-                    "Nhái giọng",
-                    "Thiết kế giọng",
-                    "Batch Voice",
-                    "Long-form",
-                    "Thư viện giọng",
-                    "LoRA",
-                    "Model & Runtime",
+                    "Voice Clone",
+                    "Voice Design",
+                    "Video Dubbing",
+                    "Stories",
+                    "Audiobook",
+                    "Voice Gallery",
+                    "Transcripts",
                 ],
             )
             for tab in (
-                app.omnivoice_auto_tab,
                 app.omnivoice_clone_tab,
                 app.omnivoice_design_tab,
-                app.omnivoice_batch_tab,
-                app.omnivoice_long_form_tab,
-                app.omnivoice_library_tab,
-                app.omnivoice_lora_tab,
-                app.omnivoice_runtime_tab,
+                app.classic_voice_tab,
+                app.omnivoice_stories_tab,
+                app.omnivoice_audiobook_tab,
+                app.omnivoice_gallery_tab,
+                app.omnivoice_transcripts_tab,
             ):
                 app.voice_feature_notebook.select(tab)
                 root.update_idletasks()
@@ -59,6 +58,15 @@ class OmniVoiceGuiTests(unittest.TestCase):
                     tab.winfo_rooty() + tab.winfo_height(),
                     app.voice_tab.winfo_rooty() + app.voice_tab.winfo_height(),
                 )
+
+            gallery_tools = [
+                app.omnivoice_gallery_notebook.tab(tab_id, "text")
+                for tab_id in app.omnivoice_gallery_notebook.tabs()
+            ]
+            self.assertEqual(
+                gallery_tools,
+                ["Presets", "Giọng đã lưu", "Auto Voice", "Batch", "LoRA", "Runtime"],
+            )
         finally:
             root.destroy()
 
@@ -148,6 +156,51 @@ class OmniVoiceGuiTests(unittest.TestCase):
         finally:
             root.destroy()
 
+    def test_dubbing_uses_current_edited_translated_subtitles(self) -> None:
+        root = self._root()
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.subtitle_draft = VideoSubtitleDraft(
+                source_video=Path("video.mp4"),
+                project_name="dub-test",
+                audio_path=Path("speech.wav"),
+                source_language="zh",
+                target_language="vi",
+                whisper_model="base",
+                ai_provider="deepseek",
+                ai_model="deepseek-chat",
+                ai_base_url="https://api.deepseek.com",
+                source_cues=(SubtitleCue(1, 0, 1_000, "你好"),),
+                translated_cues=(SubtitleCue(1, 0, 1_000, "Xin chào"),),
+                warnings=[],
+            )
+            app.translated_subtitle_text.delete("1.0", "end")
+            app.translated_subtitle_text.insert(
+                "1.0",
+                render_srt([SubtitleCue(1, 0, 1_500, "Bản dịch đã sửa")]),
+            )
+            ready = OmniVoiceRuntimeStatus(
+                installed=True,
+                message="ready",
+                python_path=Path("python.exe"),
+            )
+            with (
+                patch("app.omnivoice.workspaces.gui.inspect_runtime", return_value=ready),
+                patch("app.omnivoice.gui.threading.Thread") as thread,
+            ):
+                app.start_omnivoice_dubbing()
+
+            self.assertEqual(app._active_task, "omnivoice_dub")
+            plan = thread.call_args.kwargs["args"][2]
+            speech = next(span for span in plan.spans if span.text)
+            self.assertEqual(speech.text, "Bản dịch đã sửa")
+            self.assertEqual(speech.duration, 1.5)
+            thread.return_value.start.assert_called_once()
+            for progress in app.omnivoice_progress_bars:
+                progress.stop()
+        finally:
+            root.destroy()
+
     def test_merged_lora_model_does_not_reapply_the_adapter(self) -> None:
         root = self._root()
         try:
@@ -185,6 +238,10 @@ class OmniVoiceGuiTests(unittest.TestCase):
             self.assertIsNone(app._active_task)
             self.assertEqual(
                 app.voice_feature_notebook.select(),
+                str(app.omnivoice_gallery_tab),
+            )
+            self.assertEqual(
+                app.omnivoice_gallery_notebook.select(),
                 str(app.omnivoice_runtime_tab),
             )
         finally:

@@ -33,6 +33,8 @@ from .runtime import (
     remove_runtime_engine,
 )
 from .service import generate_omnivoice_audio
+from .workspaces.gui import OmniVoiceWorkspaceGuiMixin
+from .workspaces.renderer import LongformWorkspaceResult
 
 
 COMMON_LANGUAGES = (
@@ -91,7 +93,7 @@ DIALECT_CHOICES = {
 }
 
 
-class OmniVoiceTabMixin(OmniVoiceAdvancedGuiMixin):
+class OmniVoiceTabMixin(OmniVoiceWorkspaceGuiMixin, OmniVoiceAdvancedGuiMixin):
     def _init_omnivoice_state(self, saved_config: object) -> None:
         self.omnivoice_runtime = OmniVoiceRuntime.default()
         self.omnivoice_language_values = (
@@ -243,6 +245,7 @@ class OmniVoiceTabMixin(OmniVoiceAdvancedGuiMixin):
         )
         self.omnivoice_lora_merge_output = tk.StringVar()
         self.omnivoice_lora_status = tk.StringVar(value="Sẵn sàng")
+        self._init_omnivoice_workspace_state()
 
     def _build_omnivoice_tabs(self, notebook: ttk.Notebook) -> None:
         self.omnivoice_text_widgets: dict[str, tk.Text] = {}
@@ -256,20 +259,17 @@ class OmniVoiceTabMixin(OmniVoiceAdvancedGuiMixin):
         self.omnivoice_language_combos: list[ttk.Combobox] = []
         self.omnivoice_profile_combos: list[ttk.Combobox] = []
 
-        self.omnivoice_auto_tab = self._build_omnivoice_studio_page(
-            notebook, "Auto Voice", AUTO_MODE
-        )
         self.omnivoice_clone_tab = self._build_omnivoice_studio_page(
-            notebook, "Nhái giọng", CLONE_MODE
+            notebook, "Voice Clone", CLONE_MODE
         )
         self.omnivoice_design_tab = self._build_omnivoice_studio_page(
-            notebook, "Thiết kế giọng", DESIGN_MODE
+            notebook, "Voice Design", DESIGN_MODE
         )
-        self._build_omnivoice_batch_tab(notebook)
-        self._build_omnivoice_long_form_tab(notebook)
-        self._build_omnivoice_library_tab(notebook)
-        self._build_omnivoice_lora_tab(notebook)
-        self._build_omnivoice_runtime_tab(notebook)
+        self._build_omnivoice_workspace_tabs(notebook)
+        notebook.insert(0, self.omnivoice_clone_tab)
+        notebook.insert(1, self.omnivoice_design_tab)
+        notebook.insert(2, self.classic_voice_tab)
+        notebook.tab(self.classic_voice_tab, text="Video Dubbing")
         self._refresh_omnivoice_profiles()
         self._refresh_omnivoice_runtime_status()
 
@@ -779,7 +779,7 @@ class OmniVoiceTabMixin(OmniVoiceAdvancedGuiMixin):
         status = inspect_runtime(self.omnivoice_runtime)
         if not status.installed:
             messagebox.showerror("OmniVoice chưa được cài", status.message)
-            self.voice_feature_notebook.select(self.omnivoice_runtime_tab)
+            self._select_omnivoice_runtime()
             return
         text = self.omnivoice_text_widgets[mode].get("1.0", "end").strip()
         try:
@@ -988,6 +988,9 @@ class OmniVoiceTabMixin(OmniVoiceAdvancedGuiMixin):
             "omnivoice_generation",
             "omnivoice_batch",
             "omnivoice_long_form",
+            "omnivoice_stories",
+            "omnivoice_audiobook",
+            "omnivoice_dub",
             "omnivoice_model",
             "omnivoice_probe",
             "omnivoice_lora_merge",
@@ -1020,9 +1023,14 @@ class OmniVoiceTabMixin(OmniVoiceAdvancedGuiMixin):
             progress.stop()
         self._active_task = None
         self._set_busy(False)
-        if event == "omnivoice_done" and isinstance(payload, OmniVoiceResult):
+        if event == "omnivoice_workspace_done" and isinstance(payload, tuple):
+            kind, result = payload
+            if isinstance(result, LongformWorkspaceResult):
+                self._finish_omnivoice_workspace(str(kind), result)
+        elif event == "omnivoice_done" and isinstance(payload, OmniVoiceResult):
             self.omnivoice_last_result = payload
             self.omnivoice_last_batch_result = None
+            self.omnivoice_workspace_result = None
             self.omnivoice_job_status.set("Hoàn tất")
             self.status.set("Done")
             for button in self.omnivoice_open_buttons:
@@ -1040,6 +1048,7 @@ class OmniVoiceTabMixin(OmniVoiceAdvancedGuiMixin):
         elif event == "omnivoice_batch_done" and isinstance(payload, OmniVoiceBatchResult):
             self.omnivoice_last_result = None
             self.omnivoice_last_batch_result = payload
+            self.omnivoice_workspace_result = None
             self.omnivoice_job_status.set("Hoàn tất")
             self.status.set("Done")
             for button in self.omnivoice_open_buttons:
@@ -1124,6 +1133,9 @@ class OmniVoiceTabMixin(OmniVoiceAdvancedGuiMixin):
             "omnivoice_generation",
             "omnivoice_batch",
             "omnivoice_long_form",
+            "omnivoice_stories",
+            "omnivoice_audiobook",
+            "omnivoice_dub",
             "omnivoice_model",
             "omnivoice_probe",
             "omnivoice_lora_merge",
@@ -1445,6 +1457,8 @@ class OmniVoiceTabMixin(OmniVoiceAdvancedGuiMixin):
             os.startfile(self.omnivoice_last_result.project_dir)
         elif self.omnivoice_last_batch_result is not None:
             os.startfile(self.omnivoice_last_batch_result.project_dir)
+        else:
+            self._open_omnivoice_workspace_result()
 
     def _play_omnivoice_result(self) -> None:
         if self.omnivoice_last_result is not None:
@@ -1453,6 +1467,8 @@ class OmniVoiceTabMixin(OmniVoiceAdvancedGuiMixin):
             preview = self.omnivoice_last_batch_result.preview_path
             if preview is not None:
                 os.startfile(preview)
+        else:
+            self._play_omnivoice_workspace_result()
 
     def _open_omnivoice_profiles(self) -> None:
         self.omnivoice_runtime.ensure_directories()

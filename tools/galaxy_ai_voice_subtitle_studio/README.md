@@ -250,9 +250,11 @@ Trên Windows, app cũng đọc `OPENAI_API_KEY` và `DEEPSEEK_API_KEY` từ Use
 
 ## OmniVoice local và nhái giọng
 
-Main tab `Voice` có notebook con gồm `Voice & Subtitle`, `Auto Voice`, `Nhái giọng`, `Thiết kế giọng`, `Batch Voice`, `Long-form`, `Thư viện giọng`, `LoRA` và `Model & Runtime`. Ba chế độ OmniVoice hỗ trợ đủ 646 language ID, quality steps, speed, duration, CFG/generation parameters, chia đoạn dài, denoise, text normalization, WAV và MP3.
+Main tab `Voice` đi theo bảy workspace của OmniVoice Studio: `Voice Clone`, `Voice Design`, `Video Dubbing`, `Stories`, `Audiobook`, `Voice Gallery` và `Transcripts`. Các công cụ kỹ thuật `Auto Voice`, `Batch`, `LoRA`, runtime và profile đã lưu nằm gọn trong `Voice Gallery`, nên màn hình chính tập trung vào công việc thay vì cấu hình engine.
 
-Thanh công cụ nội dung chèn được non-verbal tag như `[laughter]`, `[sigh]`, CMU phoneme tiếng Anh và pinyin có thanh điệu tiếng Trung. `Batch Voice` nhận mỗi dòng là một câu hoặc JSONL theo format CLI gốc (`id`, `text`, `language_id`, `speed`, `duration`). `Long-form` tách nội dung theo đoạn trống, tạo từng phần, ghép `combined.wav` và xuất thêm MP3 khi được chọn.
+`Video Dubbing` dùng sub dịch đang mở, giữ timing từng cue khi tạo voice và có thể đưa một lần video, voice cùng SRT sang timeline dựng video. `Stories` hỗ trợ vai theo cú pháp `Nhân vật: lời thoại`, `[voice:Tên]`, `[pause 500ms]`, `[slow]`, `[fast]` và `[spell]`. `Audiobook` nhập TXT, Markdown, EPUB hoặc PDF, chia chương bằng heading `#`, phân vai và xuất WAV/MP3 hoặc M4B có chapter metadata. `Transcripts` tự lưu lịch sử mỗi lần tạo sub, cho phép tìm kiếm, mở lại và xuất SRT.
+
+Voice Gallery có preset thiết kế giọng theo mục đích và ngôn ngữ. Thanh công cụ nội dung của các trang tạo voice vẫn chèn được non-verbal tag như `[laughter]`, `[sigh]`, CMU phoneme tiếng Anh và pinyin có thanh điệu tiếng Trung. `Batch` nhận mỗi dòng là một câu hoặc JSONL theo format CLI gốc (`id`, `text`, `language_id`, `speed`, `duration`).
 
 OmniVoice chạy trong worker riêng và giữ model trong RAM/VRAM giữa các lần Generate. Runtime, checkpoint, Hugging Face cache và profile nằm tại `%LOCALAPPDATA%\GalaxyAIStudio\models\OmniVoice`, không dùng chung Python với app chính. Cài hoặc sửa runtime bằng nút trong GUI, hoặc chạy:
 
@@ -280,7 +282,8 @@ Code được nhóm theo tab để thay đổi một workflow không phải đ�
 app/
 |-- common/                  # config, cache, FFmpeg, logging, process và path
 |-- voice/                   # TTS, transcription, dịch AI, SRT và UI tab Voice
-|-- omnivoice/               # runtime worker, profile và các trang OmniVoice
+|-- omnivoice/               # runtime worker, profile và các workspace OmniVoice
+|   `-- workspaces/          # dubbing, stories, audiobook, gallery và transcripts
 |-- video_editor/            # project, preview, export và timeline tab Dựng video
 |-- audio_separation/        # backend UVR/audio-separator và UI tab Tách âm thanh
 |-- subtitle_removal/        # blur, ProPainter và UI tab Xóa phụ đề

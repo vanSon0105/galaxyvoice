@@ -346,7 +346,7 @@ class GalaxyStudioApp(
         self.classic_voice_tab.columnconfigure(0, weight=1)
         self.classic_voice_tab.columnconfigure(1, minsize=340)
         self.classic_voice_tab.rowconfigure(0, weight=1)
-        self.voice_feature_notebook.add(self.classic_voice_tab, text="Voice & Subtitle")
+        self.voice_feature_notebook.add(self.classic_voice_tab, text="Video Dubbing")
 
         left = ttk.Frame(self.classic_voice_tab)
         left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
@@ -395,6 +395,20 @@ class GalaxyStudioApp(
         self.generate_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
         self.open_button = ttk.Button(actions, text="Open Output", command=self.open_output, state="disabled")
         self.open_button.grid(row=0, column=1, sticky="ew")
+        self.dub_generate_button = ttk.Button(
+            actions,
+            text="Tạo voice theo sub",
+            command=self.start_omnivoice_dubbing,
+            state="disabled",
+        )
+        self.dub_generate_button.grid(row=1, column=0, sticky="ew", padx=(0, 8), pady=(8, 0))
+        self.dub_editor_button = ttk.Button(
+            actions,
+            text="Đưa sang dựng video",
+            command=self.send_dubbing_to_editor,
+            state="disabled",
+        )
+        self.dub_editor_button.grid(row=1, column=1, sticky="ew", pady=(8, 0))
 
         self.progress = ttk.Progressbar(right, mode="indeterminate")
         self.progress.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
@@ -765,6 +779,7 @@ class GalaxyStudioApp(
                     self._pending_subtitle_draft = None
             self._replace_subtitle_draft(result)
             self._load_subtitle_draft(result)
+            self.record_omnivoice_transcript(result)
             self.subtitle_export_button.configure(state="normal")
             self.open_button.configure(state="disabled")
             self.status.set("Ready to export")
@@ -864,6 +879,16 @@ class GalaxyStudioApp(
         self.generate_button.configure(state=state)
         self.extract_button.configure(state=state)
         self.subtitle_button.configure(state=state)
+        self.dub_generate_button.configure(
+            state="normal" if not busy and self.subtitle_draft is not None else "disabled"
+        )
+        self.dub_editor_button.configure(
+            state=(
+                "normal"
+                if not busy and self.omnivoice_last_dub_result is not None
+                else "disabled"
+            )
+        )
         export_state = "normal" if not busy and self.subtitle_draft is not None else "disabled"
         self.subtitle_export_button.configure(state=export_state)
         voice_refreshing = bool(self.voice_worker and self.voice_worker.is_alive())

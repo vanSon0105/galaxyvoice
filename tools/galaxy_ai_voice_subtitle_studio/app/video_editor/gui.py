@@ -396,6 +396,35 @@ class VideoEditorTabMixin:
         self.status.set("Đã nhập SRT")
         self._append_log(f"Media Bin: {Path(path).name} ({len(cues)} cue).")
 
+    def import_editor_bundle(
+        self,
+        video_path: Path,
+        audio_path: Path,
+        subtitle_path: Path,
+    ) -> None:
+        """Import and place a dubbing bundle at the beginning of the timeline."""
+        video = Path(video_path)
+        audio = Path(audio_path)
+        subtitle = Path(subtitle_path)
+        self.status.set("Đang đưa bản lồng tiếng sang dựng video...")
+
+        def worker() -> None:
+            try:
+                media_info = probe_editor_media(video)
+                audio_duration = probe_audio_duration(audio)
+                cues = tuple(load_editor_subtitles(subtitle))
+            except Exception as error:
+                self.events.put(("editor_bundle_error", error))
+            else:
+                self.events.put(
+                    (
+                        "editor_bundle_loaded",
+                        (video, media_info, audio, audio_duration, subtitle, cues),
+                    )
+                )
+
+        threading.Thread(target=worker, daemon=True, name="editor-bundle-import").start()
+
     def _editor_asset_id(self, kind: str, path: str) -> str:
         normalized = os.path.normcase(os.path.abspath(path))
         for asset in self.editor_assets.values():
@@ -1026,6 +1055,43 @@ class VideoEditorTabMixin:
             os.startfile(result.project_dir)
 
     def _handle_editor_event(self, event: str, payload: object) -> bool:
+        if event == "editor_bundle_loaded":
+            video, info, audio, audio_duration, subtitle, cues = payload
+            video_asset = EditorAsset(
+                asset_id=self._editor_asset_id(VIDEO_ASSET, str(video)),
+                kind=VIDEO_ASSET,
+                path=str(video),
+                duration_seconds=info.duration_seconds,
+                width=info.width,
+                height=info.height,
+                fps=info.fps,
+                has_audio=info.has_audio,
+            )
+            audio_asset = EditorAsset(
+                asset_id=self._editor_asset_id(AUDIO_ASSET, str(audio)),
+                kind=AUDIO_ASSET,
+                path=str(audio),
+                duration_seconds=float(audio_duration),
+            )
+            subtitle_asset = EditorAsset(
+                asset_id=self._editor_asset_id(SUBTITLE_ASSET, str(subtitle)),
+                kind=SUBTITLE_ASSET,
+                path=str(subtitle),
+                cues=tuple(cues),
+            )
+            for asset in (video_asset, audio_asset, subtitle_asset):
+                self._store_editor_asset(asset)
+            self._activate_editor_asset(video_asset.asset_id, 0)
+            self._activate_editor_asset(audio_asset.asset_id, 0)
+            self._activate_editor_asset(subtitle_asset.asset_id, 0)
+            self.main_notebook.select(self.editor_tab)
+            self.status.set("Đã đưa video, voice và SRT vào timeline")
+            self._append_log("Đã nạp bản lồng tiếng vào Dựng video.")
+            return True
+        if event == "editor_bundle_error":
+            self.status.set("Không đưa được bản lồng tiếng sang editor")
+            messagebox.showerror("Không nạp được bản lồng tiếng", str(payload))
+            return True
         if event == "editor_video_loaded":
             asset_id, path, info = payload if isinstance(payload, tuple) else ("", "", None)
             if isinstance(info, EditorMediaInfo):

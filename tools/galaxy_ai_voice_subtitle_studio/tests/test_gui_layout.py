@@ -203,15 +203,13 @@ class GuiLayoutTests(unittest.TestCase):
             self.assertEqual(
                 voice_labels,
                 [
-                    "Voice & Subtitle",
-                    "Auto Voice",
-                "Nhái giọng",
-                "Thiết kế giọng",
-                "Batch Voice",
-                "Long-form",
-                "Thư viện giọng",
-                "LoRA",
-                "Model & Runtime",
+                    "Voice Clone",
+                    "Voice Design",
+                    "Video Dubbing",
+                    "Stories",
+                    "Audiobook",
+                    "Voice Gallery",
+                    "Transcripts",
                 ],
             )
             self.assertEqual(app.omnivoice_language.get(), "vi")

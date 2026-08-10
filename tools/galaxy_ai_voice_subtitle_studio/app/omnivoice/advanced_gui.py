@@ -257,7 +257,7 @@ class OmniVoiceAdvancedGuiMixin:
         status = inspect_runtime(self.omnivoice_runtime)
         if not status.installed:
             messagebox.showerror("OmniVoice chưa được cài", status.message)
-            self.voice_feature_notebook.select(self.omnivoice_runtime_tab)
+            self._select_omnivoice_runtime()
             return
         mode_variable = self.omnivoice_long_form_mode if combine else self.omnivoice_batch_mode
         mode = MODE_LABELS.get(mode_variable.get(), AUTO_MODE)

@@ -1,0 +1,1 @@
+var e=new Set;function t(t){if(e.size!==0)for(let n of e)try{n(t)}catch{}}function n(t){return e.add(t),()=>{e.delete(t)}}export{n,t};

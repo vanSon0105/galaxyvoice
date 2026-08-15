@@ -1,0 +1,3 @@
+# Vendored runtime snapshots are immutable and retain their upstream bytes.
+tools/galaxy_ai_voice_subtitle_studio/vendor/voicestudio/** -text
+tools/galaxy_ai_voice_subtitle_studio/vendor/wheels/*.whl binary

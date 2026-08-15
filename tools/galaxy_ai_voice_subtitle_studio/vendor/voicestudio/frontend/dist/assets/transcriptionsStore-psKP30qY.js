@@ -1,0 +1,1 @@
+var e=`omni_transcriptions`,t=`omni:transcription-added`;function n(){try{let e=JSON.parse(localStorage.getItem(`omni_transcriptions`)||`[]`);return Array.isArray(e)?e:[]}catch{return[]}}export{t as n,n as r,e as t};

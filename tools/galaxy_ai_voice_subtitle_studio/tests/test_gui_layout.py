@@ -260,11 +260,13 @@ class GuiLayoutTests(unittest.TestCase):
             self.assertFalse(app.log_frame.winfo_ismapped())
             tab_bottom = app.voicestudio_tab.winfo_rooty() + app.voicestudio_tab.winfo_height()
             self.assertLessEqual(
-                app.voicestudio_workspace_tree.winfo_rooty()
-                + app.voicestudio_workspace_tree.winfo_height(),
+                app.voicestudio_bootstrap.winfo_rooty()
+                + app.voicestudio_bootstrap.winfo_height(),
                 tab_bottom,
             )
-            self.assertEqual(len(app.voicestudio_workspace_tree.get_children()), 8)
+            self.assertTrue(app.voicestudio_bootstrap.winfo_ismapped())
+            self.assertFalse(app.voicestudio_webview_host.winfo_ismapped())
+            self.assertEqual(app.voicestudio_launch_button.cget("text"), "Khởi động")
         finally:
             root.destroy()
 

@@ -996,7 +996,8 @@ class GalaxyStudioApp(
         self._stop_removal_playback(update_ui=False)
         self._stop_editor_playback(update_ui=False)
         self._editor_export_cancel.set()
-        self.voicestudio_controller.stop()
+        self._destroy_voicestudio_webview()
+        self.voicestudio_controller.stop_all()
         self.omnivoice_client.close()
         managed_media_processes.terminate_all()
 

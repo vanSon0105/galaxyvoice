@@ -1,0 +1,1 @@
+var e=new Set([`uploading`,`transcribing`,`generating`,`stopping`]),t=new Set([`loading-model`,`recording`,`transcribing`,`translating`,`generating`,`exporting`,`refining`]);function n(n){return n?e.has(n.dubStep)||t.has(n.stage)||(n.ttsInflight??0)>0:!1}export{n as t};

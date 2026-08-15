@@ -1,0 +1,2 @@
+const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/dist-js-C2xS7IVl.js","assets/core-B2kSHnWX.js"])))=>i.map(i=>d[i]);
+import{t as e}from"./preload-helper-Czpn1I53.js";import{i as t}from"./media-CJfKJaRv.js";async function n(n,r=`Confirm`){if(t){let{confirm:t}=await e(async()=>{let{confirm:e}=await import(`./dist-js-C2xS7IVl.js`);return{confirm:e}},__vite__mapDeps([0,1]));return await t(n,{title:r})}return Promise.resolve(window.confirm(n))}export{n as t};

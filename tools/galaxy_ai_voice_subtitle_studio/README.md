@@ -253,15 +253,15 @@ Trên Windows, app cũng đọc `OPENAI_API_KEY` và `DEEPSEEK_API_KEY` từ Use
 
 `omnivoice` và `omnivoicestudio` là hai lớp khác nhau. `omnivoice` là engine TTS/voice conversion Apache-2.0 được Galaxy gọi bằng worker riêng. `omnivoicestudio` là ứng dụng VoiceStudio 0.4.x hoàn chỉnh, gồm React, Tauri và FastAPI, phát hành theo AGPL-3.0-only.
 
-Trang `Voice > VoiceStudio` quản lý VoiceStudio như một ứng dụng sidecar độc lập. Galaxy dò bản desktop đã cài, source tại thư mục `omnivoicestudio`, backend `http://127.0.0.1:3900` và các runtime `Bun`/`uv`. Bản desktop chính thức cung cấp đầy đủ các workspace `Studio`, `Dubbing`, `Stories`, `Audiobook`, `Gallery`, `Transcriptions`, `Projects` và `Settings` mà không sao chép hàng trăm API của VoiceStudio vào Tkinter.
+Trang `Voice > VoiceStudio` nhúng trực tiếp giao diện React hoàn chỉnh vào Galaxy bằng WebView2. VoiceStudio vẫn chạy như một dịch vụ FastAPI local riêng tại `http://127.0.0.1:3900`, nên Galaxy không sửa lõi hay sao chép hàng trăm API của dự án nguồn. Các workspace `Studio`, `Dubbing`, `Stories`, `Audiobook`, `Gallery`, `Transcriptions`, `Projects` và `Settings` đều dùng chính giao diện VoiceStudio.
 
-Cài bản Windows chính thức từ nút `Cài bản đầy đủ`, hoặc chạy:
+Cài snapshot local từ nút `Cài runtime local`, hoặc chạy:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\install_voicestudio.ps1
 ```
 
-Script lấy MSI x64 mới nhất từ GitHub Releases của `debpalash/VoiceStudio` rồi mở Windows Installer. Nút `Chạy source` chỉ bật khi máy đã có `Bun` và `uv`; nó chạy đúng dev stack trong thư mục source. VoiceStudio giữ data/model theo cấu trúc riêng của dự án nguồn và không dùng runtime OmniVoice nhẹ của Galaxy.
+Galaxy đóng băng source VoiceStudio 0.4.2, frontend production và wheel WebView trong `vendor/`. Script sao chép snapshot bất biến sang `%LOCALAPPDATA%\GalaxyAIStudio\models\VoiceStudio`, tạo Python runtime riêng từ `uv.lock` và không tải MSI hay phụ thuộc vào bản phát hành VoiceStudio mới nhất. Dependency Python vẫn cần Internet ở lần cài đầu; model chỉ được tải khi chọn trong VoiceStudio. Dữ liệu, model, cache và log nằm ngoài repo, tách khỏi runtime OmniVoice nhẹ của Galaxy.
 
 ## OmniVoice local và nhái giọng
 

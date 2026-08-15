@@ -5,92 +5,129 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
-from app.voicestudio.runtime import VoiceStudioRuntime
+from app.voicestudio.runtime import VoiceStudioRuntime, VoiceStudioRuntimeStatus
 from app.voicestudio.service import VoiceStudioController
 
 
+def ready_status(runtime: VoiceStudioRuntime, *, online: bool = False) -> VoiceStudioRuntimeStatus:
+    return VoiceStudioRuntimeStatus(
+        snapshot_present=True,
+        runtime_installed=True,
+        webview_installed=True,
+        backend_online=online,
+        update_required=False,
+        version="0.4.2",
+        license_id="AGPL-3.0-only",
+        python_path=runtime.python_path,
+        source_dir=runtime.source_dir,
+        missing_components=(),
+        message="ready",
+    )
+
+
 class VoiceStudioControllerTests(unittest.TestCase):
-    def test_launch_prefers_the_installed_desktop_app(self) -> None:
+    def runtime(self, root: Path) -> VoiceStudioRuntime:
+        return VoiceStudioRuntime.from_repository(
+            root,
+            environ={"VOICESTUDIO_RUNTIME_ROOT": str(root / "managed")},
+        )
+
+    def test_launch_starts_managed_uvicorn_backend(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            executable = root / "VoiceStudio.exe"
-            executable.write_bytes(b"exe")
-            runtime = VoiceStudioRuntime.from_repository(
-                root,
-                environ={"VOICESTUDIO_EXECUTABLE": str(executable)},
-            )
+            runtime = self.runtime(Path(temp_dir))
+            runtime.ensure_directories()
             controller = VoiceStudioController(runtime)
             process = Mock()
             process.poll.return_value = None
             with (
+                patch(
+                    "app.voicestudio.service.inspect_runtime",
+                    return_value=ready_status(runtime),
+                ),
                 patch("app.voicestudio.service.subprocess.Popen", return_value=process) as popen,
                 patch("app.voicestudio.service.managed_media_processes.add") as register,
             ):
                 mode = controller.launch()
 
-        self.assertEqual(mode, "installed")
-        popen.assert_called_once()
-        self.assertEqual(popen.call_args.args[0], [str(executable)])
+        self.assertEqual(mode, "local")
+        command = popen.call_args.args[0]
+        self.assertEqual(command[:3], [str(runtime.python_path), "-m", "uvicorn"])
+        self.assertIn(str(runtime.source_dir / "backend"), command)
+        self.assertEqual(
+            popen.call_args.kwargs["env"]["OMNIVOICE_PROJECT_ROOT"],
+            str(runtime.source_dir),
+        )
         register.assert_called_once_with(process)
 
-    def test_source_launch_uses_the_repository_dev_stack(self) -> None:
+    def test_launch_attaches_to_an_existing_local_backend(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            repository = Path(temp_dir)
-            source = repository / "omnivoicestudio"
-            source.mkdir()
-            runtime = VoiceStudioRuntime.from_repository(repository, environ={})
+            runtime = self.runtime(Path(temp_dir))
             controller = VoiceStudioController(runtime)
-            process = Mock()
-            process.poll.return_value = None
             with (
-                patch("app.voicestudio.service.shutil.which", side_effect=lambda name: f"C:/{name}.exe"),
-                patch("app.voicestudio.service.subprocess.Popen", return_value=process) as popen,
-                patch("app.voicestudio.service.managed_media_processes.add"),
+                patch(
+                    "app.voicestudio.service.inspect_runtime",
+                    return_value=ready_status(runtime, online=True),
+                ),
+                patch("app.voicestudio.service.frontend_available", return_value=True),
+                patch("app.voicestudio.service.subprocess.Popen") as popen,
             ):
-                mode = controller.launch_source()
-
-        self.assertEqual(mode, "source")
-        self.assertEqual(popen.call_args.args[0], ["C:/bun.exe", "run", "dev"])
-        self.assertEqual(popen.call_args.kwargs["cwd"], str(source))
-
-    def test_repeated_launch_does_not_replace_a_running_desktop_process(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            executable = root / "VoiceStudio.exe"
-            executable.write_bytes(b"exe")
-            runtime = VoiceStudioRuntime.from_repository(
-                root,
-                environ={"VOICESTUDIO_EXECUTABLE": str(executable)},
-            )
-            controller = VoiceStudioController(runtime)
-            running = Mock()
-            running.poll.return_value = None
-            controller.process = running
-            with patch("app.voicestudio.service.subprocess.Popen") as popen:
                 mode = controller.launch()
 
-        self.assertEqual(mode, "installed")
+        self.assertEqual(mode, "attached")
         popen.assert_not_called()
 
-    def test_source_readiness_requires_both_backend_and_frontend(self) -> None:
+    def test_wait_until_ready_requires_backend_and_production_frontend(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            controller = VoiceStudioController(
-                VoiceStudioRuntime.from_repository(Path(temp_dir), environ={})
-            )
+            controller = VoiceStudioController(self.runtime(Path(temp_dir)))
             with (
                 patch("app.voicestudio.service.backend_available", return_value=True),
                 patch("app.voicestudio.service.frontend_available", return_value=True),
             ):
-                self.assertTrue(controller.wait_for_source_ready(timeout=0.1, poll_interval=0.01))
+                self.assertTrue(controller.wait_until_ready(timeout=0.1, poll_interval=0.01))
 
-    def test_launch_without_install_or_ready_source_has_an_actionable_error(self) -> None:
+    def test_launch_without_local_runtime_has_an_actionable_error(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            controller = VoiceStudioController(
-                VoiceStudioRuntime.from_repository(Path(temp_dir), environ={})
+            runtime = self.runtime(Path(temp_dir))
+            unavailable = VoiceStudioRuntimeStatus(
+                snapshot_present=True,
+                runtime_installed=False,
+                webview_installed=False,
+                backend_online=False,
+                update_required=False,
+                version="0.4.2",
+                license_id="AGPL-3.0-only",
+                python_path=runtime.python_path,
+                source_dir=runtime.source_dir,
+                missing_components=("Python runtime", "WebView bridge"),
+                message="missing",
             )
-            with patch("app.voicestudio.service.shutil.which", return_value=None):
-                with self.assertRaisesRegex(RuntimeError, "cài VoiceStudio"):
+            controller = VoiceStudioController(runtime)
+            with patch("app.voicestudio.service.inspect_runtime", return_value=unavailable):
+                with self.assertRaisesRegex(RuntimeError, "Cài runtime local"):
                     controller.launch()
+
+    def test_installer_receives_snapshot_and_managed_runtime_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            runtime = self.runtime(root)
+            runtime.installer_path.parent.mkdir(parents=True, exist_ok=True)
+            runtime.installer_path.write_text("", encoding="utf-8")
+            runtime.snapshot_dir.mkdir(parents=True)
+            runtime.snapshot_metadata_path.write_text("{}", encoding="utf-8")
+            runtime.webview_wheel.parent.mkdir(parents=True)
+            runtime.webview_wheel.write_bytes(b"wheel")
+            controller = VoiceStudioController(runtime)
+            process = Mock()
+            process.poll.return_value = None
+            with (
+                patch("app.voicestudio.service.subprocess.Popen", return_value=process) as popen,
+                patch("app.voicestudio.service.managed_media_processes.add"),
+            ):
+                controller.run_installer()
+
+        command = popen.call_args.args[0]
+        self.assertIn(str(runtime.snapshot_dir), command)
+        self.assertIn(str(runtime.root), command)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,1 @@
+var e=`https://ko-fi.com/debpalash`,t=`https://paypal.me/palashCoder`;export{t as n,e as t};

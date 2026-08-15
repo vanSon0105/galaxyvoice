@@ -1,0 +1,1 @@
+import{t as e}from"./external-CSe29tSd.js";export{e as openExternal};

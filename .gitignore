@@ -60,3 +60,7 @@ tools/galaxy_ai_voice_subtitle_studio/omnivoice_workspaces.json*
 # OMNIVOICE
 /omnivoice/
 /omnivoicestudio/
+
+# Keep the immutable VoiceStudio production bundle even though dist/ is ignored globally.
+!tools/galaxy_ai_voice_subtitle_studio/vendor/voicestudio/frontend/dist/
+!tools/galaxy_ai_voice_subtitle_studio/vendor/voicestudio/frontend/dist/**

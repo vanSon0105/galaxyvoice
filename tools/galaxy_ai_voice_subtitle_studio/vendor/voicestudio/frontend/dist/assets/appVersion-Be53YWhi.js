@@ -1,0 +1,1 @@
+var e=`0.4.2`;function t(e,t){return e||t?.app_version||`0.4.2`}function n(e,t){return!!e&&!!t&&t!==`unknown`&&e!==t}export{t as n,n as r,e as t};

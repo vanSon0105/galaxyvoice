@@ -1,0 +1,2 @@
+const __vite__mapDeps=(i,m=__vite__mapDeps,d=(m.f||(m.f=["assets/dist-js-Dq8dUAlF.js","assets/core-B2kSHnWX.js"])))=>i.map(i=>d[i]);
+import{t as e}from"./preload-helper-Czpn1I53.js";var t=typeof window<`u`&&!!(window.__TAURI_INTERNALS__||window.__TAURI__),n=null;async function r(r){if(t)try{n||=(await e(()=>import(`./dist-js-Dq8dUAlF.js`),__vite__mapDeps([0,1]))).openUrl,await n(r);return}catch(e){console.warn(`[openExternal] Tauri opener failed, falling back:`,e)}window.open(r,`_blank`,`noopener,noreferrer`)}export{r as t};

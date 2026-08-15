@@ -1,0 +1,1 @@
+import{n as e}from"./media-CJfKJaRv.js";export{e as doubleClickMaximize};

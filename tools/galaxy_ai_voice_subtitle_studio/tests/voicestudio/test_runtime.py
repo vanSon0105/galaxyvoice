@@ -7,83 +7,133 @@ from pathlib import Path
 from unittest.mock import patch
 
 from app.voicestudio.runtime import (
-    DEFAULT_FRONTEND_URL,
+    DEFAULT_BACKEND_URL,
     VOICESTUDIO_LICENSE,
     VoiceStudioRuntime,
     inspect_runtime,
 )
 
 
-class VoiceStudioRuntimeTests(unittest.TestCase):
-    def test_frontend_url_matches_the_voicestudio_vite_and_tauri_port(self) -> None:
-        self.assertEqual(DEFAULT_FRONTEND_URL, "http://127.0.0.1:3901")
+def create_source(source: Path, *, version: str = "0.4.2") -> None:
+    (source / "backend").mkdir(parents=True)
+    (source / "omnivoice").mkdir(parents=True)
+    (source / "frontend" / "dist").mkdir(parents=True)
+    (source / "backend" / "main.py").write_text("app = object()", encoding="utf-8")
+    (source / "omnivoice" / "__init__.py").write_text("", encoding="utf-8")
+    (source / "frontend" / "dist" / "index.html").write_text("<html>", encoding="utf-8")
+    (source / "pyproject.toml").write_text(
+        f'[project]\nversion = "{version}"\n', encoding="utf-8"
+    )
+    (source / "LICENSE").write_text("AGPL", encoding="utf-8")
 
-    def test_runtime_reads_the_real_voicestudio_source_metadata(self) -> None:
+
+def create_snapshot(repository: Path, *, version: str = "0.4.2") -> Path:
+    snapshot = (
+        repository
+        / "tools"
+        / "galaxy_ai_voice_subtitle_studio"
+        / "vendor"
+        / "voicestudio"
+    )
+    create_source(snapshot, version=version)
+    (snapshot / "SNAPSHOT.json").write_text(
+        json.dumps({"version": version, "license": VOICESTUDIO_LICENSE}),
+        encoding="utf-8",
+    )
+    return snapshot
+
+
+class VoiceStudioRuntimeTests(unittest.TestCase):
+    def test_backend_and_frontend_share_the_local_production_url(self) -> None:
+        self.assertEqual(DEFAULT_BACKEND_URL, "http://127.0.0.1:3900")
+
+    def test_runtime_uses_vendored_snapshot_and_managed_local_root(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = Path(temp_dir)
-            frontend = repository / "omnivoicestudio" / "frontend"
-            frontend.mkdir(parents=True)
-            (frontend / "package.json").write_text(
-                json.dumps(
-                    {
-                        "name": "omnivoice-studio",
-                        "version": "0.4.2",
-                        "license": VOICESTUDIO_LICENSE,
-                    }
-                ),
-                encoding="utf-8",
-            )
-            runtime = VoiceStudioRuntime.from_repository(repository, environ={})
+            snapshot = create_snapshot(repository)
+            runtime_root = repository / "managed"
 
+            runtime = VoiceStudioRuntime.from_repository(
+                repository,
+                environ={"VOICESTUDIO_RUNTIME_ROOT": str(runtime_root)},
+            )
             status = inspect_runtime(runtime, probe_backend=False)
 
-        self.assertTrue(status.source_present)
+        self.assertEqual(runtime.snapshot_dir, snapshot)
+        self.assertEqual(runtime.source_dir, runtime_root / "sources" / "0.4.2")
+        self.assertTrue(status.snapshot_present)
+        self.assertFalse(status.installed)
         self.assertEqual(status.version, "0.4.2")
         self.assertEqual(status.license_id, VOICESTUDIO_LICENSE)
-        self.assertFalse(status.installed)
 
-    def test_environment_override_finds_an_installed_executable(self) -> None:
+    def test_runtime_is_ready_only_with_python_source_marker_and_webview(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            root = Path(temp_dir)
-            executable = root / "VoiceStudio.exe"
-            executable.write_bytes(b"exe")
+            repository = Path(temp_dir)
+            create_snapshot(repository)
             runtime = VoiceStudioRuntime.from_repository(
-                root,
-                environ={"VOICESTUDIO_EXECUTABLE": str(executable)},
+                repository,
+                environ={"VOICESTUDIO_RUNTIME_ROOT": str(repository / "managed")},
+            )
+            create_source(runtime.source_dir)
+            runtime.python_path.parent.mkdir(parents=True)
+            runtime.python_path.write_bytes(b"python")
+            runtime.metadata_path.write_text(
+                json.dumps({"snapshot_version": "0.4.2"}), encoding="utf-8"
+            )
+            package = runtime.webview_site_packages / "tkwry"
+            package.mkdir(parents=True)
+            (package / "__init__.py").write_text("", encoding="utf-8")
+            (package / "_core.pyd").write_bytes(b"pyd")
+
+            status = inspect_runtime(runtime, probe_backend=False)
+
+        self.assertTrue(status.runtime_installed)
+        self.assertTrue(status.webview_installed)
+        self.assertTrue(status.installed)
+
+    def test_snapshot_version_change_requires_runtime_update(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repository = Path(temp_dir)
+            create_snapshot(repository, version="0.5.0")
+            runtime = VoiceStudioRuntime.from_repository(
+                repository,
+                environ={"VOICESTUDIO_RUNTIME_ROOT": str(repository / "managed")},
+            )
+            create_source(runtime.source_dir, version="0.5.0")
+            runtime.python_path.parent.mkdir(parents=True)
+            runtime.python_path.write_bytes(b"python")
+            runtime.metadata_path.write_text(
+                json.dumps({"snapshot_version": "0.4.2"}), encoding="utf-8"
             )
 
             status = inspect_runtime(runtime, probe_backend=False)
 
-        self.assertTrue(status.installed)
-        self.assertEqual(status.executable, executable)
-        self.assertEqual(status.launch_mode, "installed")
-
-    def test_source_mode_requires_bun_and_uv(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            repository = Path(temp_dir)
-            source = repository / "omnivoicestudio"
-            (source / "frontend").mkdir(parents=True)
-            (source / "frontend" / "package.json").write_text(
-                json.dumps({"version": "0.4.2", "license": VOICESTUDIO_LICENSE}),
-                encoding="utf-8",
-            )
-            runtime = VoiceStudioRuntime.from_repository(repository, environ={})
-
-            with patch("app.voicestudio.runtime.shutil.which", return_value=None):
-                status = inspect_runtime(runtime, probe_backend=False)
-
-        self.assertFalse(status.source_ready)
-        self.assertIn("Bun", status.missing_tools)
-        self.assertIn("uv", status.missing_tools)
+        self.assertTrue(status.update_required)
+        self.assertFalse(status.installed)
 
     def test_backend_probe_is_reported_without_changing_install_state(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            runtime = VoiceStudioRuntime.from_repository(Path(temp_dir), environ={})
+            runtime = VoiceStudioRuntime.from_repository(
+                Path(temp_dir),
+                environ={"VOICESTUDIO_RUNTIME_ROOT": str(Path(temp_dir) / "managed")},
+            )
             with patch("app.voicestudio.runtime.backend_available", return_value=True):
                 status = inspect_runtime(runtime, probe_backend=True)
 
         self.assertTrue(status.backend_online)
         self.assertFalse(status.installed)
+
+    def test_installer_uses_the_vendored_snapshot_instead_of_a_remote_msi(self) -> None:
+        repository = Path(__file__).resolve().parents[4]
+        runtime = VoiceStudioRuntime.from_repository(repository)
+
+        script = runtime.installer_path.read_text(encoding="utf-8")
+
+        self.assertIn("SNAPSHOT.json", script)
+        self.assertIn("uv sync --frozen", script)
+        self.assertIn("tkwry-0.1.4", script)
+        self.assertNotIn("api.github.com", script)
+        self.assertNotIn("msiexec", script.lower())
 
 
 if __name__ == "__main__":

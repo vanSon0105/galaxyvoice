@@ -1,102 +1,133 @@
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 import time
 import webbrowser
 from typing import Any
+from urllib.parse import urlparse
 
 from ..common.processes import managed_media_processes, terminate_process_tree
-from .runtime import VoiceStudioRuntime, backend_available, frontend_available, inspect_runtime
+from .runtime import (
+    VoiceStudioRuntime,
+    backend_available,
+    frontend_available,
+    inspect_runtime,
+)
 
 
 class VoiceStudioController:
     def __init__(self, runtime: VoiceStudioRuntime) -> None:
         self.runtime = runtime
         self.process: subprocess.Popen[Any] | None = None
+        self.installer_process: subprocess.Popen[Any] | None = None
 
     def launch(self) -> str:
         status = inspect_runtime(self.runtime)
-        if status.executable is not None:
-            if self.is_running():
-                return "installed"
-            self._replace_process(
-                subprocess.Popen(
-                    [str(status.executable)],
-                    cwd=str(status.executable.parent),
-                    creationflags=_desktop_creation_flags(),
-                )
+        if status.backend_online and frontend_available(self.runtime.backend_url):
+            return "attached"
+        if not status.installed:
+            details = ", ".join(status.missing_components) or "runtime cần cập nhật"
+            raise RuntimeError(
+                f"VoiceStudio chưa sẵn sàng ({details}). Hãy bấm 'Cài runtime local'."
             )
-            return "installed"
-        if status.backend_online and frontend_available(self.runtime.frontend_url):
-            webbrowser.open(self.runtime.frontend_url)
-            return "browser"
-        if status.source_ready:
-            return self.launch_source()
-        raise RuntimeError(
-            "VoiceStudio chưa sẵn sàng. Hãy cài VoiceStudio bản đầy đủ hoặc cài Bun và uv để chạy source."
-        )
-
-    def launch_source(self) -> str:
         if self.is_running():
-            return "source"
-        if not self.runtime.source_dir.is_dir():
-            raise RuntimeError(f"Không tìm thấy source VoiceStudio: {self.runtime.source_dir}")
-        bun = shutil.which("bun")
-        uv = shutil.which("uv")
-        missing = [label for value, label in ((bun, "Bun"), (uv, "uv")) if value is None]
-        if missing:
-            raise RuntimeError("Thiếu runtime để chạy source VoiceStudio: " + ", ".join(missing))
-        self._replace_process(
-            subprocess.Popen(
-                [str(bun), "run", "dev"],
-                cwd=str(self.runtime.source_dir),
-                creationflags=_source_creation_flags(),
-            )
+            return "local"
+
+        self.runtime.ensure_directories()
+        parsed = urlparse(self.runtime.backend_url)
+        host = parsed.hostname or "127.0.0.1"
+        port = parsed.port or 3900
+        command = [
+            str(self.runtime.python_path),
+            "-m",
+            "uvicorn",
+            "main:app",
+            "--app-dir",
+            str(self.runtime.source_dir / "backend"),
+            "--host",
+            host,
+            "--port",
+            str(port),
+        ]
+        environment = os.environ.copy()
+        environment.update(
+            {
+                "PYTHONUTF8": "1",
+                "PYTHONIOENCODING": "utf-8",
+                "OMNIVOICE_PROJECT_ROOT": str(self.runtime.source_dir),
+                "OMNIVOICE_DATA_DIR": str(self.runtime.data_dir),
+                "OMNIVOICE_CACHE_DIR": str(self.runtime.cache_dir),
+                "HF_HOME": str(self.runtime.cache_dir),
+                "OMNIVOICE_MCP_DISABLE": "1",
+            }
         )
-        return "source"
+        with self.runtime.backend_log_path.open("a", encoding="utf-8") as log_file:
+            process = subprocess.Popen(
+                command,
+                cwd=str(self.runtime.source_dir),
+                env=environment,
+                stdout=log_file,
+                stderr=subprocess.STDOUT,
+                creationflags=_background_creation_flags(),
+            )
+        self._replace_process(process)
+        return "local"
 
-    def open_browser(self) -> None:
-        if not backend_available(self.runtime.backend_url) or not frontend_available(
-            self.runtime.frontend_url
-        ):
-            raise RuntimeError("Giao diện VoiceStudio chưa sẵn sàng.")
-        webbrowser.open(self.runtime.frontend_url)
-
-    def wait_for_source_ready(
+    def wait_until_ready(
         self,
         *,
-        timeout: float = 900.0,
-        poll_interval: float = 1.0,
+        timeout: float = 240.0,
+        poll_interval: float = 0.75,
     ) -> bool:
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if backend_available(self.runtime.backend_url) and frontend_available(
-                self.runtime.frontend_url
+                self.runtime.backend_url
             ):
                 return True
+            if self.process is None:
+                return False
             if self.process is not None and self.process.poll() is not None:
                 return False
             time.sleep(poll_interval)
         return False
 
+    def open_browser(self) -> None:
+        if not frontend_available(self.runtime.backend_url):
+            raise RuntimeError("Giao diện VoiceStudio local chưa sẵn sàng.")
+        webbrowser.open(self.runtime.backend_url)
+
     def run_installer(self) -> subprocess.Popen[Any]:
-        installer = self.runtime.installer_path
-        if not installer.is_file():
-            raise RuntimeError(f"Không tìm thấy bộ cài VoiceStudio: {installer}")
-        return subprocess.Popen(
+        if self.installer_running():
+            return self.installer_process  # type: ignore[return-value]
+        if not self.runtime.installer_path.is_file():
+            raise RuntimeError(f"Không tìm thấy bộ cài local: {self.runtime.installer_path}")
+        if not self.runtime.snapshot_metadata_path.is_file():
+            raise RuntimeError(f"Không tìm thấy snapshot VoiceStudio: {self.runtime.snapshot_dir}")
+        if not self.runtime.webview_wheel.is_file():
+            raise RuntimeError(f"Không tìm thấy WebView wheel: {self.runtime.webview_wheel}")
+
+        process = subprocess.Popen(
             [
                 "powershell.exe",
                 "-NoProfile",
                 "-ExecutionPolicy",
                 "Bypass",
                 "-File",
-                str(installer),
+                str(self.runtime.installer_path),
+                "-SnapshotRoot",
+                str(self.runtime.snapshot_dir),
+                "-RuntimeRoot",
+                str(self.runtime.root),
+                "-NonInteractive",
             ],
-            cwd=str(installer.parent),
+            cwd=str(self.runtime.installer_path.parent),
             creationflags=_installer_creation_flags(),
         )
+        self.installer_process = process
+        managed_media_processes.add(process)
+        return process
 
     def stop(self) -> None:
         process = self.process
@@ -106,8 +137,36 @@ class VoiceStudioController:
         managed_media_processes.discard(process)
         terminate_process_tree(process)
 
+    def stop_installer(self) -> None:
+        process = self.installer_process
+        self.installer_process = None
+        if process is None:
+            return
+        managed_media_processes.discard(process)
+        if process.poll() is None:
+            terminate_process_tree(process)
+
+    def finish_installer(self, process: subprocess.Popen[Any]) -> None:
+        managed_media_processes.discard(process)
+        if self.installer_process is process:
+            self.installer_process = None
+
+    def stop_all(self) -> None:
+        self.stop()
+        self.stop_installer()
+
     def is_running(self) -> bool:
         return self.process is not None and self.process.poll() is None
+
+    def installer_running(self) -> bool:
+        return self.installer_process is not None and self.installer_process.poll() is None
+
+    def backend_log_tail(self, *, max_chars: int = 4000) -> str:
+        try:
+            content = self.runtime.backend_log_path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+        return content[-max_chars:].strip()
 
     def _replace_process(self, process: subprocess.Popen[Any]) -> None:
         self.stop()
@@ -115,17 +174,9 @@ class VoiceStudioController:
         managed_media_processes.add(process)
 
 
-def _desktop_creation_flags() -> int:
-    return getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0) if os.name == "nt" else 0
-
-
-def _source_creation_flags() -> int:
-    if os.name != "nt":
-        return 0
-    return getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+def _background_creation_flags() -> int:
+    return getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
 
 
 def _installer_creation_flags() -> int:
-    if os.name != "nt":
-        return 0
-    return getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+    return getattr(subprocess, "CREATE_NEW_CONSOLE", 0) if os.name == "nt" else 0

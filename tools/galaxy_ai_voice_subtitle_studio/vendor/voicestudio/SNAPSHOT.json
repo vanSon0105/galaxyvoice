@@ -1,0 +1,8 @@
+{
+  "name": "VoiceStudio",
+  "version": "0.4.2",
+  "license": "AGPL-3.0-only",
+  "source_repository": "https://github.com/debpalash/VoiceStudio",
+  "frontend": "prebuilt-production",
+  "integration": "unmodified-local-service"
+}

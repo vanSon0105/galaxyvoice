@@ -22,6 +22,7 @@ from .audio_separation.service import (
     normalize_audio_method,
 )
 from .omnivoice.gui import OmniVoiceTabMixin
+from .voicestudio.gui import VoiceStudioTabMixin
 from .common.compute import (
     processing_device_code,
     processing_device_label,
@@ -81,6 +82,7 @@ class GalaxyStudioApp(
     SubtitleRemovalTabMixin,
     VoiceTabMixin,
     OmniVoiceTabMixin,
+    VoiceStudioTabMixin,
 ):
     def __init__(self, root: tk.Tk, config_path: Path | None = None) -> None:
         managed_media_processes.reset()
@@ -106,6 +108,7 @@ class GalaxyStudioApp(
         self._audio_stop_event = threading.Event()
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self._init_omnivoice_state(saved_config)
+        self._init_voicestudio_state()
         self.last_result: (
             GenerationResult
             | MediaExtractionResult
@@ -414,10 +417,14 @@ class GalaxyStudioApp(
         self.progress.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
 
         self._build_omnivoice_tabs(self.voice_feature_notebook)
+        self._build_voicestudio_tab(self.voice_feature_notebook)
         self._build_video_editor_tab()
         self._build_audio_separation_tab()
         self._build_removal_tab()
         self.main_notebook.bind("<<NotebookTabChanged>>", self._on_main_tab_changed)
+        self.voice_feature_notebook.bind(
+            "<<NotebookTabChanged>>", self._on_voice_feature_tab_changed
+        )
 
         self.log_frame = ttk.Frame(shell)
         self.log_frame.grid(row=2, column=0, sticky="nsew", pady=(12, 0))
@@ -444,7 +451,21 @@ class GalaxyStudioApp(
             self._stop_removal_playback()
         if selected_tab != str(self.editor_tab):
             self._stop_editor_playback()
-        if selected_tab in (str(self.audio_tab), str(self.editor_tab)):
+        self._update_log_visibility()
+
+    def _on_voice_feature_tab_changed(self, _event: tk.Event | None = None) -> None:
+        self._update_log_visibility()
+
+    def _update_log_visibility(self) -> None:
+        if not hasattr(self, "log_frame"):
+            return
+        selected_main_tab = self.main_notebook.select()
+        selected_voice_tab = self.voice_feature_notebook.select()
+        hide_log = selected_main_tab in (str(self.audio_tab), str(self.editor_tab)) or (
+            selected_main_tab == str(self.voice_tab)
+            and selected_voice_tab == str(self.voicestudio_tab)
+        )
+        if hide_log:
             self.log_frame.grid_remove()
         else:
             self.log_frame.grid()
@@ -642,6 +663,8 @@ class GalaxyStudioApp(
                 break
 
             if self._handle_editor_event(event, payload):
+                continue
+            if self._handle_voicestudio_event(event, payload):
                 continue
             if self._handle_omnivoice_event(event, payload):
                 continue
@@ -973,6 +996,7 @@ class GalaxyStudioApp(
         self._stop_removal_playback(update_ui=False)
         self._stop_editor_playback(update_ui=False)
         self._editor_export_cancel.set()
+        self.voicestudio_controller.stop()
         self.omnivoice_client.close()
         managed_media_processes.terminate_all()
 

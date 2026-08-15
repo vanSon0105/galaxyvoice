@@ -330,7 +330,7 @@ class OmniVoiceWorkspaceGuiMixin(
         page = ttk.Frame(notebook, padding=8)
         page.columnconfigure(0, weight=1)
         page.rowconfigure(0, weight=1)
-        notebook.add(page, text="Voice Gallery")
+        notebook.add(page, text="Gallery")
         self.omnivoice_gallery_tab = page
         self.omnivoice_gallery_notebook = ttk.Notebook(page)
         self.omnivoice_gallery_notebook.grid(row=0, column=0, sticky="nsew")

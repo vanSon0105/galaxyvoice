@@ -33,12 +33,13 @@ class OmniVoiceGuiTests(unittest.TestCase):
             self.assertEqual(
                 labels,
                 [
-                    "Voice Clone",
-                    "Voice Design",
-                    "Video Dubbing",
+                    "VoiceStudio",
+                    "Clone",
+                    "Design",
+                    "Dubbing",
                     "Stories",
                     "Audiobook",
-                    "Voice Gallery",
+                    "Gallery",
                     "Transcripts",
                 ],
             )

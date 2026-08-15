@@ -260,16 +260,16 @@ class OmniVoiceTabMixin(OmniVoiceWorkspaceGuiMixin, OmniVoiceAdvancedGuiMixin):
         self.omnivoice_profile_combos: list[ttk.Combobox] = []
 
         self.omnivoice_clone_tab = self._build_omnivoice_studio_page(
-            notebook, "Voice Clone", CLONE_MODE
+            notebook, "Clone", CLONE_MODE
         )
         self.omnivoice_design_tab = self._build_omnivoice_studio_page(
-            notebook, "Voice Design", DESIGN_MODE
+            notebook, "Design", DESIGN_MODE
         )
         self._build_omnivoice_workspace_tabs(notebook)
         notebook.insert(0, self.omnivoice_clone_tab)
         notebook.insert(1, self.omnivoice_design_tab)
         notebook.insert(2, self.classic_voice_tab)
-        notebook.tab(self.classic_voice_tab, text="Video Dubbing")
+        notebook.tab(self.classic_voice_tab, text="Dubbing")
         self._refresh_omnivoice_profiles()
         self._refresh_omnivoice_runtime_status()
 

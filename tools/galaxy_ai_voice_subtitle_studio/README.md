@@ -249,9 +249,23 @@ Trên Windows, app cũng đọc `OPENAI_API_KEY` và `DEEPSEEK_API_KEY` từ Use
 
 `GALAXY_TRANSLATION_BASE_URL` dùng endpoint tương thích OpenAI `/v1/chat/completions`, nên có thể đổi sang provider khác nếu muốn. Nếu chọn `No translation`, app chỉ tạo SRT gốc từ video.
 
+## VoiceStudio đầy đủ
+
+`omnivoice` và `omnivoicestudio` là hai lớp khác nhau. `omnivoice` là engine TTS/voice conversion Apache-2.0 được Galaxy gọi bằng worker riêng. `omnivoicestudio` là ứng dụng VoiceStudio 0.4.x hoàn chỉnh, gồm React, Tauri và FastAPI, phát hành theo AGPL-3.0-only.
+
+Trang `Voice > VoiceStudio` quản lý VoiceStudio như một ứng dụng sidecar độc lập. Galaxy dò bản desktop đã cài, source tại thư mục `omnivoicestudio`, backend `http://127.0.0.1:3900` và các runtime `Bun`/`uv`. Bản desktop chính thức cung cấp đầy đủ các workspace `Studio`, `Dubbing`, `Stories`, `Audiobook`, `Gallery`, `Transcriptions`, `Projects` và `Settings` mà không sao chép hàng trăm API của VoiceStudio vào Tkinter.
+
+Cài bản Windows chính thức từ nút `Cài bản đầy đủ`, hoặc chạy:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\install_voicestudio.ps1
+```
+
+Script lấy MSI x64 mới nhất từ GitHub Releases của `debpalash/VoiceStudio` rồi mở Windows Installer. Nút `Chạy source` chỉ bật khi máy đã có `Bun` và `uv`; nó chạy đúng dev stack trong thư mục source. VoiceStudio giữ data/model theo cấu trúc riêng của dự án nguồn và không dùng runtime OmniVoice nhẹ của Galaxy.
+
 ## OmniVoice local và nhái giọng
 
-Main tab `Voice` đi theo bảy workspace của OmniVoice Studio: `Voice Clone`, `Voice Design`, `Video Dubbing`, `Stories`, `Audiobook`, `Voice Gallery` và `Transcripts`. Các công cụ kỹ thuật `Auto Voice`, `Batch`, `LoRA`, runtime và profile đã lưu nằm gọn trong `Voice Gallery`, nên màn hình chính tập trung vào công việc thay vì cấu hình engine.
+Ngoài trang VoiceStudio đầy đủ, main tab `Voice` vẫn giữ các workflow nhẹ do Galaxy xây trên engine `omnivoice`: `Clone`, `Design`, `Dubbing`, `Stories`, `Audiobook`, `Gallery` và `Transcripts`. Đây không phải các trang được sao chép từ dự án VoiceStudio. Các công cụ kỹ thuật `Auto Voice`, `Batch`, `LoRA`, runtime và profile đã lưu nằm gọn trong `Gallery`, nên có thể dùng engine trực tiếp mà không cần chạy sidecar đầy đủ.
 
 `Video Dubbing` dùng sub dịch đang mở hoặc SRT nhập ngoài, giữ timing từng cue, hỗ trợ speaker/profile riêng, sửa lời, tốc độ, âm lượng, tách-ghép câu, preview, QC và lưu project trước khi đưa video, voice cùng SRT sang timeline dựng video. `Stories` hỗ trợ vai theo cú pháp `Nhân vật: lời thoại`, `[voice:Tên]`, `[pause 500ms]`, `[slow]`, `[fast]` và `[spell]`; sau khi lập kế hoạch có thể sửa, sắp xếp, preview và xuất stems từng đoạn. `Audiobook` nhập TXT, Markdown, EPUB hoặc PDF, chia chương bằng heading `#`, có từ điển phát âm, override tốc độ/pause theo chương, ảnh bìa, preview chương, checkpoint chạy tiếp và xuất WAV/MP3 hoặc M4B có chapter metadata. `Transcripts` tự lưu lịch sử mỗi lần tạo sub, cho phép tìm kiếm, sao chép, mở lại và xuất riêng hoặc hàng loạt.
 
@@ -285,6 +299,7 @@ app/
 |-- voice/                   # TTS, transcription, dịch AI, SRT và UI tab Voice
 |-- omnivoice/               # runtime worker, profile và các workspace OmniVoice
 |   `-- workspaces/          # dubbing, stories, audiobook, gallery và transcripts
+|-- voicestudio/             # launcher, runtime probe và vòng đời VoiceStudio đầy đủ
 |-- video_editor/            # project, preview, export và timeline tab Dựng video
 |-- audio_separation/        # backend UVR/audio-separator và UI tab Tách âm thanh
 |-- subtitle_removal/        # blur, ProPainter và UI tab Xóa phụ đề

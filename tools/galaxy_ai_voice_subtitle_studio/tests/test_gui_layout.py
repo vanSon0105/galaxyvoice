@@ -203,12 +203,13 @@ class GuiLayoutTests(unittest.TestCase):
             self.assertEqual(
                 voice_labels,
                 [
-                    "Voice Clone",
-                    "Voice Design",
-                    "Video Dubbing",
+                    "VoiceStudio",
+                    "Clone",
+                    "Design",
+                    "Dubbing",
                     "Stories",
                     "Audiobook",
-                    "Voice Gallery",
+                    "Gallery",
                     "Transcripts",
                 ],
             )
@@ -239,6 +240,31 @@ class GuiLayoutTests(unittest.TestCase):
             app.removal_mode.set("Fast AI (tối ưu)")
             app._on_removal_mode_changed()
             self.assertEqual(str(app.removal_device_combo.cget("state")), "readonly")
+        finally:
+            root.destroy()
+
+    def test_voicestudio_page_uses_the_full_workspace_height(self) -> None:
+        try:
+            root = tk.Tk()
+        except tk.TclError as error:
+            self.skipTest(f"Tk is unavailable: {error}")
+
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            root.geometry("1080x680")
+            app.main_notebook.select(app.voice_tab)
+            app.voice_feature_notebook.select(app.voicestudio_tab)
+            root.update_idletasks()
+            root.update()
+
+            self.assertFalse(app.log_frame.winfo_ismapped())
+            tab_bottom = app.voicestudio_tab.winfo_rooty() + app.voicestudio_tab.winfo_height()
+            self.assertLessEqual(
+                app.voicestudio_workspace_tree.winfo_rooty()
+                + app.voicestudio_workspace_tree.winfo_height(),
+                tab_bottom,
+            )
+            self.assertEqual(len(app.voicestudio_workspace_tree.get_children()), 8)
         finally:
             root.destroy()
 

@@ -1,0 +1,31 @@
+/* Design tokens — values mirror AppPalette (app/common/theme.py) and the
+   VoiceStudio theme family. Single source of truth for the web shell. */
+:root {
+  --color-bg: #111315;
+  --color-chrome: #0c0f11;
+  --color-surface: #15181b;
+  --color-surface-raised: #191c1f;
+  --color-surface-raised-2: #23272b;
+  --color-input: #15181b;
+  --color-border: #2e3033;
+  --color-border-strong: #484b4e;
+  --color-fg: #f4f1ea;
+  --color-fg-muted: #c3c0b9;
+  --color-fg-subtle: #9da2a8;
+  --color-fg-inverse: #171214;
+  --color-accent: #d08ca1;
+  --color-accent-hover: #e09bb0;
+  --color-accent-pressed: #b9758a;
+  --color-accent-surface: #2b1d23;
+  --color-accent-surface-hover: #3a252e;
+  --color-accent-glow: rgba(208, 140, 161, 0.36);
+  --color-selection: #70495a;
+  --color-success: #78b9a8;
+  --color-warning: #e0ad67;
+  --color-danger: #dc766f;
+  --color-preview: #0c0f11;
+  --border-soft: rgba(255, 255, 255, 0.12);
+  --border-strong: rgba(255, 255, 255, 0.23);
+  --font-sans: 'Segoe UI Variable Text', 'Segoe UI', Arial, sans-serif;
+  --font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, monospace;
+}

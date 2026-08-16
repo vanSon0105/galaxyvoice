@@ -27,13 +27,17 @@ from .model import (
     update_cue,
 )
 from .service import (
+    AUDIO_MODE_LABELS,
     AUTO_ENCODER,
     CPU_ENCODER,
+    ENCODER_LABELS,
+    FPS_LABELS,
     INTEL_ENCODER,
     MIX_AUDIO,
     NVIDIA_ENCODER,
     ORIGINAL_RESOLUTION,
     REPLACE_AUDIO,
+    RESOLUTION_LABELS,
     SOURCE_FPS,
     EditorExportOptions,
     EditorExportResult,
@@ -53,20 +57,7 @@ EDITOR_PREVIEW_WIDTH = 384
 EDITOR_PREVIEW_HEIGHT = 216
 EDITOR_PREVIEW_FPS = 15
 
-RESOLUTION_LABELS = {
-    ORIGINAL_RESOLUTION: "Theo video gốc",
-    "720p": "HD 720p",
-    "1080p": "Full HD 1080p",
-    "2k": "2K 1440p",
-}
-FPS_LABELS = {SOURCE_FPS: "Theo video gốc", "24": "24 fps", "30": "30 fps", "50": "50 fps", "60": "60 fps"}
-ENCODER_LABELS = {
-    AUTO_ENCODER: "Tự động",
-    CPU_ENCODER: "CPU - libx264",
-    NVIDIA_ENCODER: "NVIDIA - NVENC",
-    INTEL_ENCODER: "Intel - Quick Sync",
-}
-AUDIO_MODE_LABELS = {MIX_AUDIO: "Trộn với âm thanh gốc", REPLACE_AUDIO: "Thay âm thanh gốc"}
+# Label tables moved to service.py (shared with the web settings API).
 
 
 class VideoEditorTabMixin:

@@ -1,0 +1,277 @@
+@import './styles/tokens.css';
+@import 'tailwindcss';
+
+@theme inline {
+  --color-galaxy-bg: var(--color-bg);
+  --color-galaxy-chrome: var(--color-chrome);
+  --color-galaxy-surface: var(--color-surface);
+  --color-galaxy-accent: var(--color-accent);
+  --color-galaxy-fg: var(--color-fg);
+  --color-galaxy-fg-muted: var(--color-fg-muted);
+  --font-galaxy-sans: var(--font-sans);
+  --font-galaxy-mono: var(--font-mono);
+}
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--color-bg);
+  color: var(--color-fg);
+  font-family: var(--font-sans);
+  font-size: 13px;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  overflow: hidden;
+}
+
+/* ---------- App shell ---------- */
+.shell {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.titlebar {
+  background: var(--color-chrome);
+  border-bottom: 1px solid var(--border-soft);
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 0 14px;
+  user-select: none;
+}
+
+.brand {
+  display: flex;
+  align-items: baseline;
+  white-space: nowrap;
+  padding: 8px 0;
+}
+
+.brand-name {
+  color: var(--color-accent);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+}
+
+.brand-sub {
+  color: var(--color-fg);
+  font-weight: 500;
+}
+
+.tabs {
+  display: flex;
+  align-self: stretch;
+  gap: 2px;
+  overflow-x: auto;
+}
+
+.tab {
+  background: transparent;
+  border: none;
+  color: var(--color-fg-muted);
+  font-family: inherit;
+  font-size: 12px;
+  padding: 9px 14px 7px;
+  cursor: pointer;
+  white-space: nowrap;
+  border-bottom: 2px solid transparent;
+}
+
+.tab:hover {
+  color: var(--color-fg);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.tab.active {
+  color: var(--color-fg);
+  /* Selected-tab accent rule (same visual as VoiceStudio title tabs). */
+  box-shadow: inset 0 2px 0 var(--color-accent);
+}
+
+.titlebar-status {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--color-fg-subtle);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--color-fg-subtle);
+}
+
+.status-dot.open {
+  background: var(--color-success);
+}
+
+.status-dot.closed {
+  background: var(--color-danger);
+}
+
+.content {
+  flex: 1;
+  overflow: auto;
+  padding: 16px;
+}
+
+/* ---------- Progress panel ---------- */
+.progress-panel {
+  border-top: 1px solid var(--border-soft);
+  background: var(--color-chrome);
+  padding: 8px 14px;
+}
+
+.progress-panel:empty {
+  display: none;
+}
+
+.task-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 0;
+  font-size: 12px;
+}
+
+.task-status {
+  color: var(--color-fg-subtle);
+  min-width: 88px;
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+}
+
+.task-lines {
+  flex: 1;
+  color: var(--color-fg-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---------- Forms ---------- */
+.section-card {
+  background: var(--color-surface);
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  padding: 14px 16px;
+  margin-bottom: 14px;
+}
+
+.section-title {
+  color: var(--color-accent);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  margin: 0 0 10px;
+}
+
+.field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px 16px;
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.field label {
+  color: var(--color-fg-muted);
+  font-size: 11.5px;
+}
+
+.field input[type='text'],
+.field input[type='number'],
+.field select {
+  background: var(--color-input);
+  border: 1px solid var(--border-soft);
+  color: var(--color-fg);
+  font-family: inherit;
+  font-size: 12.5px;
+  border-radius: 4px;
+  padding: 6px 8px;
+  outline: none;
+}
+
+.field input:focus,
+.field select:focus {
+  border-color: var(--color-accent);
+}
+
+.field input::placeholder {
+  color: var(--color-fg-subtle);
+}
+
+.field-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--color-fg-muted);
+  font-size: 12px;
+  padding-top: 14px;
+}
+
+/* ---------- Buttons ---------- */
+.btn {
+  background: var(--color-surface-raised);
+  border: 1px solid var(--border-soft);
+  color: var(--color-fg);
+  font-family: inherit;
+  font-size: 12.5px;
+  border-radius: 4px;
+  padding: 6px 12px;
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  background: var(--color-surface-raised-2);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+.btn.accent {
+  background: var(--color-accent-surface);
+  border-color: rgba(208, 140, 161, 0.2);
+  color: var(--color-accent);
+}
+
+.btn.accent:hover:not(:disabled) {
+  background: var(--color-accent-surface-hover);
+}
+
+.btn.danger {
+  color: var(--color-danger);
+}
+
+/* ---------- Placeholder pages ---------- */
+.placeholder-page {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: var(--color-fg-subtle);
+  height: 100%;
+}
+
+.placeholder-title {
+  color: var(--color-fg-muted);
+  font-size: 15px;
+}

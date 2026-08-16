@@ -145,6 +145,12 @@ def load_app_config(path: Path | None = None) -> AppConfig:
         _preserve_invalid_config(config_path)
         return AppConfig()
 
+    return config_from_payload(payload)
+
+
+def config_from_payload(payload: dict[str, Any]) -> AppConfig:
+    """Build a validated AppConfig from a JSON-like payload (shared by file
+    loading and the web settings API). Unknown keys are ignored."""
     defaults = AppConfig()
     engine = _string(payload.get("tts_engine"), defaults.tts_engine).lower()
     if engine not in tts_engine_codes():

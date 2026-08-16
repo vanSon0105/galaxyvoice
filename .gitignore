@@ -64,3 +64,10 @@ tools/galaxy_ai_voice_subtitle_studio/omnivoice_workspaces.json*
 # Keep the immutable VoiceStudio production bundle even though dist/ is ignored globally.
 !tools/galaxy_ai_voice_subtitle_studio/vendor/voicestudio/frontend/dist/
 !tools/galaxy_ai_voice_subtitle_studio/vendor/voicestudio/frontend/dist/**
+
+# Web frontend
+node_modules/
+tools/galaxy_ai_voice_subtitle_studio/frontend/coverage/
+# Ship the built web UI so users do not need node installed.
+!tools/galaxy_ai_voice_subtitle_studio/frontend/dist/
+!tools/galaxy_ai_voice_subtitle_studio/frontend/dist/**

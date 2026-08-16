@@ -44,6 +44,31 @@ MIX_AUDIO = "mix"
 REPLACE_AUDIO = "replace"
 EDITOR_AUDIO_MODES = (MIX_AUDIO, REPLACE_AUDIO)
 
+# UI label tables (shared by the tkinter tab and the web settings API).
+RESOLUTION_LABELS = {
+    ORIGINAL_RESOLUTION: "Theo video gốc",
+    RESOLUTION_720P: "HD 720p",
+    RESOLUTION_1080P: "Full HD 1080p",
+    RESOLUTION_2K: "2K 1440p",
+}
+FPS_LABELS = {
+    SOURCE_FPS: "Theo video gốc",
+    "24": "24 fps",
+    "30": "30 fps",
+    "50": "50 fps",
+    "60": "60 fps",
+}
+ENCODER_LABELS = {
+    AUTO_ENCODER: "Tự động",
+    CPU_ENCODER: "CPU - libx264",
+    NVIDIA_ENCODER: "NVIDIA - NVENC",
+    INTEL_ENCODER: "Intel - Quick Sync",
+}
+AUDIO_MODE_LABELS = {
+    MIX_AUDIO: "Trộn với âm thanh gốc",
+    REPLACE_AUDIO: "Thay âm thanh gốc",
+}
+
 ENCODER_CODEC = {
     CPU_ENCODER: "libx264",
     NVIDIA_ENCODER: "h264_nvenc",

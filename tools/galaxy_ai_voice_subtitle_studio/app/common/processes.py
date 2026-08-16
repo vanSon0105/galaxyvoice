@@ -42,6 +42,16 @@ class ManagedProcessRegistry:
         if stopping:
             raise RuntimeError("Media processing was cancelled because the app is closing.")
 
+    def snapshot(self) -> list[dict[str, Any]]:
+        with self._lock:
+            return [
+                {
+                    "pid": process.pid,
+                    "alive": process.poll() is None,
+                }
+                for process in self._processes
+            ]
+
 
 def terminate_process_tree(process: subprocess.Popen[Any]) -> None:
     if process.poll() is not None:

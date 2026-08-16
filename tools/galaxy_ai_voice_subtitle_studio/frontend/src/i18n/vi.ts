@@ -1,0 +1,27 @@
+/** Vietnamese UI dictionary. Simple hand-rolled i18n; swap the dictionary
+ *  module to add another language later. */
+export const vi: Record<string, string> = {
+  'app.title': 'Galaxy AI Voice & Subtitle Studio',
+  'nav.settings': 'Cài đặt',
+  'ws.connecting': 'Đang kết nối…',
+  'ws.open': 'Đã kết nối',
+  'ws.closed': 'Mất kết nối',
+  'task.running': 'đang chạy',
+  'task.done': 'hoàn tất',
+  'task.failed': 'lỗi',
+  'task.cancelled': 'đã hủy',
+  'task.cancel': 'Dừng',
+  'placeholder.title': 'Đang xây dựng',
+  'placeholder.detail': 'Workspace này sẽ được chuyển sang giao diện web trong các pha tiếp theo.',
+  'settings.title': 'Cài đặt',
+  'settings.saved': 'Đã lưu',
+  'settings.saveError': 'Không lưu được cấu hình',
+  'settings.loadError': 'Không tải được cấu hình',
+  'settings.section.general': 'Chung',
+  'settings.section.voice': 'Giọng đọc',
+  'settings.section.translation': 'Dịch & phụ đề',
+  'settings.section.removal': 'Xóa phụ đề',
+  'settings.section.audio': 'Tách âm thanh',
+  'settings.section.editor': 'Dựng video',
+  'settings.section.omnivoice': 'OmniVoice',
+}

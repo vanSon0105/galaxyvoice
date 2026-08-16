@@ -17,7 +17,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = _build_parser()
     args = parser.parse_args(argv)
 
+    if args.serve_only:
+        from .server.shell import run_web_app
+
+        return run_web_app(port=args.web_port, serve_only=True)
+
     if args.gui or _should_open_gui(args):
+        if args.web:
+            from .server.shell import run_web_app
+
+            return run_web_app(
+                port=args.web_port,
+                dev_url=args.web_dev_url or None,
+                debug=bool(args.web_dev_url),
+            )
+
         from .gui import run_app
 
         run_app()
@@ -102,6 +116,27 @@ def main(argv: list[str] | None = None) -> int:
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Galaxy AI Voice & Subtitle Studio")
     parser.add_argument("--gui", action="store_true", help="Open the desktop UI.")
+    parser.add_argument(
+        "--web",
+        action="store_true",
+        help="Open the web (pywebview) desktop UI instead of tkinter.",
+    )
+    parser.add_argument(
+        "--serve-only",
+        action="store_true",
+        help="Run only the web server without a window (Vite dev proxy target).",
+    )
+    parser.add_argument(
+        "--web-port",
+        type=int,
+        default=3902,
+        help="Port for the web server (default 3902).",
+    )
+    parser.add_argument(
+        "--web-dev-url",
+        default="",
+        help="Frontend dev server URL for the web window (enables debug mode).",
+    )
     parser.add_argument("--list-voices", action="store_true", help="List voices for the selected TTS engine.")
     parser.add_argument(
         "--tts-engine",

@@ -47,6 +47,19 @@ class EditableLongformDocumentTests(unittest.TestCase):
         self.assertEqual(restored.items, document.items)
         self.assertEqual(restored.to_plan().spans[0].volume, 0.8)
 
+    def test_document_converts_between_story_and_audiobook_scripts(self) -> None:
+        document = EditableLongformDocument.from_story(
+            "# Mở đầu\nLan: Xin chào. [pause 600ms]\nMinh: Đi thôi."
+        )
+
+        audiobook_script = document.to_script("audiobook")
+        restored = EditableLongformDocument.from_audiobook(audiobook_script)
+
+        self.assertIn("[voice:Lan] Xin chào. [pause 600ms]", audiobook_script)
+        self.assertIn("[voice:Minh] Đi thôi.", audiobook_script)
+        self.assertEqual([item.speaker for item in restored.items], ["Lan", "Minh"])
+        self.assertEqual(restored.items[0].pause_after_ms, 600)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,9 @@ from ..editable import EditableLongformDocument, EditableLongformItem
 from ..longform import LongformPlan
 
 
+LONGFORM_WORKSPACE = "longform"
+
+
 class EditableLongformGuiMixin:
     def _init_editable_longform_state(self) -> None:
         self.omnivoice_workspace_documents: dict[str, EditableLongformDocument | None] = {
@@ -355,7 +358,7 @@ class EditableLongformGuiMixin:
             if len(item.text) > 500:
                 warnings.append(f"Đoạn {item.item_id} dài {len(item.text)} ký tự.")
             if item.speaker and not item.profile_id:
-                cast = getattr(self, f"omnivoice_{kind}_cast")
+                cast = self._workspace_cast(kind)
                 if not cast.get(item.speaker):
                     warnings.append(f"Vai '{item.speaker}' chưa được gán profile.")
         message = (
@@ -374,31 +377,73 @@ class EditableLongformGuiMixin:
         except ValueError as error:
             messagebox.showerror("Không lưu được project", str(error))
             return
-        document = self.omnivoice_workspace_documents[kind]
-        assert document is not None
         project_name = getattr(self, f"omnivoice_{'story' if kind == 'stories' else 'audiobook'}_project_name")
-        payload = {
-            "source": getattr(self, f"omnivoice_{kind}_text").get("1.0", "end").strip(),
-            "document": document.to_payload(),
-            "cast": dict(getattr(self, f"omnivoice_{kind}_cast")),
-            "language": self.omnivoice_language.get(),
-        }
-        extra = getattr(self, f"_get_{kind}_project_payload", None)
-        if callable(extra):
-            payload.update(extra())
+        payload = self._longform_project_payload(kind)
+        project_id = next(
+            (
+                value
+                for value in self.omnivoice_workspace_project_ids.values()
+                if value
+            ),
+            "",
+        )
         project = self.omnivoice_workspace_repository.save_project(
-            workspace=kind,
+            workspace=LONGFORM_WORKSPACE,
             name=project_name.get().strip() or kind,
-            project_id=self.omnivoice_workspace_project_ids[kind],
+            project_id=project_id,
             payload=payload,
         )
-        self.omnivoice_workspace_project_ids[kind] = project.project_id
+        for workspace_kind in self.omnivoice_workspace_project_ids:
+            self.omnivoice_workspace_project_ids[workspace_kind] = project.project_id
         self.omnivoice_workspace_editor_vars[kind]["status"].set(
             f"Đã lưu project: {project.name}"
         )
 
+    def _longform_project_payload(self, active_mode: str) -> dict[str, object]:
+        modes: dict[str, dict[str, object]] = {}
+        for kind in ("stories", "audiobook"):
+            document = self.omnivoice_workspace_documents.get(kind)
+            project_name = getattr(
+                self,
+                f"omnivoice_{'story' if kind == 'stories' else 'audiobook'}_project_name",
+            )
+            mode_payload: dict[str, object] = {
+                "source": getattr(self, f"omnivoice_{kind}_text")
+                .get("1.0", "end")
+                .strip(),
+                "document": document.to_payload() if document is not None else {},
+                "cast": dict(self._workspace_cast(kind)),
+                "project_name": project_name.get().strip(),
+                "export_stems": bool(
+                    self.omnivoice_story_export_stems.get()
+                    if kind == "stories"
+                    else self.omnivoice_audiobook_export_stems.get()
+                ),
+            }
+            extra = getattr(self, f"_get_{kind}_project_payload", None)
+            if callable(extra):
+                mode_payload.update(extra())
+            if kind == "audiobook":
+                mode_payload["export_m4b"] = bool(
+                    self.omnivoice_audiobook_export_m4b.get()
+                )
+            modes[kind] = mode_payload
+        return {
+            "schema_version": 1,
+            "active_mode": active_mode,
+            "language": self.omnivoice_language.get(),
+            "modes": modes,
+        }
+
     def _open_workspace_project(self, kind: str) -> None:
-        projects = self.omnivoice_workspace_repository.list_projects(kind)
+        projects_by_id = {
+            item.project_id: item
+            for workspace in (LONGFORM_WORKSPACE, "stories", "audiobook")
+            for item in self.omnivoice_workspace_repository.list_projects(workspace)
+        }
+        projects = tuple(
+            sorted(projects_by_id.values(), key=lambda item: item.updated_at, reverse=True)
+        )
         if not projects:
             messagebox.showinfo("Projects", "Chưa có project đã lưu.")
             return
@@ -409,18 +454,32 @@ class EditableLongformGuiMixin:
         chooser.grab_set()
         frame = ttk.Frame(chooser, padding=10)
         frame.pack(fill="both", expand=True)
-        tree = ttk.Treeview(frame, columns=("name", "updated"), show="headings")
+        tree = ttk.Treeview(
+            frame,
+            columns=("name", "mode", "updated"),
+            show="headings",
+        )
         tree.heading("name", text="Project")
+        tree.heading("mode", text="Chế độ")
         tree.heading("updated", text="Cập nhật")
-        tree.column("name", width=self._px(340))
-        tree.column("updated", width=self._px(170))
+        tree.column("name", width=self._px(280))
+        tree.column("mode", width=self._px(100))
+        tree.column("updated", width=self._px(150))
         tree.pack(fill="both", expand=True)
         for project in projects:
             tree.insert(
                 "",
                 "end",
                 iid=project.project_id,
-                values=(project.name, project.updated_at[:19].replace("T", " ")),
+                values=(
+                    project.name,
+                    {
+                        LONGFORM_WORKSPACE: "Hợp nhất",
+                        "stories": "Truyện",
+                        "audiobook": "Sách nói",
+                    }.get(project.workspace, project.workspace),
+                    project.updated_at[:19].replace("T", " "),
+                ),
             )
 
         def restore() -> None:
@@ -437,6 +496,11 @@ class EditableLongformGuiMixin:
         )
 
     def _restore_workspace_project(self, kind: str, project) -> None:
+        if project.workspace == LONGFORM_WORKSPACE:
+            self._restore_longform_project(project)
+            return
+        if project.workspace in {"stories", "audiobook"}:
+            kind = project.workspace
         raw_document = project.payload.get("document")
         if not isinstance(raw_document, dict):
             return
@@ -452,11 +516,74 @@ class EditableLongformGuiMixin:
         project_name.set(project.name)
         raw_cast = project.payload.get("cast")
         if isinstance(raw_cast, dict):
-            setattr(self, f"omnivoice_{kind}_cast", {str(k): str(v) for k, v in raw_cast.items()})
+            self._set_workspace_cast(
+                kind,
+                {str(k): str(v) for k, v in raw_cast.items()},
+            )
         restore_extra = getattr(self, f"_restore_{kind}_project_payload", None)
         if callable(restore_extra):
             restore_extra(project.payload)
         self._refresh_workspace_item_tree(kind)
+        self._select_omnivoice_longform_mode(kind, sync_project=False)
+
+    def _restore_longform_project(self, project) -> None:
+        raw_modes = project.payload.get("modes")
+        if not isinstance(raw_modes, dict):
+            return
+        for kind in ("stories", "audiobook"):
+            raw_mode = raw_modes.get(kind)
+            if not isinstance(raw_mode, dict):
+                continue
+            source = str(raw_mode.get("source") or "")
+            text = getattr(self, f"omnivoice_{kind}_text")
+            text.delete("1.0", "end")
+            text.insert("1.0", source)
+
+            raw_document = raw_mode.get("document")
+            document = (
+                EditableLongformDocument.from_payload(raw_document)
+                if isinstance(raw_document, dict) and raw_document.get("items") is not None
+                else None
+            )
+            self.omnivoice_workspace_documents[kind] = document
+            self.omnivoice_workspace_source_snapshot[kind] = source
+
+            raw_cast = raw_mode.get("cast")
+            self._set_workspace_cast(
+                kind,
+                {str(key): str(value) for key, value in raw_cast.items()}
+                if isinstance(raw_cast, dict)
+                else {},
+            )
+            project_name = getattr(
+                self,
+                f"omnivoice_{'story' if kind == 'stories' else 'audiobook'}_project_name",
+            )
+            project_name.set(str(raw_mode.get("project_name") or project.name))
+            if kind == "stories":
+                self.omnivoice_story_export_stems.set(
+                    bool(raw_mode.get("export_stems", False))
+                )
+            else:
+                self.omnivoice_audiobook_export_stems.set(
+                    bool(raw_mode.get("export_stems", False))
+                )
+                self.omnivoice_audiobook_export_m4b.set(
+                    bool(raw_mode.get("export_m4b", True))
+                )
+                self._restore_audiobook_project_payload(raw_mode)
+            if document is not None:
+                self._refresh_workspace_item_tree(kind)
+                if source:
+                    self._scan_workspace_cast(kind)
+
+        self.omnivoice_language.set(str(project.payload.get("language") or "vi"))
+        for kind in self.omnivoice_workspace_project_ids:
+            self.omnivoice_workspace_project_ids[kind] = project.project_id
+        active_mode = str(project.payload.get("active_mode") or "stories")
+        if active_mode not in {"stories", "audiobook"}:
+            active_mode = "stories"
+        self._select_omnivoice_longform_mode(active_mode, sync_project=False)
 
     def _mark_workspace_item_preview(
         self,

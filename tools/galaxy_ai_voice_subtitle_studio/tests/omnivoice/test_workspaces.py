@@ -11,6 +11,7 @@ from app.omnivoice.workspaces.gallery import list_voice_archetypes
 from app.omnivoice.workspaces.longform import (
     PAUSE_SPAN,
     SPEECH_SPAN,
+    detect_longform_workspace_kind,
     parse_audiobook_script,
     parse_story_script,
     plan_dubbing_cues,
@@ -51,6 +52,18 @@ class _WorkspaceClient:
 
 
 class LongformWorkspaceTests(unittest.TestCase):
+    def test_detects_story_dialogue_and_chaptered_audiobook(self) -> None:
+        self.assertEqual(
+            detect_longform_workspace_kind("# Mở đầu\nLan: Xin chào.\nMinh: Đi thôi."),
+            "stories",
+        )
+        self.assertEqual(
+            detect_longform_workspace_kind(
+                "# Chương 1\n[voice:Narrator] Bắt đầu.\n# Chương 2\nTiếp tục."
+            ),
+            "audiobook",
+        )
+
     def test_m4b_export_maps_cover_as_attached_picture(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

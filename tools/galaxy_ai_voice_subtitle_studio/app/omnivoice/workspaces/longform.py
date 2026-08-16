@@ -52,6 +52,15 @@ def parse_audiobook_script(source: str) -> LongformPlan:
     return _parse_script(source, character_prefixes=False, default_chapter="Nội dung")
 
 
+def detect_longform_workspace_kind(source: str) -> str:
+    lines = [line.strip() for line in source.splitlines() if line.strip()]
+    if any(_CHARACTER_RE.fullmatch(line) for line in lines):
+        return "stories"
+    chapter_count = sum(1 for line in lines if _HEADING_RE.fullmatch(line))
+    has_voice_markup = any("[voice:" in line.casefold() for line in lines)
+    return "audiobook" if chapter_count >= 2 or has_voice_markup else "stories"
+
+
 def plan_dubbing_cues(cues: list[SubtitleCue]) -> LongformPlan:
     if not cues:
         raise ValueError("Không có cue phụ đề để tạo bản lồng tiếng.")

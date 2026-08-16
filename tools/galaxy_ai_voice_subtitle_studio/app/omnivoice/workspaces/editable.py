@@ -93,6 +93,32 @@ class EditableLongformDocument:
             "items": [asdict(item) for item in self.items],
         }
 
+    def to_script(self, kind: str) -> str:
+        if kind not in {"stories", "audiobook"}:
+            raise ValueError(f"Unsupported long-form workspace: {kind}")
+        lines: list[str] = []
+        current_chapter = ""
+        for item in self.items:
+            chapter = item.chapter.strip() or "Content"
+            if chapter != current_chapter:
+                if lines:
+                    lines.append("")
+                lines.append(f"# {chapter}")
+                current_chapter = chapter
+
+            text = item.text.strip()
+            if not text:
+                continue
+            speaker = item.speaker.strip()
+            if kind == "stories" and speaker:
+                text = f"{speaker}: {text}"
+            elif kind == "audiobook" and speaker:
+                text = f"[voice:{speaker}] {text}"
+            if item.pause_after_ms > 0:
+                text = f"{text} [pause {item.pause_after_ms}ms]"
+            lines.append(text)
+        return "\n".join(lines).strip()
+
     def to_plan(self) -> LongformPlan:
         spans: list[LongformSpan] = []
         chapters: list[str] = list(self.chapters)

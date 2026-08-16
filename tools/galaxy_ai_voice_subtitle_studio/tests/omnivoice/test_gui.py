@@ -37,8 +37,7 @@ class OmniVoiceGuiTests(unittest.TestCase):
                     "Clone",
                     "Design",
                     "Dubbing",
-                    "Stories",
-                    "Audiobook",
+                    "Truyện & Sách nói",
                     "Gallery",
                     "Transcripts",
                 ],
@@ -47,8 +46,7 @@ class OmniVoiceGuiTests(unittest.TestCase):
                 app.omnivoice_clone_tab,
                 app.omnivoice_design_tab,
                 app.classic_voice_tab,
-                app.omnivoice_stories_tab,
-                app.omnivoice_audiobook_tab,
+                app.omnivoice_longform_tab,
                 app.omnivoice_gallery_tab,
                 app.omnivoice_transcripts_tab,
             ):
@@ -75,6 +73,123 @@ class OmniVoiceGuiTests(unittest.TestCase):
                     "Runtime",
                     "Lịch sử tạo",
                 ],
+            )
+        finally:
+            root.destroy()
+
+    def test_longform_workspace_switches_mode_and_carries_the_project(self) -> None:
+        root = self._root()
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.voice_feature_notebook.select(app.omnivoice_longform_tab)
+            root.update_idletasks()
+
+            self.assertEqual(app.omnivoice_longform_workspace_mode.get(), "stories")
+            self.assertEqual(app.omnivoice_stories_tab.winfo_manager(), "grid")
+            self.assertEqual(app.omnivoice_audiobook_tab.winfo_manager(), "")
+
+            script = "# Mở đầu\nLan: Xin chào."
+            app.omnivoice_stories_text.insert("1.0", script)
+            app.omnivoice_story_cast["Lan"] = "profile-lan"
+
+            app._select_omnivoice_longform_mode("audiobook")
+
+            self.assertEqual(app.omnivoice_longform_workspace_mode.get(), "audiobook")
+            self.assertEqual(app.omnivoice_stories_tab.winfo_manager(), "")
+            self.assertEqual(app.omnivoice_audiobook_tab.winfo_manager(), "grid")
+            converted = app.omnivoice_audiobook_text.get("1.0", "end").strip()
+            self.assertIn("# Mở đầu", converted)
+            self.assertIn("[voice:Lan] Xin chào.", converted)
+            self.assertEqual(app.omnivoice_audiobook_cast, {"Lan": "profile-lan"})
+            self.assertEqual(
+                app.omnivoice_workspace_documents["audiobook"].items[0].text,
+                "Xin chào.",
+            )
+
+            app.omnivoice_audiobook_text.delete("1.0", "end")
+            app.omnivoice_audiobook_text.insert(
+                "1.0",
+                "# Kết thúc\n[voice:Minh] Tạm biệt.",
+            )
+            app._select_omnivoice_longform_mode("stories")
+
+            converted_back = app.omnivoice_stories_text.get("1.0", "end").strip()
+            self.assertIn("# Kết thúc", converted_back)
+            self.assertIn("Minh: Tạm biệt.", converted_back)
+        finally:
+            root.destroy()
+
+    def test_longform_workspace_can_auto_detect_audiobook_mode(self) -> None:
+        root = self._root()
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.omnivoice_stories_text.insert(
+                "1.0",
+                "# Chương 1\nMở đầu.\n# Chương 2\nTiếp tục.",
+            )
+
+            app._auto_select_omnivoice_longform_mode()
+
+            self.assertEqual(app.omnivoice_longform_workspace_mode.get(), "audiobook")
+            self.assertEqual(app.omnivoice_audiobook_tab.winfo_manager(), "grid")
+
+            app.omnivoice_audiobook_text.delete("1.0", "end")
+            app.omnivoice_audiobook_text.insert(
+                "1.0",
+                "# Mở đầu\nLan: Xin chào.\nMinh: Đi thôi.",
+            )
+            app._auto_select_omnivoice_longform_mode()
+
+            self.assertEqual(app.omnivoice_longform_workspace_mode.get(), "stories")
+            story_script = app.omnivoice_stories_text.get("1.0", "end").strip()
+            self.assertIn("Lan: Xin chào.", story_script)
+            self.assertIn("Minh: Đi thôi.", story_script)
+            self.assertEqual(
+                [
+                    item.speaker
+                    for item in app.omnivoice_workspace_documents["stories"].items
+                ],
+                ["Lan", "Minh"],
+            )
+        finally:
+            root.destroy()
+
+    def test_longform_project_saves_both_modes_under_one_project_id(self) -> None:
+        root = self._root()
+        try:
+            app = GalaxyStudioApp(root, config_path=self.config_path)
+            app.omnivoice_story_project_name.set("Du an dai tap")
+            app.omnivoice_stories_text.insert("1.0", "# Mở đầu\nLan: Xin chào.")
+            app._save_workspace_project("stories")
+
+            app._select_omnivoice_longform_mode("audiobook")
+            app.omnivoice_audiobook_title.set("Sách thử nghiệm")
+            app._save_workspace_project("audiobook")
+
+            projects = app.omnivoice_workspace_repository.list_projects("longform")
+            self.assertEqual(len(projects), 1)
+            project = projects[0]
+            self.assertEqual(project.payload["active_mode"], "audiobook")
+            self.assertEqual(set(project.payload["modes"]), {"stories", "audiobook"})
+            self.assertEqual(
+                project.payload["modes"]["audiobook"]["title"],
+                "Sách thử nghiệm",
+            )
+            self.assertEqual(
+                app.omnivoice_workspace_project_ids,
+                {"stories": project.project_id, "audiobook": project.project_id},
+            )
+
+            app.omnivoice_audiobook_text.delete("1.0", "end")
+            app.omnivoice_audiobook_title.set("")
+            app._select_omnivoice_longform_mode("stories", sync_project=False)
+            app._restore_workspace_project("stories", project)
+
+            self.assertEqual(app.omnivoice_longform_workspace_mode.get(), "audiobook")
+            self.assertEqual(app.omnivoice_audiobook_title.get(), "Sách thử nghiệm")
+            self.assertIn(
+                "[voice:Lan] Xin chào.",
+                app.omnivoice_audiobook_text.get("1.0", "end").strip(),
             )
         finally:
             root.destroy()

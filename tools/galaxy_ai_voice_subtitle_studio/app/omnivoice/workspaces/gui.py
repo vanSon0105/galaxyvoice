@@ -21,6 +21,7 @@ from .gallery import VoiceArchetype, list_voice_archetypes, voice_archetype_cate
 from .imports import load_audiobook_source
 from .longform import (
     LongformPlan,
+    detect_longform_workspace_kind,
     parse_audiobook_script,
     parse_story_script,
     plan_dubbing_cues,
@@ -62,6 +63,8 @@ class OmniVoiceWorkspaceGuiMixin(
         self.omnivoice_audiobook_export_stems = tk.BooleanVar(value=False)
         self.omnivoice_story_cast_choice = tk.StringVar(value="")
         self.omnivoice_audiobook_cast_choice = tk.StringVar(value="")
+        self.omnivoice_longform_workspace_mode = tk.StringVar(value="stories")
+        self._omnivoice_active_longform_kind = "stories"
         self.omnivoice_story_cast: dict[str, str] = {}
         self.omnivoice_audiobook_cast: dict[str, str] = {}
         self.omnivoice_gallery_search = tk.StringVar(value="")
@@ -99,23 +102,187 @@ class OmniVoiceWorkspaceGuiMixin(
 
     def _build_omnivoice_workspace_tabs(self, notebook: ttk.Notebook) -> None:
         self._build_omnivoice_dubbing_segment_tab(self.subtitle_notebook)
-        self._build_omnivoice_longform_workspace(notebook, "stories")
-        self._build_omnivoice_longform_workspace(notebook, "audiobook")
+        self._build_omnivoice_longform_studio(notebook)
         self._build_omnivoice_gallery_workspace(notebook)
         self._build_omnivoice_transcripts_workspace(notebook)
 
+    def _build_omnivoice_longform_studio(self, notebook: ttk.Notebook) -> None:
+        page = ttk.Frame(notebook, padding=(8, 6, 8, 8))
+        page.columnconfigure(0, weight=1)
+        page.rowconfigure(1, weight=1)
+        notebook.add(page, text="Truyện & Sách nói")
+        self.omnivoice_longform_tab = page
+
+        mode_bar = ttk.Frame(page, style="Surface.TFrame")
+        mode_bar.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        for column, (label, kind) in enumerate(
+            (("Truyện nhiều vai", "stories"), ("Sách nói", "audiobook"))
+        ):
+            button = ttk.Radiobutton(
+                mode_bar,
+                text=label,
+                value=kind,
+                variable=self.omnivoice_longform_workspace_mode,
+                style="Segment.TRadiobutton",
+                command=lambda selected=kind: self._select_omnivoice_longform_mode(selected),
+            )
+            button.grid(row=0, column=column, sticky="ew", padx=(0 if column == 0 else 4, 0))
+            self.omnivoice_mutable_widgets.append(button)
+        mode_bar.columnconfigure((0, 1), weight=1)
+        auto_button = ttk.Button(
+            mode_bar,
+            text="Tự nhận diện",
+            style="Tool.TButton",
+            command=self._auto_select_omnivoice_longform_mode,
+        )
+        auto_button.grid(row=0, column=2, padx=(8, 0))
+        self.omnivoice_longform_auto_button = auto_button
+        self.omnivoice_mutable_widgets.append(auto_button)
+
+        workspace_host = ttk.Frame(page, style="Surface.TFrame")
+        workspace_host.grid(row=1, column=0, sticky="nsew")
+        workspace_host.columnconfigure(0, weight=1)
+        workspace_host.rowconfigure(0, weight=1)
+        self.omnivoice_longform_workspace_frames: dict[str, ttk.Frame] = {}
+        for kind in ("stories", "audiobook"):
+            self.omnivoice_longform_workspace_frames[kind] = (
+                self._build_omnivoice_longform_workspace(workspace_host, kind)
+            )
+        self._select_omnivoice_longform_mode("stories", sync_project=False)
+
+    def _select_omnivoice_longform_mode(
+        self,
+        kind: str,
+        *,
+        sync_project: bool = True,
+    ) -> None:
+        if kind not in {"stories", "audiobook"}:
+            raise ValueError(f"Unsupported long-form workspace: {kind}")
+        previous = self._omnivoice_active_longform_kind
+        if sync_project and previous != kind:
+            self._sync_omnivoice_longform_project(previous, kind)
+        self.omnivoice_longform_workspace_mode.set(kind)
+        self._omnivoice_active_longform_kind = kind
+        for frame in self.omnivoice_longform_workspace_frames.values():
+            frame.grid_remove()
+        self.omnivoice_longform_workspace_frames[kind].grid()
+
+    def _auto_select_omnivoice_longform_mode(self) -> None:
+        source_kind = self._omnivoice_active_longform_kind
+        source_widget = getattr(
+            self,
+            f"omnivoice_{source_kind}_text",
+        )
+        source = source_widget.get("1.0", "end").strip()
+        if not source:
+            messagebox.showinfo("Tự nhận diện", "Hãy nhập nội dung trước.")
+            return
+        detected_kind = detect_longform_workspace_kind(source)
+        if detected_kind != source_kind:
+            self._sync_omnivoice_longform_project(
+                source_kind,
+                detected_kind,
+                source_format=detected_kind,
+            )
+        self._select_omnivoice_longform_mode(detected_kind, sync_project=False)
+
+    def _sync_omnivoice_longform_project(
+        self,
+        source_kind: str,
+        target_kind: str,
+        *,
+        source_format: str | None = None,
+    ) -> None:
+        source_widget = getattr(self, f"omnivoice_{source_kind}_text")
+        target_widget = getattr(self, f"omnivoice_{target_kind}_text")
+        source_document = self.omnivoice_workspace_documents.get(source_kind)
+        source_text = source_widget.get("1.0", "end").strip()
+        if source_document is None and not source_text:
+            return
+        parse_kind = source_format or source_kind
+        should_parse = (
+            source_document is None
+            or parse_kind != source_kind
+            or self.omnivoice_workspace_source_snapshot.get(source_kind) != source_text
+        )
+        if should_parse:
+            try:
+                source_document = (
+                    EditableLongformDocument.from_story(source_text)
+                    if parse_kind == "stories"
+                    else EditableLongformDocument.from_audiobook(source_text)
+                )
+            except ValueError:
+                source_document = None
+            else:
+                if parse_kind == source_kind:
+                    self.omnivoice_workspace_documents[source_kind] = source_document
+                    self.omnivoice_workspace_source_snapshot[source_kind] = source_text
+
+        target_document = (
+            EditableLongformDocument.from_payload(source_document.to_payload())
+            if source_document is not None
+            else None
+        )
+        converted_text = (
+            target_document.to_script(target_kind)
+            if target_document is not None
+            else source_text
+        )
+        target_widget.delete("1.0", "end")
+        target_widget.insert("1.0", converted_text)
+        self.omnivoice_workspace_documents[target_kind] = target_document
+        self.omnivoice_workspace_source_snapshot[target_kind] = converted_text
+        self._set_workspace_cast(target_kind, dict(self._workspace_cast(source_kind)))
+
+        source_project = (
+            self.omnivoice_story_project_name
+            if source_kind == "stories"
+            else self.omnivoice_audiobook_project_name
+        ).get().strip()
+        target_project = (
+            self.omnivoice_story_project_name
+            if target_kind == "stories"
+            else self.omnivoice_audiobook_project_name
+        )
+        if source_project:
+            target_project.set(source_project)
+        if target_kind == "audiobook" and not self.omnivoice_audiobook_title.get().strip():
+            self.omnivoice_audiobook_title.set(source_project)
+
+        if target_document is not None:
+            self._refresh_workspace_item_tree(target_kind)
+            if target_kind == "audiobook":
+                self._refresh_audiobook_chapters()
+        if converted_text and target_document is not None:
+            self._scan_workspace_cast(target_kind)
+
+    def _workspace_cast(self, kind: str) -> dict[str, str]:
+        if kind == "stories":
+            return self.omnivoice_story_cast
+        if kind == "audiobook":
+            return self.omnivoice_audiobook_cast
+        raise ValueError(f"Unsupported long-form workspace: {kind}")
+
+    def _set_workspace_cast(self, kind: str, cast: dict[str, str]) -> None:
+        if kind == "stories":
+            self.omnivoice_story_cast = cast
+        elif kind == "audiobook":
+            self.omnivoice_audiobook_cast = cast
+        else:
+            raise ValueError(f"Unsupported long-form workspace: {kind}")
+
     def _build_omnivoice_longform_workspace(
         self,
-        notebook: ttk.Notebook,
+        parent: ttk.Frame,
         kind: str,
-    ) -> None:
+    ) -> ttk.Frame:
         is_story = kind == "stories"
-        title = "Stories" if is_story else "Audiobook"
-        page = ttk.Frame(notebook, padding=12)
+        page = ttk.Frame(parent, padding=8)
         page.columnconfigure(0, weight=3)
         page.columnconfigure(1, weight=2, minsize=330)
         page.rowconfigure(0, weight=1)
-        notebook.add(page, text=title)
+        page.grid(row=0, column=0, sticky="nsew")
         setattr(self, f"omnivoice_{kind}_tab", page)
 
         editor = ttk.Frame(page, style="Panel.TFrame", padding=8)
@@ -170,8 +337,12 @@ class OmniVoiceWorkspaceGuiMixin(
         else:
             self._build_audiobook_workspace_editor(content_notebook)
 
-        controls = ttk.Frame(page, style="Panel.TFrame", padding=12)
-        controls.grid(row=0, column=1, sticky="nsew")
+        controls_host = ttk.Frame(page, style="Panel.TFrame")
+        controls_host.grid(row=0, column=1, sticky="nsew")
+        controls_host.columnconfigure(0, weight=1)
+        controls_host.rowconfigure(0, weight=1)
+        controls = self._build_omnivoice_scrollable_controls(controls_host)
+        controls.configure(padding=12)
         controls.columnconfigure(0, weight=1)
         controls.columnconfigure(1, weight=1)
         controls.rowconfigure(5 if is_story else 7, weight=1)
@@ -298,6 +469,7 @@ class OmniVoiceWorkspaceGuiMixin(
         self.omnivoice_play_buttons.append(play)
         self.omnivoice_open_buttons.append(open_button)
         self.omnivoice_progress_bars.append(progress)
+        return page
 
     def _workspace_entry(
         self,
@@ -675,7 +847,7 @@ class OmniVoiceWorkspaceGuiMixin(
             messagebox.showerror("Nội dung chưa hợp lệ", str(error))
             return
         tree: ttk.Treeview = getattr(self, f"omnivoice_{kind}_cast_tree")
-        cast: dict[str, str] = getattr(self, f"omnivoice_{kind}_cast")
+        cast = self._workspace_cast(kind)
         tree.delete(*tree.get_children())
         for index, character in enumerate(plan.voice_names):
             profile_id = cast.get(character, "")
@@ -701,7 +873,7 @@ class OmniVoiceWorkspaceGuiMixin(
             else self.omnivoice_audiobook_cast_choice.get()
         )
         profile = self._omnivoice_profile_by_label.get(choice)
-        cast: dict[str, str] = getattr(self, f"omnivoice_{kind}_cast")
+        cast = self._workspace_cast(kind)
         if profile is None:
             cast.pop(character, None)
         else:
@@ -728,7 +900,7 @@ class OmniVoiceWorkspaceGuiMixin(
         except (OSError, ValueError) as error:
             messagebox.showerror("Thiết lập chưa hợp lệ", str(error))
             return
-        cast = dict(getattr(self, f"omnivoice_{kind}_cast"))
+        cast = dict(self._workspace_cast(kind))
         self._start_omnivoice_thread(
             f"omnivoice_{kind}",
             self._run_omnivoice_workspace,
@@ -752,7 +924,7 @@ class OmniVoiceWorkspaceGuiMixin(
         except (OSError, ValueError) as error:
             messagebox.showerror("Không thể nghe thử", str(error))
             return
-        cast = dict(getattr(self, f"omnivoice_{kind}_cast"))
+        cast = dict(self._workspace_cast(kind))
         self._start_omnivoice_thread(
             f"omnivoice_{kind}_preview",
             self._run_omnivoice_workspace,

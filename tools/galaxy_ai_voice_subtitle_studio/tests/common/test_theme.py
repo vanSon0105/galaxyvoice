@@ -5,6 +5,7 @@ import tkinter as tk
 import tkinter.font as tkfont
 import unittest
 from pathlib import Path
+from unittest.mock import Mock
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -12,6 +13,7 @@ sys.path.insert(0, str(ROOT))
 from app.common.theme import (  # noqa: E402
     BODY_FONT_SIZE,
     PALETTE,
+    _configure_tk_widgets,
     apply_app_theme,
     display_scale,
     scaled_pixels,
@@ -38,6 +40,16 @@ def _contrast(first: str, second: str) -> float:
 
 
 class ThemeTests(unittest.TestCase):
+    def test_tk_palette_falls_back_when_recreated_interpreter_loses_command(self) -> None:
+        root = Mock()
+        root.tk_setPalette.side_effect = tk.TclError(
+            'invalid command name "tk_setPalette"'
+        )
+
+        _configure_tk_widgets(root)
+
+        self.assertGreater(root.option_add.call_count, 0)
+
     def test_text_colors_have_accessible_contrast(self) -> None:
         self.assertGreaterEqual(_contrast(PALETTE.text, PALETTE.background), 7.0)
         self.assertGreaterEqual(_contrast(PALETTE.text_muted, PALETTE.surface), 4.5)

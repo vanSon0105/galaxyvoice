@@ -137,17 +137,21 @@ def _configure_named_fonts(root: tk.Misc) -> tuple[str, str]:
 
 def _configure_tk_widgets(root: tk.Misc) -> None:
     palette = PALETTE
-    root.tk_setPalette(
-        background=palette.background,
-        foreground=palette.text,
-        activeBackground=palette.surface_raised,
-        activeForeground=palette.text,
-        highlightColor=palette.accent,
-        highlightBackground=palette.border,
-        selectBackground=palette.selection,
-        selectForeground=palette.text,
-        disabledForeground=palette.text_subtle,
-    )
+    try:
+        root.tk_setPalette(
+            background=palette.background,
+            foreground=palette.text,
+            activeBackground=palette.surface_raised,
+            activeForeground=palette.text,
+            highlightColor=palette.accent,
+            highlightBackground=palette.border,
+            selectBackground=palette.selection,
+            selectForeground=palette.text,
+            disabledForeground=palette.text_subtle,
+        )
+    except tk.TclError as error:
+        if "invalid command name" not in str(error) or "tk_setPalette" not in str(error):
+            raise
 
     options = {
         "*Font": "TkDefaultFont",
@@ -470,6 +474,43 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
         ],
         foreground=[("disabled", palette.text_subtle)],
         bordercolor=[("focus", palette.text), ("disabled", palette.border)],
+    )
+
+    style.layout(
+        "Segment.TRadiobutton",
+        [
+            (
+                "Radiobutton.padding",
+                {
+                    "sticky": "nsew",
+                    "children": [("Radiobutton.label", {"sticky": "nsew"})],
+                },
+            )
+        ],
+    )
+    style.configure(
+        "Segment.TRadiobutton",
+        background=palette.surface_raised,
+        foreground=palette.text_muted,
+        bordercolor=palette.border,
+        borderwidth=1,
+        relief="solid",
+        padding=(14, 8),
+        anchor="center",
+    )
+    style.map(
+        "Segment.TRadiobutton",
+        background=[
+            ("selected active", palette.accent_hover),
+            ("selected", palette.accent),
+            ("active", palette.input),
+        ],
+        foreground=[
+            ("selected", palette.accent_text),
+            ("active", palette.text),
+            ("disabled", palette.text_subtle),
+        ],
+        bordercolor=[("selected", palette.accent), ("focus", palette.text)],
     )
 
     for widget_style in ("TEntry", "TSpinbox", "TCombobox"):

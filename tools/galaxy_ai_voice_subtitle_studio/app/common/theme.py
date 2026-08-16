@@ -217,84 +217,25 @@ def _enable_windows_dark_title_bar(root: tk.Tk) -> None:
         pass
 
 
-def _tab_surface_image(
-    root: tk.Misc,
-    *,
-    background: str,
-    accent: str | None = None,
-) -> tk.PhotoImage:
-    """Create a tiny stretchable tab surface with an optional top accent rule."""
-    image = tk.PhotoImage(master=root, width=3, height=3)
-    image.put(accent or background, to=(0, 0, 3, 1))
-    image.put(background, to=(0, 1, 3, 3))
-    return image
-
-
 def _configure_notebook_tab(
     style: ttk.Style,
     root: tk.Misc,
     *,
     style_name: str,
-    element_name: str,
     shelf: str,
     selected_surface: str,
     hover_surface: str,
     font: tuple[object, ...],
     padding: tuple[int, int],
     selected_foreground: str,
-) -> list[tk.PhotoImage]:
+) -> None:
+    """Style a flat notebook tab using plain colors.
+
+    Image-based tab elements are deliberately avoided: ttk repaints
+    stretchable photo elements on every redraw, which made a single tab
+    switch cost multiple seconds on Windows (measured 3-11 s per switch).
+    """
     palette = PALETTE
-    normal = _tab_surface_image(root, background=shelf)
-    hover = _tab_surface_image(root, background=hover_surface)
-    selected = _tab_surface_image(
-        root,
-        background=selected_surface,
-        accent=palette.accent,
-    )
-    style.element_create(
-        element_name,
-        "image",
-        normal,
-        ("selected", selected),
-        ("active", hover),
-        border=1,
-        sticky="nsew",
-    )
-    style.layout(
-        f"{style_name}.Tab",
-        [
-            (
-                element_name,
-                {
-                    "sticky": "nsew",
-                    "children": [
-                        (
-                            "Notebook.padding",
-                            {
-                                "side": "top",
-                                "sticky": "nsew",
-                                "children": [
-                                    (
-                                        "Notebook.focus",
-                                        {
-                                            "side": "top",
-                                            "sticky": "nsew",
-                                            "children": [
-                                                (
-                                                    "Notebook.label",
-                                                    {"side": "top", "sticky": ""},
-                                                )
-                                            ],
-                                        },
-                                    )
-                                ],
-                            },
-                        )
-                    ],
-                },
-            )
-        ],
-    )
     style.configure(
         f"{style_name}.Tab",
         background=shelf,
@@ -307,6 +248,10 @@ def _configure_notebook_tab(
     )
     style.map(
         f"{style_name}.Tab",
+        background=[
+            ("selected", selected_surface),
+            ("active", hover_surface),
+        ],
         foreground=[
             ("selected", selected_foreground),
             ("active", palette.text),
@@ -314,7 +259,6 @@ def _configure_notebook_tab(
         ],
         focuscolor=[("!focus", selected_surface)],
     )
-    return [normal, hover, selected]
 
 
 def apply_app_theme(root: tk.Tk) -> ttk.Style:
@@ -495,64 +439,50 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
         tabmargins=(0, 0, 0, 0),
     )
 
-    tab_images: list[tk.PhotoImage] = []
-    tab_images.extend(
-        _configure_notebook_tab(
-            style,
-            root,
-            style_name="TNotebook",
-            element_name="GalaxyTab",
-            shelf=palette.surface,
-            selected_surface=palette.background,
-            hover_surface=palette.surface_raised,
-            font=tab_font,
-            padding=(11, 6),
-            selected_foreground=palette.text,
-        )
+    _configure_notebook_tab(
+        style,
+        root,
+        style_name="TNotebook",
+        shelf=palette.surface,
+        selected_surface=palette.background,
+        hover_surface=palette.surface_raised,
+        font=tab_font,
+        padding=(11, 6),
+        selected_foreground=palette.text,
     )
-    tab_images.extend(
-        _configure_notebook_tab(
-            style,
-            root,
-            style_name="Nav.TNotebook",
-            element_name="GalaxyNavTab",
-            shelf=palette.chrome,
-            selected_surface=palette.background,
-            hover_surface=palette.surface,
-            font=tab_font,
-            padding=(14, 7),
-            selected_foreground=palette.text,
-        )
+    _configure_notebook_tab(
+        style,
+        root,
+        style_name="Nav.TNotebook",
+        shelf=palette.chrome,
+        selected_surface=palette.background,
+        hover_surface=palette.surface,
+        font=tab_font,
+        padding=(14, 7),
+        selected_foreground=palette.text,
     )
-    tab_images.extend(
-        _configure_notebook_tab(
-            style,
-            root,
-            style_name="Subnav.TNotebook",
-            element_name="GalaxySubnavTab",
-            shelf=palette.chrome,
-            selected_surface=palette.background,
-            hover_surface=palette.surface,
-            font=tab_font,
-            padding=(12, 6),
-            selected_foreground=palette.text,
-        )
+    _configure_notebook_tab(
+        style,
+        root,
+        style_name="Subnav.TNotebook",
+        shelf=palette.chrome,
+        selected_surface=palette.background,
+        hover_surface=palette.surface,
+        font=tab_font,
+        padding=(12, 6),
+        selected_foreground=palette.text,
     )
-    tab_images.extend(
-        _configure_notebook_tab(
-            style,
-            root,
-            style_name="Compact.TNotebook",
-            element_name="GalaxyCompactTab",
-            shelf=palette.surface,
-            selected_surface=palette.input,
-            hover_surface=palette.surface_raised,
-            font=small_font,
-            padding=(10, 5),
-            selected_foreground=palette.text,
-        )
+    _configure_notebook_tab(
+        style,
+        root,
+        style_name="Compact.TNotebook",
+        shelf=palette.surface,
+        selected_surface=palette.input,
+        hover_surface=palette.surface_raised,
+        font=small_font,
+        padding=(10, 5),
+        selected_foreground=palette.text,
     )
-    root._galaxy_tab_images = tab_images  # type: ignore[attr-defined]
 
     style.configure(
         "TButton",

@@ -68,9 +68,15 @@ class ThemeTests(unittest.TestCase):
             self.assertEqual(root.cget("background"), PALETTE.background)
             self.assertEqual(style.lookup("TEntry", "fieldbackground"), PALETTE.input)
             self.assertEqual(style.lookup("Treeview", "background"), PALETTE.input)
+            # Tabs use the stock element with plain colors: image-based tab
+            # elements made every redraw cost seconds on Windows.
             self.assertEqual(
                 style.layout("Nav.TNotebook.Tab")[0][0],
-                "GalaxyNavTab",
+                "Notebook.tab",
+            )
+            self.assertEqual(
+                style.lookup("Nav.TNotebook.Tab", "background"),
+                PALETTE.chrome,
             )
             self.assertEqual(
                 style.lookup("Accent.TButton", "background"),

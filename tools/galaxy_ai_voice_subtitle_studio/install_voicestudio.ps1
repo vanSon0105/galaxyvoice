@@ -2,6 +2,8 @@ param(
     [string]$SnapshotRoot = "",
     [string]$RuntimeRoot = "",
     [string]$Python = "",
+    [string]$PythonVersionCandidates = "3.11,3.12,3.13",
+    [switch]$ProbePythonOnly,
     [switch]$NonInteractive
 )
 
@@ -19,6 +21,37 @@ if (-not $RuntimeRoot) {
 }
 $SnapshotRoot = [System.IO.Path]::GetFullPath($SnapshotRoot)
 $RuntimeRoot = [System.IO.Path]::GetFullPath($RuntimeRoot)
+$logsRoot = Join-Path $RuntimeRoot "logs"
+$installLogPath = Join-Path $logsRoot "install.log"
+New-Item -ItemType Directory -Path $logsRoot -Force | Out-Null
+
+$transcriptStarted = $false
+try {
+    Start-Transcript -Path $installLogPath -Append | Out-Null
+    $transcriptStarted = $true
+}
+catch {
+    # Installation can continue even when PowerShell transcription is unavailable.
+}
+
+trap {
+    $details = ($_ | Out-String).Trim()
+    $timestamp = [DateTimeOffset]::Now.ToString("o")
+    try {
+        [System.IO.File]::AppendAllText(
+            $installLogPath,
+            "`r`n[$timestamp] INSTALL FAILED`r`n$details`r`n",
+            [System.Text.UTF8Encoding]::new($false)
+        )
+    }
+    catch {
+    }
+    [Console]::Error.WriteLine($details)
+    if ($transcriptStarted) {
+        try { Stop-Transcript | Out-Null } catch {}
+    }
+    exit 1
+}
 
 $snapshotMetadataPath = Join-Path $SnapshotRoot "SNAPSHOT.json"
 if (-not (Test-Path -LiteralPath $snapshotMetadataPath -PathType Leaf)) {
@@ -62,9 +95,21 @@ function Resolve-PythonRuntime {
 
     $launcher = Get-Command py.exe -ErrorAction SilentlyContinue
     if ($launcher) {
-        foreach ($versionId in @("3.11", "3.12", "3.13")) {
-            $candidate = & $launcher.Source ("-" + $versionId) -c "import sys; print(sys.executable)" 2>$null
-            if ($LASTEXITCODE -eq 0 -and $candidate) {
+        foreach ($versionId in ($PythonVersionCandidates -split ",")) {
+            $versionId = $versionId.Trim()
+            if (-not $versionId) {
+                continue
+            }
+            $previousErrorPreference = $ErrorActionPreference
+            try {
+                $ErrorActionPreference = "Continue"
+                $candidate = & $launcher.Source ("-" + $versionId) -c "import sys; print(sys.executable)" 2>$null
+                $probeExitCode = $LASTEXITCODE
+            }
+            finally {
+                $ErrorActionPreference = $previousErrorPreference
+            }
+            if ($probeExitCode -eq 0 -and $candidate) {
                 return ([string]$candidate).Trim()
             }
         }
@@ -72,8 +117,16 @@ function Resolve-PythonRuntime {
 
     $pythonCommand = Get-Command python.exe -ErrorAction SilentlyContinue
     if ($pythonCommand) {
-        & $pythonCommand.Source -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" 2>$null
-        if ($LASTEXITCODE -eq 0) {
+        $previousErrorPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = "Continue"
+            & $pythonCommand.Source -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" 2>$null
+            $probeExitCode = $LASTEXITCODE
+        }
+        finally {
+            $ErrorActionPreference = $previousErrorPreference
+        }
+        if ($probeExitCode -eq 0) {
             return $pythonCommand.Source
         }
     }
@@ -83,6 +136,13 @@ function Resolve-PythonRuntime {
 Write-Host "Installing the Galaxy-managed VoiceStudio $version runtime..." -ForegroundColor Green
 $hostPython = Resolve-PythonRuntime
 Write-Host "Host Python: $hostPython"
+if ($ProbePythonOnly) {
+    Write-Output "PYTHON_RUNTIME=$hostPython"
+    if ($transcriptStarted) {
+        Stop-Transcript | Out-Null
+    }
+    exit 0
+}
 
 New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
 New-Item -ItemType Directory -Path $runtimeSource -Force | Out-Null
@@ -162,6 +222,10 @@ $metadata = @{
 Write-Host ""
 Write-Host "VoiceStudio local runtime is ready at $RuntimeRoot" -ForegroundColor Green
 Write-Host "Models are downloaded only when selected inside VoiceStudio."
+if ($transcriptStarted) {
+    Stop-Transcript | Out-Null
+    $transcriptStarted = $false
+}
 if (-not $NonInteractive) {
     Read-Host "Press Enter to close"
 }

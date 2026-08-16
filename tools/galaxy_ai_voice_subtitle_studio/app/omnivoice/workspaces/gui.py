@@ -153,7 +153,7 @@ class OmniVoiceWorkspaceGuiMixin(
         text_widget = tk.Text(
             text_frame,
             wrap="word",
-            font=("Segoe UI", 10),
+            font="TkTextFont",
             relief="flat",
             padx=10,
             pady=10,
@@ -197,8 +197,8 @@ class OmniVoiceWorkspaceGuiMixin(
         )
         tree.heading("character", text="Nhân vật")
         tree.heading("profile", text="Giọng")
-        tree.column("character", width=115, stretch=True)
-        tree.column("profile", width=150, stretch=True)
+        tree.column("character", width=self._px(115), stretch=True)
+        tree.column("profile", width=self._px(150), stretch=True)
         tree.grid(row=row, column=0, columnspan=2, sticky="nsew", pady=(0, 6))
         setattr(self, f"omnivoice_{kind}_cast_tree", tree)
         row += 1
@@ -402,7 +402,9 @@ class OmniVoiceWorkspaceGuiMixin(
             ("language", "Ngôn ngữ", 85),
         ):
             self.omnivoice_gallery_tree.heading(column, text=label)
-            self.omnivoice_gallery_tree.column(column, width=width, stretch=True)
+            self.omnivoice_gallery_tree.column(
+                column, width=self._px(width), stretch=True
+            )
         self.omnivoice_gallery_tree.grid(row=0, column=0, sticky="nsew")
         self.omnivoice_gallery_tree.bind(
             "<<TreeviewSelect>>", lambda _event: self._show_omnivoice_archetype()
@@ -416,7 +418,7 @@ class OmniVoiceWorkspaceGuiMixin(
             row=0, column=0, sticky="w"
         )
         self.omnivoice_gallery_details = tk.Text(
-            details, wrap="word", height=12, font=("Segoe UI", 9), state="disabled"
+            details, wrap="word", height=12, font="TkTextFont", state="disabled"
         )
         self.omnivoice_gallery_details.grid(row=1, column=0, sticky="nsew", pady=7)
         use = ttk.Button(
@@ -491,7 +493,9 @@ class OmniVoiceWorkspaceGuiMixin(
             ("created", "Ngày tạo", 150),
         ):
             self.omnivoice_transcript_tree.heading(column, text=label)
-            self.omnivoice_transcript_tree.column(column, width=width, stretch=True)
+            self.omnivoice_transcript_tree.column(
+                column, width=self._px(width), stretch=True
+            )
         self.omnivoice_transcript_tree.grid(row=0, column=0, sticky="nsew")
         self.omnivoice_transcript_tree.bind(
             "<<TreeviewSelect>>", lambda _event: self._show_omnivoice_transcript()
@@ -502,7 +506,7 @@ class OmniVoiceWorkspaceGuiMixin(
         details.columnconfigure(0, weight=1)
         details.rowconfigure(0, weight=1)
         self.omnivoice_transcript_details = tk.Text(
-            details, wrap="word", font=("Segoe UI", 9), state="disabled"
+            details, wrap="word", font="TkTextFont", state="disabled"
         )
         self.omnivoice_transcript_details.grid(row=0, column=0, sticky="nsew")
         actions = ttk.Frame(details, style="Surface.TFrame")
@@ -581,7 +585,9 @@ class OmniVoiceWorkspaceGuiMixin(
             ("created", "Ngày tạo", 145),
         ):
             tree.heading(column, text=label)
-            tree.column(column, width=width, stretch=column == "title")
+            tree.column(
+                column, width=self._px(width), stretch=column == "title"
+            )
         tree.grid(row=0, column=0, sticky="nsew")
         tree.bind("<<TreeviewSelect>>", lambda _event: self._show_omnivoice_history())
         self.omnivoice_history_tree = tree
@@ -591,7 +597,7 @@ class OmniVoiceWorkspaceGuiMixin(
         details.columnconfigure(0, weight=1)
         details.rowconfigure(0, weight=1)
         self.omnivoice_history_details = tk.Text(
-            details, wrap="word", state="disabled", font=("Segoe UI", 9)
+            details, wrap="word", state="disabled", font="TkTextFont"
         )
         self.omnivoice_history_details.grid(row=0, column=0, sticky="nsew")
         actions = ttk.Frame(details, style="Surface.TFrame")

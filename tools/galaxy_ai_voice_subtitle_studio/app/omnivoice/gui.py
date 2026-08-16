@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Callable
 
 from ..common.paths import studio_root
+from ..common.theme import PALETTE, text_widget_options
 from .advanced_gui import OmniVoiceAdvancedGuiMixin
 from .batch import OmniVoiceBatchResult
 from .client import OmniVoiceWorkerClient
@@ -332,11 +333,11 @@ class OmniVoiceTabMixin(OmniVoiceWorkspaceGuiMixin, OmniVoiceAdvancedGuiMixin):
         text_widget = tk.Text(
             text_frame,
             wrap="word",
-            font=("Segoe UI", 11),
-            relief="flat",
+            font="TkTextFont",
             padx=12,
             pady=10,
             undo=True,
+            **text_widget_options(),
         )
         text_widget.grid(row=0, column=0, sticky="nsew")
         text_scroll = ttk.Scrollbar(text_frame, orient="vertical", command=text_widget.yview)
@@ -433,7 +434,13 @@ class OmniVoiceTabMixin(OmniVoiceWorkspaceGuiMixin, OmniVoiceAdvancedGuiMixin):
             row=row, column=0, columnspan=2, sticky="w"
         )
         row += 1
-        self.omnivoice_reference_text = tk.Text(parent, height=4, wrap="word", font=("Segoe UI", 9))
+        self.omnivoice_reference_text = tk.Text(
+            parent,
+            height=4,
+            wrap="word",
+            font="TkTextFont",
+            **text_widget_options(),
+        )
         self.omnivoice_reference_text.grid(row=row, column=0, columnspan=2, sticky="ew", pady=(3, 8))
         self.omnivoice_mutable_widgets.append(self.omnivoice_reference_text)
         row += 1
@@ -489,7 +496,13 @@ class OmniVoiceTabMixin(OmniVoiceWorkspaceGuiMixin, OmniVoiceAdvancedGuiMixin):
             row=row, column=0, columnspan=2, sticky="w", pady=(5, 0)
         )
         row += 1
-        self.omnivoice_custom_instruct = tk.Text(parent, height=3, wrap="word", font=("Segoe UI", 9))
+        self.omnivoice_custom_instruct = tk.Text(
+            parent,
+            height=3,
+            wrap="word",
+            font="TkTextFont",
+            **text_widget_options(),
+        )
         self.omnivoice_custom_instruct.grid(
             row=row, column=0, columnspan=2, sticky="ew", pady=(3, 10)
         )
@@ -642,9 +655,11 @@ class OmniVoiceTabMixin(OmniVoiceWorkspaceGuiMixin, OmniVoiceAdvancedGuiMixin):
         self.omnivoice_profile_tree.heading("name", text="Tên giọng")
         self.omnivoice_profile_tree.heading("language", text="Ngôn ngữ")
         self.omnivoice_profile_tree.heading("created", text="Ngày tạo")
-        self.omnivoice_profile_tree.column("name", width=210, stretch=True)
-        self.omnivoice_profile_tree.column("language", width=90, stretch=False)
-        self.omnivoice_profile_tree.column("created", width=150, stretch=False)
+        self.omnivoice_profile_tree.column("name", width=self._px(210), stretch=True)
+        self.omnivoice_profile_tree.column(
+            "language", width=self._px(90), stretch=False
+        )
+        self.omnivoice_profile_tree.column("created", width=self._px(150), stretch=False)
         self.omnivoice_profile_tree.grid(row=0, column=0, sticky="nsew")
         tree_scroll = ttk.Scrollbar(
             tree_frame, orient="vertical", command=self.omnivoice_profile_tree.yview
@@ -664,8 +679,9 @@ class OmniVoiceTabMixin(OmniVoiceWorkspaceGuiMixin, OmniVoiceAdvancedGuiMixin):
             details,
             height=12,
             wrap="word",
-            font=("Segoe UI", 9),
+            font="TkTextFont",
             state="disabled",
+            **text_widget_options(),
         )
         self.omnivoice_profile_details.grid(row=1, column=0, sticky="nsew")
         actions = ttk.Frame(details, style="Surface.TFrame")
@@ -743,16 +759,16 @@ class OmniVoiceTabMixin(OmniVoiceWorkspaceGuiMixin, OmniVoiceAdvancedGuiMixin):
         self.omnivoice_log_text = tk.Text(
             log_frame,
             wrap="word",
-            font=("Consolas", 9),
-            bg="#202522",
-            fg="#e9f1ec",
-            relief="flat",
+            font="TkFixedFont",
             state="disabled",
+            **text_widget_options(log=True),
         )
         self.omnivoice_log_text.grid(row=1, column=0, sticky="nsew")
 
     def _build_omnivoice_scrollable_controls(self, parent: ttk.Frame) -> ttk.Frame:
-        canvas = tk.Canvas(parent, bg="#ffffff", highlightthickness=0, width=310)
+        canvas = tk.Canvas(
+            parent, bg=PALETTE.surface, highlightthickness=0, width=self._px(310)
+        )
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         content = ttk.Frame(canvas, style="Surface.TFrame")
         content.columnconfigure(0, weight=1)

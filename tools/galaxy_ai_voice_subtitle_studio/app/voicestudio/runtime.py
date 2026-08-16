@@ -85,6 +85,10 @@ class VoiceStudioRuntime:
         return self.logs_dir / "backend.log"
 
     @property
+    def installer_log_path(self) -> Path:
+        return self.logs_dir / "install.log"
+
+    @property
     def snapshot_metadata_path(self) -> Path:
         return self.snapshot_dir / "SNAPSHOT.json"
 

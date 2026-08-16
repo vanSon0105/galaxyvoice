@@ -8,6 +8,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from ..common.compute import PROCESSING_DEVICE_LABELS, processing_device_code
 from ..common.paths import same_path
+from ..common.theme import PALETTE, text_widget_options
 from .engine import GenerationOptions, generate_package
 from .languages import code_from_label, label_from_code, language_labels
 from .media import MediaExtractionOptions, extract_audio_from_video
@@ -50,11 +51,7 @@ class VoiceTabMixin:
             font=font,
             padx=14,
             pady=12,
-            bg="#fffdfa",
-            fg="#1f1f1f",
-            insertbackground="#1f1f1f",
-            relief="solid",
-            bd=1,
+            **text_widget_options(),
         )
         scrollbar = ttk.Scrollbar(tab, orient="vertical", command=editor.yview)
         editor.configure(yscrollcommand=scrollbar.set)
@@ -64,7 +61,7 @@ class VoiceTabMixin:
         return tab, editor
 
     def _build_scrollable_controls(self, parent: ttk.Frame) -> ttk.Frame:
-        canvas = tk.Canvas(parent, bg="#ffffff", highlightthickness=0, bd=0)
+        canvas = tk.Canvas(parent, bg=PALETTE.surface, highlightthickness=0, bd=0)
         scrollbar = ttk.Scrollbar(parent, orient="vertical", command=canvas.yview)
         controls = ttk.Frame(canvas, style="Surface.TFrame")
 

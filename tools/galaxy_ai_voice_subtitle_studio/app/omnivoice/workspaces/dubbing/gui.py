@@ -92,7 +92,7 @@ class DubbingWorkspaceGuiMixin:
         )
         for name, label, width, stretch in columns:
             tree.heading(name, text=label)
-            tree.column(name, width=width, stretch=stretch)
+            tree.column(name, width=self._px(width), stretch=stretch)
         tree.grid(row=0, column=0, sticky="nsew")
         scroll = ttk.Scrollbar(table, orient="vertical", command=tree.yview)
         scroll.grid(row=0, column=1, sticky="ns")
@@ -140,7 +140,7 @@ class DubbingWorkspaceGuiMixin:
         ttk.Label(inspector, text="Lời dịch", style="Panel.TLabel").grid(
             row=4, column=0, columnspan=2, sticky="w", pady=(7, 3)
         )
-        text = tk.Text(inspector, height=7, wrap="word", undo=True, font=("Segoe UI", 9))
+        text = tk.Text(inspector, height=7, wrap="word", undo=True, font="TkTextFont")
         text.grid(row=5, column=0, columnspan=2, sticky="nsew")
         self.omnivoice_dubbing_text = text
 
@@ -477,8 +477,8 @@ class DubbingWorkspaceGuiMixin:
         tree = ttk.Treeview(frame, columns=("name", "updated"), show="headings")
         tree.heading("name", text="Project")
         tree.heading("updated", text="Cập nhật")
-        tree.column("name", width=330)
-        tree.column("updated", width=170)
+        tree.column("name", width=self._px(330))
+        tree.column("updated", width=self._px(170))
         tree.pack(fill="both", expand=True)
         for project in projects:
             tree.insert(

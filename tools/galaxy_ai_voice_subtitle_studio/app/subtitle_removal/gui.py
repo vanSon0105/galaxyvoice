@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox, ttk
 from ..common.compute import PROCESSING_DEVICE_LABELS, processing_device_code
 from ..common.ffmpeg import find_ffmpeg, find_ffplay
 from ..common.paths import studio_root
+from ..common.theme import PALETTE
 from . import propainter
 from .constants import (
     PREVIEW_FPS,
@@ -55,9 +56,9 @@ class SubtitleRemovalTabMixin:
             preview_holder,
             width=PREVIEW_WIDTH,
             height=PREVIEW_HEIGHT,
-            bg="#161a18",
+            bg=PALETTE.preview,
             highlightthickness=1,
-            highlightbackground="#a8a59e",
+            highlightbackground=PALETTE.border,
             cursor="crosshair",
         )
         self.removal_preview_canvas.grid(row=0, column=0, sticky="n")
@@ -65,8 +66,8 @@ class SubtitleRemovalTabMixin:
             PREVIEW_WIDTH // 2,
             PREVIEW_HEIGHT // 2,
             text="Chọn video để xem trước",
-            fill="#d7ddd9",
-            font=("Segoe UI", 11),
+            fill=PALETTE.text_muted,
+            font="TkTextFont",
             tags=("preview-placeholder",),
         )
         self.removal_preview_canvas.bind("<ButtonPress-1>", self._start_removal_region_drag)
@@ -79,7 +80,7 @@ class SubtitleRemovalTabMixin:
             0,
             outline="#f1b847",
             width=3,
-            fill="#f1b847",
+            fill=PALETTE.warning,
             stipple="gray50",
         )
         self._draw_removal_region()
@@ -116,7 +117,7 @@ class SubtitleRemovalTabMixin:
 
         controls_panel = ttk.Frame(self.removal_tab, style="Panel.TFrame", padding=14)
         controls_panel.grid(row=0, column=1, sticky="nsew")
-        controls_panel.configure(width=360)
+        controls_panel.configure(width=self._px(360))
         controls_panel.grid_propagate(False)
         controls_panel.columnconfigure(0, weight=1)
         controls_panel.rowconfigure(0, weight=1)

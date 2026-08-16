@@ -70,7 +70,7 @@ class EditableLongformGuiMixin:
             ("pause", "Nghỉ", 65),
         ):
             tree.heading(column, text=label)
-            tree.column(column, width=width, stretch=column == "text")
+            tree.column(column, width=self._px(width), stretch=column == "text")
         tree.grid(row=0, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(table, orient="vertical", command=tree.yview)
         scrollbar.grid(row=0, column=1, sticky="ns")
@@ -120,7 +120,7 @@ class EditableLongformGuiMixin:
             row=row, column=0, columnspan=2, sticky="w", pady=(5, 3)
         )
         row += 1
-        text = tk.Text(inspector, height=8, wrap="word", undo=True, font=("Segoe UI", 9))
+        text = tk.Text(inspector, height=8, wrap="word", undo=True, font="TkTextFont")
         text.grid(row=row, column=0, columnspan=2, sticky="nsew")
         setattr(self, f"omnivoice_{kind}_item_text", text)
         self.omnivoice_mutable_widgets.append(text)
@@ -173,7 +173,7 @@ class EditableLongformGuiMixin:
             inspector,
             textvariable=variables["status"],
             style="Panel.TLabel",
-            wraplength=300,
+            wraplength=self._px(300),
         ).grid(row=row, column=0, columnspan=2, sticky="w", pady=(7, 0))
         return page
 
@@ -412,8 +412,8 @@ class EditableLongformGuiMixin:
         tree = ttk.Treeview(frame, columns=("name", "updated"), show="headings")
         tree.heading("name", text="Project")
         tree.heading("updated", text="Cập nhật")
-        tree.column("name", width=340)
-        tree.column("updated", width=170)
+        tree.column("name", width=self._px(340))
+        tree.column("updated", width=self._px(170))
         tree.pack(fill="both", expand=True)
         for project in projects:
             tree.insert(

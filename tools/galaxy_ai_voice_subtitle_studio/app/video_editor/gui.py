@@ -12,6 +12,7 @@ from tkinter import filedialog, messagebox, ttk
 
 from ..common.ffmpeg import find_ffmpeg, find_ffplay
 from ..common.processes import managed_media_processes
+from ..common.theme import PALETTE, text_widget_options
 from ..voice.srt import SubtitleCue, render_srt
 from .media_bin import EditorMediaBin
 from .model import (
@@ -102,9 +103,13 @@ class VideoEditorTabMixin:
 
         workspace_pane = ttk.Panedwindow(workspace, orient="horizontal")
         workspace_pane.grid(row=0, column=0, sticky="nsew")
-        media_panel = ttk.Frame(workspace_pane, style="Panel.TFrame", padding=10, width=220)
+        media_panel = ttk.Frame(
+            workspace_pane, style="Panel.TFrame", padding=10, width=self._px(220)
+        )
         preview_panel = ttk.Frame(workspace_pane, style="Panel.TFrame", padding=10)
-        inspector = ttk.Frame(workspace_pane, style="Panel.TFrame", padding=10, width=350)
+        inspector = ttk.Frame(
+            workspace_pane, style="Panel.TFrame", padding=10, width=self._px(350)
+        )
         media_panel.columnconfigure(0, weight=1)
         media_panel.rowconfigure(0, weight=1)
         media_panel.grid_propagate(False)
@@ -133,17 +138,17 @@ class VideoEditorTabMixin:
             preview_holder,
             width=EDITOR_PREVIEW_WIDTH,
             height=EDITOR_PREVIEW_HEIGHT,
-            bg="#111412",
+            bg=PALETTE.preview,
             highlightthickness=1,
-            highlightbackground="#6b736f",
+            highlightbackground=PALETTE.border,
         )
         self.editor_preview_canvas.grid(row=0, column=0)
         self.editor_preview_canvas.create_text(
             EDITOR_PREVIEW_WIDTH // 2,
             EDITOR_PREVIEW_HEIGHT // 2,
             text="Thêm video để bắt đầu dựng",
-            fill="#c8cfcb",
-            font=("Segoe UI", 11),
+            fill=PALETTE.text_muted,
+            font="TkTextFont",
             tags=("editor-placeholder",),
         )
 
@@ -190,7 +195,7 @@ class VideoEditorTabMixin:
             variable=self.editor_timeline_zoom,
             orient="horizontal",
             command=self._on_editor_zoom,
-            length=180,
+            length=self._px(180),
         )
         self.editor_zoom_scale.grid(row=0, column=2)
         ttk.Label(timeline_toolbar, text="Kéo clip audio để đổi vị trí; kéo hai mép sub để sửa thời gian").grid(
@@ -232,10 +237,12 @@ class VideoEditorTabMixin:
         self.editor_cue_tree.heading("start", text="Bắt đầu")
         self.editor_cue_tree.heading("end", text="Kết thúc")
         self.editor_cue_tree.heading("text", text="Nội dung")
-        self.editor_cue_tree.column("number", width=36, stretch=False, anchor="center")
-        self.editor_cue_tree.column("start", width=84, stretch=False)
-        self.editor_cue_tree.column("end", width=84, stretch=False)
-        self.editor_cue_tree.column("text", width=180)
+        self.editor_cue_tree.column(
+            "number", width=self._px(36), stretch=False, anchor="center"
+        )
+        self.editor_cue_tree.column("start", width=self._px(84), stretch=False)
+        self.editor_cue_tree.column("end", width=self._px(84), stretch=False)
+        self.editor_cue_tree.column("text", width=self._px(180))
         self.editor_cue_tree.grid(row=0, column=0, sticky="nsew")
         cue_scroll = ttk.Scrollbar(tab, orient="vertical", command=self.editor_cue_tree.yview)
         cue_scroll.grid(row=0, column=1, sticky="ns")
@@ -252,7 +259,15 @@ class VideoEditorTabMixin:
         ttk.Entry(timing, textvariable=self.editor_cue_end, width=13).grid(row=0, column=3, sticky="ew")
 
         ttk.Label(tab, text="Nội dung").grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 3))
-        self.editor_cue_text = tk.Text(tab, height=3, wrap="word", font=("Segoe UI", 10), padx=6, pady=5)
+        self.editor_cue_text = tk.Text(
+            tab,
+            height=3,
+            wrap="word",
+            font="TkTextFont",
+            padx=8,
+            pady=7,
+            **text_widget_options(),
+        )
         self.editor_cue_text.grid(row=3, column=0, columnspan=2, sticky="ew")
 
         actions = ttk.Frame(tab)

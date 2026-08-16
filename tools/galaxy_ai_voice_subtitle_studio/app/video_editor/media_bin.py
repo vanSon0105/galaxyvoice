@@ -5,6 +5,7 @@ import tkinter as tk
 from collections.abc import Callable
 from tkinter import ttk
 
+from ..common.theme import scaled_pixels
 from .model import AUDIO_ASSET, SUBTITLE_ASSET, VIDEO_ASSET, EditorAsset
 
 
@@ -50,8 +51,15 @@ class EditorMediaBin(ttk.Frame):
         )
         self.tree.heading("#0", text="Tệp")
         self.tree.heading("detail", text="Thông tin")
-        self.tree.column("#0", width=130, minwidth=90)
-        self.tree.column("detail", width=92, minwidth=65, anchor="e")
+        self.tree.column(
+            "#0", width=scaled_pixels(self, 130), minwidth=scaled_pixels(self, 90)
+        )
+        self.tree.column(
+            "detail",
+            width=scaled_pixels(self, 92),
+            minwidth=scaled_pixels(self, 65),
+            anchor="e",
+        )
         self.tree.grid(row=1, column=0, sticky="nsew")
         scrollbar = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
         scrollbar.grid(row=1, column=1, sticky="ns")

@@ -10,6 +10,7 @@ from tkinter import filedialog, messagebox, simpledialog, ttk
 
 from ..common.paths import studio_root
 from ..common.processes import managed_media_processes
+from ..common.theme import PALETTE, text_widget_options
 from .service import (
     AUDIO_OUTPUT_FORMATS,
     AUDIO_PROCESS_METHOD_LABELS,
@@ -237,12 +238,10 @@ class AudioSeparationTabMixin:
             console_frame,
             height=5,
             wrap="word",
-            font=("Consolas", 9),
-            bg="#202522",
-            fg="#e9f1ec",
-            relief="flat",
+            font="TkFixedFont",
             padx=10,
             pady=8,
+            **text_widget_options(log=True),
         )
         self.audio_log_text.grid(row=1, column=0, sticky="nsew")
         self.audio_log_text.configure(state="disabled")
@@ -525,21 +524,21 @@ class AudioSeparationTabMixin:
         ttk.Label(body, text="Ultimate Vocal Remover", style="PageSection.TLabel").grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Label(body, text=str(uvr_root), wraplength=620).grid(
+        ttk.Label(body, text=str(uvr_root), wraplength=self._px(620)).grid(
             row=1, column=0, sticky="w", pady=(4, 12)
         )
         ttk.Label(body, text=f"Models detected: {model_count}").grid(row=2, column=0, sticky="w")
         ttk.Label(body, text="Audio separator runtime", style="PageSection.TLabel").grid(
             row=3, column=0, sticky="w", pady=(14, 0)
         )
-        ttk.Label(body, text=str(runtime.python_path), wraplength=620).grid(
+        ttk.Label(body, text=str(runtime.python_path), wraplength=self._px(620)).grid(
             row=4, column=0, sticky="w", pady=(4, 4)
         )
         ttk.Label(
             body,
             text=runtime_status,
-            foreground="#145c54" if ready else "#a33b24",
-            wraplength=620,
+            foreground=PALETTE.success if ready else PALETTE.danger,
+            wraplength=self._px(620),
         ).grid(row=5, column=0, sticky="w")
 
         ttk.Label(body, text="Saved Settings", style="PageSection.TLabel").grid(

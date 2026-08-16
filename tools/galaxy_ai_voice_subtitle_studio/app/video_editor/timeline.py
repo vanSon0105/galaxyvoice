@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import math
 import tkinter as tk
+import tkinter.font as tkfont
 from collections.abc import Callable
 from tkinter import ttk
 
+from ..common.theme import PALETTE
 from ..voice.srt import SubtitleCue
 
 
@@ -43,13 +45,15 @@ class EditorTimeline(ttk.Frame):
         self.audio_offset_ms = 0
         self.selected_cue: int | None = None
         self.track_heights = [48, 48, 60]
+        label_font = tkfont.nametofont("TkHeadingFont", root=self)
+        self.track_label_width = max(TRACK_LABEL_WIDTH, label_font.measure("Subtitle") + 24)
         self._drag: dict[str, int | str] | None = None
 
         self.columnconfigure(0, weight=1)
         self.rowconfigure(0, weight=1)
         self.canvas = tk.Canvas(
             self,
-            bg="#202421",
+            bg=PALETTE.surface,
             height=RULER_HEIGHT + sum(self.track_heights),
             highlightthickness=0,
             xscrollincrement=1,
@@ -128,19 +132,19 @@ class EditorTimeline(ttk.Frame):
         self._draw_playhead()
 
     def _draw_background(self, width: int, height: int) -> None:
-        self.canvas.create_rectangle(0, 0, width, height, fill="#202421", outline="")
+        self.canvas.create_rectangle(0, 0, width, height, fill=PALETTE.surface, outline="")
         self.canvas.create_rectangle(
             0,
             0,
-            TRACK_LABEL_WIDTH,
+            self.track_label_width,
             height,
-            fill="#181b19",
+            fill=PALETTE.preview,
             outline="",
             tags=("fixed-label-bg",),
         )
 
     def _draw_ruler(self, width: int) -> None:
-        self.canvas.create_line(0, RULER_HEIGHT, width, RULER_HEIGHT, fill="#4f5753")
+        self.canvas.create_line(0, RULER_HEIGHT, width, RULER_HEIGHT, fill=PALETTE.border)
         major_seconds = self._major_tick_seconds()
         total_seconds = math.ceil(self.duration_ms / 1000)
         visible_start, visible_end = self._visible_time_range()
@@ -149,14 +153,14 @@ class EditorTimeline(ttk.Frame):
         end_seconds = min(total_seconds + major_seconds, visible_end // 1000 + major_seconds)
         for seconds in range(start_seconds, end_seconds + 1, major_seconds):
             x = self._time_to_x(seconds * 1000)
-            self.canvas.create_line(x, 8, x, RULER_HEIGHT, fill="#75807a")
+            self.canvas.create_line(x, 8, x, RULER_HEIGHT, fill=PALETTE.border_strong)
             self.canvas.create_text(
                 x + 4,
                 5,
                 text=_short_time(seconds),
-                fill="#cdd4d0",
+                fill=PALETTE.text_muted,
                 anchor="nw",
-                font=("Segoe UI", 8),
+                font="TkSmallCaptionFont",
             )
 
     def _draw_tracks(self, width: int) -> None:
@@ -166,18 +170,29 @@ class EditorTimeline(ttk.Frame):
         for index, (label, height, color) in enumerate(zip(labels, self.track_heights, colors)):
             bottom = y + height
             self.canvas.create_rectangle(
-                0, y, width, bottom, fill="#252a27", outline="#414844", tags=("track-bg",)
+                0,
+                y,
+                width,
+                bottom,
+                fill=PALETTE.surface_raised,
+                outline=PALETTE.border,
+                tags=("track-bg",),
             )
             self.canvas.create_rectangle(
-                0, y, TRACK_LABEL_WIDTH, bottom, fill="#181b19", outline="#414844"
+                0,
+                y,
+                self.track_label_width,
+                bottom,
+                fill=PALETTE.preview,
+                outline=PALETTE.border,
             )
             self.canvas.create_text(
                 12,
                 (y + bottom) / 2,
                 text=label,
-                fill="#e5e9e7",
+                fill=PALETTE.text,
                 anchor="w",
-                font=("Segoe UI Semibold", 9),
+                font="TkHeadingFont",
             )
             if index < 2:
                 self.canvas.create_line(
@@ -185,7 +200,7 @@ class EditorTimeline(ttk.Frame):
                     bottom,
                     width,
                     bottom,
-                    fill="#67716c",
+                    fill=PALETTE.border_strong,
                     width=3,
                     tags=("separator", f"separator-{index}"),
                 )
@@ -265,8 +280,8 @@ class EditorTimeline(ttk.Frame):
                 y1 - 2,
                 x2,
                 y2 + 2,
-                fill="#f4c36c",
-                outline="#fff1c9",
+                fill=PALETTE.warning,
+                outline=PALETTE.text,
                 tags=("cue-overview-selection",),
             )
 
@@ -285,15 +300,17 @@ class EditorTimeline(ttk.Frame):
         x1 = self._time_to_x(start_ms)
         x2 = max(x1 + 3, self._time_to_x(end_ms))
         y1, y2 = top + 6, bottom - 6
-        self.canvas.create_rectangle(x1, y1, x2, y2, fill=color, outline="#b7c0bb", tags=tags)
+        self.canvas.create_rectangle(
+            x1, y1, x2, y2, fill=color, outline=PALETTE.border_strong, tags=tags
+        )
         self.canvas.create_text(
             x1 + 8,
             (y1 + y2) / 2,
             text=label,
-            fill="#ffffff",
+            fill=PALETTE.text,
             anchor="w",
             width=max(1, x2 - x1 - 14),
-            font=("Segoe UI", 8),
+            font="TkSmallCaptionFont",
             tags=tags,
         )
         if handles:
@@ -303,7 +320,7 @@ class EditorTimeline(ttk.Frame):
                 y1,
                 x1 + HANDLE_WIDTH,
                 y2,
-                fill="#f4c36c",
+                fill=PALETTE.warning,
                 outline="",
                 tags=("cue-handle", "cue-start", cue_tag),
             )
@@ -312,7 +329,7 @@ class EditorTimeline(ttk.Frame):
                 y1,
                 x2,
                 y2,
-                fill="#f4c36c",
+                fill=PALETTE.warning,
                 outline="",
                 tags=("cue-handle", "cue-end", cue_tag),
             )
@@ -321,7 +338,9 @@ class EditorTimeline(ttk.Frame):
         self.canvas.delete("playhead")
         x = self._time_to_x(self.playhead_ms)
         height = RULER_HEIGHT + sum(self.track_heights)
-        self.canvas.create_line(x, 0, x, height, fill="#f05e4f", width=2, tags=("playhead",))
+        self.canvas.create_line(
+            x, 0, x, height, fill=PALETTE.danger, width=2, tags=("playhead",)
+        )
         self.canvas.create_polygon(
             x - 5,
             0,
@@ -329,7 +348,7 @@ class EditorTimeline(ttk.Frame):
             0,
             x,
             8,
-            fill="#f05e4f",
+            fill=PALETTE.danger,
             outline="",
             tags=("playhead",),
         )
@@ -378,7 +397,7 @@ class EditorTimeline(ttk.Frame):
             }
             return
 
-        if x >= TRACK_LABEL_WIDTH:
+        if x >= self.track_label_width:
             milliseconds = self._x_to_time(x)
             self.set_playhead(milliseconds)
             if self.on_seek:
@@ -461,7 +480,11 @@ class EditorTimeline(ttk.Frame):
 
     def _content_width(self) -> int:
         visible = max(500, self.canvas.winfo_width())
-        track = TRACK_LABEL_WIDTH + math.ceil(self.duration_ms / 1000 * self.pixels_per_second) + 80
+        track = (
+            self.track_label_width
+            + math.ceil(self.duration_ms / 1000 * self.pixels_per_second)
+            + 80
+        )
         return max(visible, track)
 
     def _track_bounds(self, track_index: int) -> tuple[int, int]:
@@ -469,10 +492,10 @@ class EditorTimeline(ttk.Frame):
         return top, top + self.track_heights[track_index]
 
     def _time_to_x(self, milliseconds: int) -> float:
-        return TRACK_LABEL_WIDTH + milliseconds / 1000 * self.pixels_per_second
+        return self.track_label_width + milliseconds / 1000 * self.pixels_per_second
 
     def _x_to_time(self, x: float) -> int:
-        milliseconds = round((x - TRACK_LABEL_WIDTH) * 1000 / self.pixels_per_second)
+        milliseconds = round((x - self.track_label_width) * 1000 / self.pixels_per_second)
         return max(0, min(self.duration_ms, milliseconds))
 
     def _pixels_to_ms(self, pixels: int) -> int:

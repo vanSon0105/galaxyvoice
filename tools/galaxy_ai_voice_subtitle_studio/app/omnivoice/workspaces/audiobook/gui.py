@@ -50,7 +50,7 @@ class AudiobookWorkspaceGuiMixin:
             row=0, column=0, sticky="w"
         )
         self.omnivoice_audiobook_lexicon_text = tk.Text(
-            lexicon_panel, wrap="none", font=("Consolas", 9), height=12, width=28
+            lexicon_panel, wrap="none", font="TkFixedFont", height=12, width=28
         )
         self.omnivoice_audiobook_lexicon_text.grid(row=1, column=0, sticky="nsew", pady=6)
         ttk.Label(
@@ -79,7 +79,7 @@ class AudiobookWorkspaceGuiMixin:
             ("pause", "Nghỉ ms", 65),
         ):
             tree.heading(column, text=label)
-            tree.column(column, width=width, stretch=column == "chapter")
+            tree.column(column, width=self._px(width), stretch=column == "chapter")
         tree.grid(row=1, column=0, sticky="nsew", pady=6)
         tree.bind("<<TreeviewSelect>>", lambda _event: self._load_audiobook_chapter())
         self.omnivoice_audiobook_chapter_tree = tree

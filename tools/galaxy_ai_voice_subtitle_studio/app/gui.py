@@ -33,6 +33,12 @@ from .voice.engine import GenerationResult
 from .voice.languages import code_from_label, label_from_code
 from .voice.media import MediaExtractionResult
 from .common.processes import managed_media_processes
+from .common.theme import (
+    apply_app_theme,
+    configure_main_window,
+    enable_windows_dpi_awareness,
+    text_widget_options,
+)
 from .subtitle_removal.service import (
     BLUR_MODE,
     SubtitleRemovalResult,
@@ -88,8 +94,13 @@ class GalaxyStudioApp(
         managed_media_processes.reset()
         self.root = root
         self.root.title("Galaxy AI Voice & Subtitle Studio")
-        self.root.geometry("1280x800")
-        self.root.minsize(1080, 680)
+        self.ui_scale = configure_main_window(
+            self.root,
+            width=1280,
+            height=800,
+            min_width=1080,
+            min_height=680,
+        )
 
         self.config_path = config_path or default_config_path()
         self._config_load_error: OSError | None = None
@@ -300,40 +311,30 @@ class GalaxyStudioApp(
         self._bind_config_traces()
         self._config_save_enabled = self._config_load_error is None
 
+    def _px(self, value: int | float) -> int:
+        return max(1, round(float(value) * self.ui_scale))
+
     def _configure_style(self) -> None:
-        style = ttk.Style()
-        style.theme_use("clam")
-        self.root.configure(bg="#f4f1ea")
-        style.configure(".", font=("Segoe UI", 10), background="#f4f1ea", foreground="#242424")
-        style.configure("TFrame", background="#f4f1ea")
-        style.configure("Panel.TFrame", background="#ffffff", borderwidth=1, relief="solid")
-        style.configure("Surface.TFrame", background="#ffffff")
-        style.configure("TLabel", background="#f4f1ea")
-        style.configure("Panel.TLabel", background="#ffffff")
-        style.configure("Header.TLabel", font=("Segoe UI Semibold", 15), background="#f4f1ea")
-        style.configure("Section.TLabel", font=("Segoe UI Semibold", 10), background="#ffffff")
-        style.configure("PageSection.TLabel", font=("Segoe UI Semibold", 10), background="#f4f1ea")
-        style.configure("TButton", padding=(10, 6))
-        style.configure("Accent.TButton", background="#145c54", foreground="#ffffff")
-        style.map("Accent.TButton", background=[("active", "#1d756c"), ("disabled", "#9fa9a7")])
-        style.configure("TCheckbutton", background="#ffffff")
+        self.style = apply_app_theme(self.root)
 
     def _build_layout(self) -> None:
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        shell = ttk.Frame(self.root, padding=16)
+        shell = ttk.Frame(self.root, padding=(14, 10))
         shell.grid(row=0, column=0, sticky="nsew")
         shell.columnconfigure(0, weight=1)
         shell.rowconfigure(1, weight=1)
 
-        header = ttk.Frame(shell)
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        header = ttk.Frame(shell, style="Header.TFrame")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 9))
         header.columnconfigure(0, weight=1)
         ttk.Label(header, text="Galaxy AI Voice & Subtitle Studio", style="Header.TLabel").grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Label(header, textvariable=self.status).grid(row=0, column=1, sticky="e")
+        ttk.Label(header, textvariable=self.status, style="Status.TLabel").grid(
+            row=0, column=1, sticky="e"
+        )
 
         self.main_notebook = ttk.Notebook(shell)
         self.main_notebook.grid(row=1, column=0, sticky="nsew")
@@ -347,7 +348,7 @@ class GalaxyStudioApp(
         self.voice_feature_notebook.grid(row=0, column=0, sticky="nsew")
         self.classic_voice_tab = ttk.Frame(self.voice_feature_notebook, padding=(0, 10, 0, 0))
         self.classic_voice_tab.columnconfigure(0, weight=1)
-        self.classic_voice_tab.columnconfigure(1, minsize=340)
+        self.classic_voice_tab.columnconfigure(1, minsize=self._px(340))
         self.classic_voice_tab.rowconfigure(0, weight=1)
         self.voice_feature_notebook.add(self.classic_voice_tab, text="Video Dubbing")
 
@@ -361,19 +362,19 @@ class GalaxyStudioApp(
             self.subtitle_notebook,
             "Script",
             wrap="word",
-            font=("Segoe UI", 11),
+            font="TkTextFont",
         )
         self.source_subtitle_tab, self.source_subtitle_text = self._build_text_tab(
             self.subtitle_notebook,
             "Sub gốc",
             wrap="word",
-            font=("Consolas", 10),
+            font="TkFixedFont",
         )
         self.translated_subtitle_tab, self.translated_subtitle_text = self._build_text_tab(
             self.subtitle_notebook,
             "Sub dịch",
             wrap="word",
-            font=("Consolas", 10),
+            font="TkFixedFont",
         )
         self.script_text.bind("<<Modified>>", self._on_script_modified)
         self.source_subtitle_text.bind("<<Modified>>", self._on_subtitle_modified)
@@ -434,12 +435,10 @@ class GalaxyStudioApp(
             self.log_frame,
             height=6,
             wrap="word",
-            font=("Consolas", 9),
-            bg="#202522",
-            fg="#e9f1ec",
-            relief="flat",
+            font="TkFixedFont",
             padx=10,
             pady=8,
+            **text_widget_options(log=True),
         )
         self.log_text.grid(row=1, column=0, sticky="ew")
         self.log_text.configure(state="disabled")
@@ -451,9 +450,12 @@ class GalaxyStudioApp(
             self._stop_removal_playback()
         if selected_tab != str(self.editor_tab):
             self._stop_editor_playback()
+        if selected_tab == str(self.voice_tab):
+            self._activate_voicestudio_tab()
         self._update_log_visibility()
 
     def _on_voice_feature_tab_changed(self, _event: tk.Event | None = None) -> None:
+        self._activate_voicestudio_tab()
         self._update_log_visibility()
 
     def _update_log_visibility(self) -> None:
@@ -996,6 +998,8 @@ class GalaxyStudioApp(
         self._stop_removal_playback(update_ui=False)
         self._stop_editor_playback(update_ui=False)
         self._editor_export_cancel.set()
+        self._voicestudio_launch_cancelled = True
+        self._voicestudio_install_cancelled = True
         self._destroy_voicestudio_webview()
         self.voicestudio_controller.stop_all()
         self.omnivoice_client.close()
@@ -1044,6 +1048,7 @@ class GalaxyStudioApp(
             pass
 
 def run_app() -> None:
+    enable_windows_dpi_awareness()
     root = tk.Tk()
     GalaxyStudioApp(root)
     root.mainloop()

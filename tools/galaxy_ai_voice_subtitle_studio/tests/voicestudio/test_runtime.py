@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -60,6 +62,7 @@ class VoiceStudioRuntimeTests(unittest.TestCase):
             status = inspect_runtime(runtime, probe_backend=False)
 
         self.assertEqual(runtime.snapshot_dir, snapshot)
+        self.assertEqual(runtime.installer_log_path, runtime_root / "logs" / "install.log")
         self.assertEqual(runtime.source_dir, runtime_root / "sources" / "0.4.2")
         self.assertTrue(status.snapshot_present)
         self.assertFalse(status.installed)
@@ -134,6 +137,42 @@ class VoiceStudioRuntimeTests(unittest.TestCase):
         self.assertIn("tkwry-0.1.4", script)
         self.assertNotIn("api.github.com", script)
         self.assertNotIn("msiexec", script.lower())
+
+    @unittest.skipUnless(sys.platform == "win32", "PowerShell installer is Windows-only")
+    def test_installer_skips_an_unavailable_python_launcher_version(self) -> None:
+        repository = Path(__file__).resolve().parents[4]
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = VoiceStudioRuntime.from_repository(
+                repository,
+                environ={"VOICESTUDIO_RUNTIME_ROOT": temp_dir},
+            )
+            completed = subprocess.run(
+                [
+                    "powershell.exe",
+                    "-NoProfile",
+                    "-ExecutionPolicy",
+                    "Bypass",
+                    "-File",
+                    str(runtime.installer_path),
+                    "-SnapshotRoot",
+                    str(runtime.snapshot_dir),
+                    "-RuntimeRoot",
+                    str(runtime.root),
+                    "-PythonVersionCandidates",
+                    "99.99,3.12,3.13",
+                    "-ProbePythonOnly",
+                    "-NonInteractive",
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=15,
+                check=False,
+            )
+
+        self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
+        self.assertIn("PYTHON_RUNTIME=", completed.stdout)
 
 
 if __name__ == "__main__":

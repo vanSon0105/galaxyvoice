@@ -252,6 +252,8 @@ class GuiLayoutTests(unittest.TestCase):
         try:
             app = GalaxyStudioApp(root, config_path=self.config_path)
             root.geometry("1080x680")
+            auto_start = Mock()
+            app._activate_voicestudio_tab = auto_start
             app.main_notebook.select(app.voice_tab)
             app.voice_feature_notebook.select(app.voicestudio_tab)
             root.update_idletasks()
@@ -266,7 +268,8 @@ class GuiLayoutTests(unittest.TestCase):
             )
             self.assertTrue(app.voicestudio_bootstrap.winfo_ismapped())
             self.assertFalse(app.voicestudio_webview_host.winfo_ismapped())
-            self.assertEqual(app.voicestudio_launch_button.cget("text"), "Khởi động")
+            self.assertEqual(app.voicestudio_manage_button.cget("text"), "Quản lý")
+            auto_start.assert_called()
         finally:
             root.destroy()
 

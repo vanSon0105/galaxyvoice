@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from app.voicestudio.runtime import VoiceStudioRuntime, VoiceStudioRuntimeStatus
 from app.voicestudio.service import VoiceStudioController
@@ -56,6 +57,10 @@ class VoiceStudioControllerTests(unittest.TestCase):
         self.assertEqual(
             popen.call_args.kwargs["env"]["OMNIVOICE_PROJECT_ROOT"],
             str(runtime.source_dir),
+        )
+        self.assertEqual(
+            popen.call_args.kwargs["env"]["OMNIVOICE_ANALYTICS_DISABLED"],
+            "1",
         )
         register.assert_called_once_with(process)
 
@@ -128,6 +133,36 @@ class VoiceStudioControllerTests(unittest.TestCase):
         command = popen.call_args.args[0]
         self.assertIn(str(runtime.snapshot_dir), command)
         self.assertIn(str(runtime.root), command)
+
+    def test_installer_log_tail_returns_the_latest_diagnostic(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = self.runtime(Path(temp_dir))
+            runtime.ensure_directories()
+            runtime.installer_log_path.write_text(
+                "old output\nPython launcher failed\n",
+                encoding="utf-8",
+            )
+            controller = VoiceStudioController(runtime)
+
+            detail = controller.installer_log_tail(max_chars=24)
+
+        self.assertIn("launcher failed", detail)
+
+    def test_disable_upstream_analytics_records_an_explicit_opt_out(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            controller = VoiceStudioController(self.runtime(Path(temp_dir)))
+            response = MagicMock()
+            response.status = 200
+            response.__enter__.return_value = response
+            with patch("app.voicestudio.service.urlopen", return_value=response) as open_url:
+                controller.disable_upstream_analytics()
+
+        request = open_url.call_args.args[0]
+        self.assertEqual(
+            request.full_url,
+            "http://127.0.0.1:3900/api/settings/analytics",
+        )
+        self.assertEqual(json.loads(request.data), {"enabled": False})
 
 
 if __name__ == "__main__":

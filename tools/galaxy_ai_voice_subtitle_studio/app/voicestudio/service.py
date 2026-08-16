@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import time
 import webbrowser
 from typing import Any
+from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
+from urllib.request import Request, urlopen
 
 from ..common.processes import managed_media_processes, terminate_process_tree
 from .runtime import (
@@ -60,6 +63,7 @@ class VoiceStudioController:
                 "OMNIVOICE_CACHE_DIR": str(self.runtime.cache_dir),
                 "HF_HOME": str(self.runtime.cache_dir),
                 "OMNIVOICE_MCP_DISABLE": "1",
+                "OMNIVOICE_ANALYTICS_DISABLED": "1",
             }
         )
         with self.runtime.backend_log_path.open("a", encoding="utf-8") as log_file:
@@ -97,6 +101,25 @@ class VoiceStudioController:
         if not frontend_available(self.runtime.backend_url):
             raise RuntimeError("Giao diện VoiceStudio local chưa sẵn sàng.")
         webbrowser.open(self.runtime.backend_url)
+
+    def disable_upstream_analytics(self, *, timeout: float = 5.0) -> None:
+        request = Request(
+            f"{self.runtime.backend_url}/api/settings/analytics",
+            data=json.dumps({"enabled": False}).encode("utf-8"),
+            headers={"Accept": "application/json", "Content-Type": "application/json"},
+            method="PUT",
+        )
+        try:
+            with urlopen(request, timeout=timeout) as response:
+                status = int(response.status)
+        except (HTTPError, URLError, OSError, TimeoutError, ValueError) as error:
+            raise RuntimeError(
+                "Không thể tắt thống kê VoiceStudio trước khi mở giao diện."
+            ) from error
+        if not 200 <= status < 300:
+            raise RuntimeError(
+                f"Không thể tắt thống kê VoiceStudio (HTTP {status})."
+            )
 
     def run_installer(self) -> subprocess.Popen[Any]:
         if self.installer_running():
@@ -162,8 +185,16 @@ class VoiceStudioController:
         return self.installer_process is not None and self.installer_process.poll() is None
 
     def backend_log_tail(self, *, max_chars: int = 4000) -> str:
+        return self._log_tail(self.runtime.backend_log_path, max_chars=max_chars)
+
+    def installer_log_tail(self, *, max_chars: int = 4000) -> str:
+        return self._log_tail(self.runtime.installer_log_path, max_chars=max_chars)
+
+    @staticmethod
+    def _log_tail(path: os.PathLike[str], *, max_chars: int) -> str:
         try:
-            content = self.runtime.backend_log_path.read_text(encoding="utf-8", errors="replace")
+            with open(path, "r", encoding="utf-8-sig", errors="replace") as log_file:
+                content = log_file.read()
         except OSError:
             return ""
         return content[-max_chars:].strip()

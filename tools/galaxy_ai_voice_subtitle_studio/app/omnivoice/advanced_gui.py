@@ -75,7 +75,7 @@ class OmniVoiceAdvancedGuiMixin:
         text_widget = tk.Text(
             editor,
             wrap="word",
-            font=("Consolas" if not combine else "Segoe UI", 10),
+            font="TkTextFont" if combine else "TkFixedFont",
             relief="flat",
             padx=10,
             pady=10,

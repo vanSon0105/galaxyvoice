@@ -159,6 +159,50 @@ def run_web_app(
     except KeyError:  # pragma: no cover - settings key varies across versions
         pass
 
+    class GalaxyJsApi:
+        """Native dialog bridge for the web UI.
+
+        pywebview 6 no longer injects a built-in create_file_dialog into the
+        JS bridge, so the native dialogs are exposed explicitly via js_api.
+        """
+
+        _VIDEO_FILE_TYPES = (
+            "Video files (*.mp4;*.mov;*.mkv;*.avi;*.webm;*.m4v)",
+            "All files (*.*)",
+        )
+        _SRT_FILE_TYPES = ("Subtitle files (*.srt)", "All files (*.*)")
+
+        def choose_video_file(self) -> tuple[str] | None:
+            result = window.create_file_dialog(
+                webview.OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=self._VIDEO_FILE_TYPES,
+            )
+            return result
+
+        def choose_srt_file(self) -> tuple[str] | None:
+            result = window.create_file_dialog(
+                webview.OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=self._SRT_FILE_TYPES,
+            )
+            return result
+
+        def choose_audio_file(self) -> tuple[str] | None:
+            result = window.create_file_dialog(
+                webview.OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=(
+                    "Audio files (*.wav;*.mp3;*.flac;*.m4a;*.ogg)",
+                    "All files (*.*)",
+                ),
+            )
+            return result
+
+        def choose_folder(self) -> tuple[str] | None:
+            result = window.create_file_dialog(webview.FOLDER_DIALOG, allow_multiple=False)
+            return result
+
     window = webview.create_window(
         "Galaxy AI Voice & Subtitle Studio",
         server.url,
@@ -166,6 +210,7 @@ def run_web_app(
         height=800,
         min_size=(1080, 680),
         background_color="#111315",
+        js_api=GalaxyJsApi(),
     )
     closed = threading.Event()
 

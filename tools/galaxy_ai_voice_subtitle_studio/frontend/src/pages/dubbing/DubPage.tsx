@@ -18,7 +18,7 @@ import type {
   GenerateResultPayload,
 } from '../../api/voice'
 import { TaskButton } from '../../components/TaskButton'
-import { pickFile, pickFolder } from '../../lib/dialogs'
+import { hasNativeDialogs, pickFolder, pickVideoFile } from '../../lib/dialogs'
 import type { TaskState } from '../../ws/useTasks'
 import { DraftEditor } from './DraftEditor'
 
@@ -172,13 +172,21 @@ export function DubPage() {
   }
 
   const browseVideo = async () => {
-    const path = await pickFile()
-    if (path) changeVideo(path)
+    const path = await pickVideoFile()
+    if (path) {
+      changeVideo(path)
+    } else if (!hasNativeDialogs()) {
+      setFormError('Cửa sổ hiện tại không hỗ trợ hộp thoại chọn file — hãy gõ trực tiếp đường dẫn video.')
+    }
   }
 
   const browseOutput = async () => {
     const path = await pickFolder()
-    if (path) setOutputDir(path)
+    if (path) {
+      setOutputDir(path)
+    } else if (!hasNativeDialogs()) {
+      setFormError('Cửa sổ hiện tại không hỗ trợ hộp thoại chọn thư mục — hãy gõ trực tiếp đường dẫn.')
+    }
   }
 
   const handleProviderChange = (code: string) => {

@@ -26,6 +26,12 @@ export interface GenerateRequest {
   max_chars?: number
   export_mp3?: boolean
   keep_segments?: boolean
+  source_language?: string
+  target_language?: string
+  ai_provider?: string
+  ai_model?: string
+  ai_base_url?: string
+  ai_api_key?: string
 }
 
 export interface ExtractAudioRequest {
@@ -64,6 +70,8 @@ export interface DraftPayload {
   ai_base_url: string
   source_srt: string
   translated_srt: string | null
+  script_text: string
+  script_language: string
   warnings: string[]
 }
 
@@ -88,6 +96,8 @@ export interface GenerateResultPayload {
   cue_count: number
   total_duration_ms: number
   warnings: string[]
+  translated_text?: string | null
+  target_language?: string | null
 }
 
 export interface ExtractResultPayload {

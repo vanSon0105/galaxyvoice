@@ -140,6 +140,40 @@ class VoiceApiTests(unittest.TestCase):
             self.assertEqual(_wait_status(task_id), FAILED)
             self.assertEqual(task_registry.get(task_id).error, "hỏng rồi")
 
+    def test_generate_translates_script_in_flow_when_target_differs(self) -> None:
+        with mock.patch.object(
+            voice_router, "translate_script_text", return_value="Hello world"
+        ) as translate, mock.patch.object(voice_router, "generate_package") as generate:
+            generate.side_effect = (
+                lambda options, tts, progress, stop_event: _make_generation_result(self.tmp)
+            )
+            with self.client.websocket_connect("/ws/events") as websocket:
+                response = self.client.post(
+                    "/api/voice/generate",
+                    json={
+                        "text": "Xin chào",
+                        "output_dir": str(self.tmp),
+                        "source_language": "vi",
+                        "target_language": "en",
+                        "ai_provider": "openai",
+                        "ai_api_key": "sk-test",
+                    },
+                )
+                task_id = response.json()["task_id"]
+                self.assertEqual(_wait_status(task_id), DONE)
+
+                done_frame = None
+                for _ in range(6):
+                    frame = websocket.receive_json()
+                    if frame.get("type") == "task" and frame.get("status") == DONE:
+                        done_frame = frame
+                        break
+                self.assertIsNotNone(done_frame)
+                self.assertEqual(done_frame["result"]["translated_text"], "Hello world")
+                self.assertEqual(done_frame["result"]["target_language"], "en")
+                self.assertEqual(translate.call_args[0][0], "Xin chào")
+                self.assertEqual(generate.call_args[0][0].text, "Hello world")
+
     def test_extract_audio_task_runs(self) -> None:
         with mock.patch.object(voice_router, "extract_audio_from_video") as extract:
             project_dir = self.tmp / "media_project"

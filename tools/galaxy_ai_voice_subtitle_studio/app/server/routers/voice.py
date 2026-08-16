@@ -24,6 +24,15 @@ from ...voice.transcription import (
     export_subtitle_package,
     prepare_subtitles_from_video,
 )
+from ...voice.translator import (
+    AITranslationOptions,
+    default_translation_api_key,
+    default_translation_base_url,
+    default_translation_model,
+    normalize_translation_provider,
+    translate_script_text,
+    validate_translation_options,
+)
 from ...voice.tts import create_tts_engine, tts_engine_codes
 from ..event_bus import event_bus
 from ..tasks import CANCELLED, DONE, FAILED, TaskRecord, run_task, task_registry
@@ -49,6 +58,14 @@ class GenerateRequest(BaseModel):
     max_chars: int = 160
     export_mp3: bool = True
     keep_segments: bool = True
+    # Optional in-flow script translation (mirrors the tkinter flow: the
+    # script is translated to the target language before synthesis).
+    source_language: str = "auto"
+    target_language: str = "none"
+    ai_provider: str = ""
+    ai_model: str = ""
+    ai_base_url: str = ""
+    ai_api_key: str = ""
 
 
 class ExtractAudioRequest(BaseModel):
@@ -147,6 +164,8 @@ def _draft_payload(task_id: str, draft: VideoSubtitleDraft) -> dict[str, Any]:
             if draft.translated_cues is not None
             else None
         ),
+        "script_text": draft.script_text,
+        "script_language": draft.script_language,
         "warnings": list(draft.warnings),
     }
 
@@ -182,6 +201,10 @@ def voices(engine: str = "") -> list[dict[str, Any]]:
     ]
 
 
+def _same_language(source: str, target: str) -> bool:
+    return source != "auto" and source == target
+
+
 @router.post("/generate")
 def generate(request: GenerateRequest) -> dict[str, Any]:
     if not request.text.strip():
@@ -189,35 +212,69 @@ def generate(request: GenerateRequest) -> dict[str, Any]:
     output_dir = Path(request.output_dir).expanduser()
     engine_code = request.engine.strip() or _config().tts_engine
     tts = create_tts_engine(engine_code)
-    options = GenerationOptions(
-        text=request.text,
-        output_dir=output_dir,
-        project_name=request.project_name,
-        voice_name=request.voice_name,
-        rate=request.rate,
-        volume=request.volume,
-        pause_ms=request.pause_ms,
-        max_chars=request.max_chars,
-        export_mp3=request.export_mp3,
-        keep_segments=request.keep_segments,
-    )
+    source_language = request.source_language.strip().lower() or "auto"
+    target_language = request.target_language.strip().lower() or "none"
+
+    translation_options: AITranslationOptions | None = None
+    if target_language != "none" and not _same_language(source_language, target_language):
+        provider = normalize_translation_provider(request.ai_provider)
+        translation_options = AITranslationOptions(
+            source_language=source_language,
+            target_language=target_language,
+            provider=provider,
+            api_key=request.ai_api_key or default_translation_api_key(provider),
+            model=request.ai_model or default_translation_model(provider),
+            base_url=request.ai_base_url or default_translation_base_url(provider),
+        )
+        validate_translation_options(translation_options)
+
     record = task_registry.create("generate")
     event_bus.emit({"type": "task", "task_id": record.task_id, "status": "running"})
-    run_task(
-        record,
-        lambda: generate_package(
-            options,
+    state: dict[str, Any] = {"translated_text": None}
+
+    def run_generate():
+        report = _progress(record)
+        text = request.text
+        if translation_options is not None:
+            report(f"Dịch kịch bản sang {target_language}...")
+            text = translate_script_text(request.text, translation_options)
+            state["translated_text"] = text
+        return generate_package(
+            GenerationOptions(
+                text=text,
+                output_dir=output_dir,
+                project_name=request.project_name,
+                voice_name=request.voice_name,
+                rate=request.rate,
+                volume=request.volume,
+                pause_ms=request.pause_ms,
+                max_chars=request.max_chars,
+                export_mp3=request.export_mp3,
+                keep_segments=request.keep_segments,
+            ),
             tts=tts,
-            progress=_progress(record),
+            progress=report,
             stop_event=record.stop_event,
-        ),
-        _generation_result_dict,
-    )
+        )
+
+    def serialize(result: Any) -> dict[str, Any]:
+        payload = _generation_result_dict(result)
+        payload["translated_text"] = state["translated_text"]
+        payload["target_language"] = (
+            target_language if state["translated_text"] is not None else None
+        )
+        return payload
+
+    run_task(record, run_generate, serialize)
     return {"task_id": record.task_id}
 
 
 @router.post("/extract-audio")
 def extract_audio(request: ExtractAudioRequest) -> dict[str, Any]:
+    if not request.video_path.strip():
+        raise HTTPException(status_code=422, detail="Chọn video trước khi trích audio.")
+    if not request.export_wav and not request.export_mp3:
+        raise HTTPException(status_code=422, detail="Chọn WAV, MP3 hoặc cả hai.")
     options = MediaExtractionOptions(
         video_path=Path(request.video_path).expanduser(),
         output_dir=Path(request.output_dir).expanduser(),
@@ -241,6 +298,8 @@ def extract_audio(request: ExtractAudioRequest) -> dict[str, Any]:
 
 @router.post("/transcribe")
 def transcribe(request: TranscribeRequest) -> dict[str, Any]:
+    if not request.video_path.strip():
+        raise HTTPException(status_code=422, detail="Chọn video trước khi tạo phụ đề.")
     options = VideoSubtitleOptions(
         video_path=Path(request.video_path).expanduser(),
         output_dir=Path(request.output_dir).expanduser(),

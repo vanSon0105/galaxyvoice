@@ -12,6 +12,7 @@ export interface Option {
 export interface ProviderMeta extends Option {
   default_model: string
   default_base_url: string
+  models: string[]
 }
 
 export interface SettingsMeta {

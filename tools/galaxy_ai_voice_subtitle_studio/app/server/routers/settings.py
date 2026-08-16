@@ -48,6 +48,7 @@ from ...voice.translator import (
     default_translation_provider,
     translation_provider_codes,
     translation_provider_label,
+    translation_provider_models,
 )
 from ...voice.tts import create_tts_engine, tts_engine_codes
 from ..tasks import task_registry
@@ -99,6 +100,7 @@ def get_settings_meta() -> dict[str, Any]:
             "label": translation_provider_label(code),
             "default_model": default_translation_model(code),
             "default_base_url": default_translation_base_url(code),
+            "models": list(translation_provider_models(code)),
         }
         for code in provider_codes
     ]

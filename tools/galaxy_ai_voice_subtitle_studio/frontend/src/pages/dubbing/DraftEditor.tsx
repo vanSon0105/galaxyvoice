@@ -8,10 +8,11 @@ import { useT } from '../../i18n/useT'
 
 interface DraftEditorProps {
   taskId: string
+  currentVideoPath: string
 }
 
 /** Editable draft SRT (Sub gốc / Sub dịch) + export, mirroring the tkinter draft flow. */
-export function DraftEditor({ taskId }: DraftEditorProps) {
+export function DraftEditor({ taskId, currentVideoPath }: DraftEditorProps) {
   const t = useT()
   const draftQuery = useQuery({ queryKey: ['draft', taskId], queryFn: () => fetchDraft(taskId) })
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
@@ -56,6 +57,14 @@ export function DraftEditor({ taskId }: DraftEditorProps) {
   const handleExport = async () => {
     setExportError('')
     setExportResult(null)
+    const normalize = (path: string) => path.replace(/\\/g, '/').toLowerCase()
+    if (
+      currentVideoPath.trim() &&
+      normalize(currentVideoPath.trim()) !== normalize(draftQuery.data?.source_video ?? '')
+    ) {
+      setExportError('Bản phụ đề hiện tại thuộc video khác. Hãy tạo phụ đề cho video đang chọn trước khi export.')
+      return
+    }
     try {
       const result = await exportDraft(taskId, {
         output_dir: exportDir,

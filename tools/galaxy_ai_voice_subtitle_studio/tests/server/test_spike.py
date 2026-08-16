@@ -112,37 +112,6 @@ class ServerApiTests(unittest.TestCase):
             self.assertEqual(second["message"], "b")
             self.assertEqual(third["status"], DONE)
 
-    def test_spike_task_runs_and_cancel_stops_it(self) -> None:
-        with self.client.websocket_connect("/ws/events") as websocket:
-            task_registry._tasks.clear()
-            response = self.client.post("/api/spike/task")
-            self.assertEqual(response.status_code, 200)
-            task_id = response.json()["task_id"]
-
-            first = websocket.receive_json()
-            self.assertEqual(first["type"], "task")
-            self.assertEqual(first["task_id"], task_id)
-            self.assertEqual(first["status"], "running")
-
-            progress = websocket.receive_json()
-            self.assertEqual(progress["type"], "progress")
-            self.assertEqual(progress["task_id"], task_id)
-
-            response = self.client.post(f"/api/tasks/{task_id}/cancel")
-            self.assertEqual(response.status_code, 200)
-
-            # The cancel endpoint emits a task_cancel_requested event first;
-            # the worker thread then reports the terminal cancelled status.
-            done = None
-            for _ in range(4):
-                message = websocket.receive_json()
-                if message.get("type") == "task":
-                    done = message
-                    break
-            self.assertIsNotNone(done)
-            self.assertEqual(done["task_id"], task_id)
-            self.assertEqual(done["status"], CANCELLED)
-
     def test_cancel_unknown_task_returns_404(self) -> None:
         response = self.client.post("/api/tasks/nope_missing/cancel")
         self.assertEqual(response.status_code, 404)

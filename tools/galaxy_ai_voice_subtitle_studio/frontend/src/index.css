@@ -275,3 +275,50 @@ body {
   color: var(--color-fg-muted);
   font-size: 15px;
 }
+
+/* ---------- Workspace pages ---------- */
+.page-grid {
+  display: grid;
+  grid-template-columns: minmax(320px, 2fr) minmax(320px, 3fr);
+  gap: 14px;
+  align-items: start;
+}
+
+textarea.srt-editor {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--color-input);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  color: var(--color-fg);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 1.5;
+  padding: 8px 10px;
+  resize: vertical;
+  outline: none;
+}
+
+textarea.srt-editor:focus {
+  border-color: var(--color-accent);
+}
+
+textarea.srt-editor::placeholder {
+  color: var(--color-fg-subtle);
+}
+
+.field input[type='range'] {
+  accent-color: var(--color-accent);
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.result-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--color-fg-muted);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}

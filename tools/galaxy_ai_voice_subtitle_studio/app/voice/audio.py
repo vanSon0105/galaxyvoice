@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import subprocess
 import wave
 from dataclasses import dataclass
 from pathlib import Path
 
 from ..common.ffmpeg import find_ffmpeg
+from .media import _run_command
 
 
 @dataclass(frozen=True)
@@ -81,7 +81,7 @@ def try_convert_to_mp3(wav_path: Path, mp3_path: Path) -> tuple[bool, str]:
         "2",
         str(mp3_path),
     ]
-    completed = subprocess.run(command, capture_output=True, text=True, check=False)
+    completed = _run_command(command)
     if completed.returncode != 0:
         message = completed.stderr.strip() or "ffmpeg failed while exporting MP3."
         return False, message

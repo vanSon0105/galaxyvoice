@@ -12,7 +12,10 @@ import threading
 import time
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Callable
+
+from ..common.errors import TaskCancelledError
+from .event_bus import event_bus
 
 RUNNING = "running"
 DONE = "done"
@@ -92,3 +95,35 @@ class TaskRegistry:
 
 
 task_registry = TaskRegistry()
+
+
+def run_task(
+    record: TaskRecord,
+    func: Callable[[], Any],
+    result_serializer: Callable[[Any], Any] | None = None,
+) -> None:
+    """Run a blocking service function on a daemon thread and publish the
+    terminal status over the event bus. TaskCancelledError maps to the
+    'cancelled' terminal state."""
+    task_id = record.task_id
+
+    def run() -> None:
+        try:
+            result = func()
+        except TaskCancelledError:
+            task_registry.finish(task_id, status=CANCELLED)
+            event_bus.emit({"type": "task", "task_id": task_id, "status": CANCELLED})
+            return
+        except Exception as error:
+            task_registry.finish(task_id, status=FAILED, error=str(error))
+            event_bus.emit(
+                {"type": "task", "task_id": task_id, "status": FAILED, "error": str(error)}
+            )
+            return
+        payload = result_serializer(result) if result_serializer is not None else None
+        task_registry.finish(task_id, status=DONE, result=result)
+        event_bus.emit(
+            {"type": "task", "task_id": task_id, "status": DONE, "result": payload}
+        )
+
+    threading.Thread(target=run, name=f"task-{task_id}", daemon=True).start()

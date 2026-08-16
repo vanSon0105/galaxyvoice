@@ -4,6 +4,7 @@ import json
 import shutil
 import subprocess
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Callable
 
 from ..common.cache import default_cache_dir, file_digest, read_json, stable_digest, write_json_atomic
 from ..common.compute import AUTO_DEVICE, normalize_processing_device, resolve_whisper_runtime
+from ..common.errors import TaskCancelledError
 from ..common.ffmpeg import ffmpeg_missing_message, find_ffmpeg
 from .media import Runner, _run_command, _run_ffmpeg, build_extract_wav_command
 from ..common.paths import unique_project_dir
@@ -116,6 +118,7 @@ def create_subtitles_from_video(
     transcriber: Transcriber | None = None,
     translator: CueTranslator | None = None,
     detailed_progress: DetailedProgressCallback | None = None,
+    stop_event: threading.Event | None = None,
 ) -> VideoSubtitleResult:
     draft = prepare_subtitles_from_video(
         options,
@@ -125,6 +128,7 @@ def create_subtitles_from_video(
         runner=runner,
         transcriber=transcriber,
         translator=translator,
+        stop_event=stop_event,
     )
     try:
         return export_subtitle_package(
@@ -145,6 +149,7 @@ def prepare_subtitles_from_video(
     transcriber: Transcriber | None = None,
     translator: CueTranslator | None = None,
     detailed_progress: DetailedProgressCallback | None = None,
+    stop_event: threading.Event | None = None,
 ) -> VideoSubtitleDraft:
     report = progress or (lambda _message: None)
     report_detail = detailed_progress or (lambda _stage, _completed, _total: None)
@@ -182,7 +187,7 @@ def prepare_subtitles_from_video(
 
     try:
         report("Extracting speech audio...")
-        _run_ffmpeg(build_extract_wav_command(ffmpeg, video_path, audio_path), run)
+        _run_ffmpeg(build_extract_wav_command(ffmpeg, video_path, audio_path), run, stop_event=stop_event)
 
         cache_enabled = options.cache_dir is not None or transcriber is None
         transcription_cache_path: Path | None = None
@@ -209,8 +214,11 @@ def prepare_subtitles_from_video(
                     options.whisper_model,
                     report,
                     processing_device=options.processing_device,
+                    stop_event=stop_event,
                 )
             else:
+                if stop_event is not None and stop_event.is_set():
+                    raise TaskCancelledError()
                 cues = transcribe(audio_path, whisper_language, options.whisper_model, report)
             if cues and transcription_cache_path is not None:
                 try:
@@ -222,6 +230,8 @@ def prepare_subtitles_from_video(
 
         translated_cues: list[SubtitleCue] | None = None
         if target_language != "none":
+            if stop_event is not None and stop_event.is_set():
+                raise TaskCancelledError()
             report("Translating subtitles with AI...")
             report_detail("Translating", 0, len(cues))
             if translator is None:
@@ -440,6 +450,7 @@ def transcribe_with_faster_whisper(
     model_size: str,
     progress: ProgressCallback,
     processing_device: str = AUTO_DEVICE,
+    stop_event: threading.Event | None = None,
 ) -> list[SubtitleCue]:
     try:
         from faster_whisper import WhisperModel
@@ -459,9 +470,10 @@ def transcribe_with_faster_whisper(
             device,
             compute_type,
             progress,
+            stop_event,
         )
     except Exception as error:
-        if device != "cuda" or selected_device != AUTO_DEVICE:
+        if device != "cuda" or selected_device != AUTO_DEVICE or isinstance(error, TaskCancelledError):
             raise
         progress(f"CUDA transcription failed: {error}. Falling back to CPU...")
         return _transcribe_with_runtime(
@@ -472,6 +484,7 @@ def transcribe_with_faster_whisper(
             "cpu",
             "int8",
             progress,
+            stop_event,
         )
 
 
@@ -483,6 +496,7 @@ def _transcribe_with_runtime(
     device: str,
     compute_type: str,
     progress: ProgressCallback,
+    stop_event: threading.Event | None = None,
 ) -> list[SubtitleCue]:
     progress(f"Loading Whisper model: {model_size} ({device.upper()})")
     model = whisper_model_class(model_size, device=device, compute_type=compute_type)
@@ -495,6 +509,8 @@ def _transcribe_with_runtime(
 
     cues: list[SubtitleCue] = []
     for index, segment in enumerate(segments, start=1):
+        if stop_event is not None and stop_event.is_set():
+            raise TaskCancelledError()
         text = str(segment.text).strip()
         if not text:
             continue

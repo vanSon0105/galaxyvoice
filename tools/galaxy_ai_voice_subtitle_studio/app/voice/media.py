@@ -1,17 +1,26 @@
 from __future__ import annotations
 
 import json
+import shutil
 import subprocess
+import threading
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
+from ..common.errors import TaskCancelledError
 from ..common.ffmpeg import ffmpeg_missing_message, find_ffmpeg
 from ..common.paths import unique_project_dir
+from ..common.processes import managed_media_processes, terminate_process_tree
 
 ProgressCallback = Callable[[str], None]
 Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
+
+# A wedged or corrupt-input ffmpeg must not hang a worker forever; an hour
+# covers multi-hour source videos while still bounding the worst case.
+MEDIA_COMMAND_TIMEOUT_SECONDS = 3600
 
 
 @dataclass(frozen=True)
@@ -37,6 +46,7 @@ def extract_audio_from_video(
     progress: ProgressCallback | None = None,
     ffmpeg_path: str | None = None,
     runner: Runner | None = None,
+    stop_event: threading.Event | None = None,
 ) -> MediaExtractionResult:
     report = progress or (lambda _message: None)
     video_path = Path(options.video_path).expanduser()
@@ -60,15 +70,20 @@ def extract_audio_from_video(
     exported_wav: Path | None = None
     exported_mp3: Path | None = None
 
-    if options.export_wav:
-        report("Extracting WAV audio...")
-        _run_ffmpeg(build_extract_wav_command(ffmpeg, video_path, wav_path), run)
-        exported_wav = wav_path
+    try:
+        if options.export_wav:
+            report("Extracting WAV audio...")
+            _run_ffmpeg(build_extract_wav_command(ffmpeg, video_path, wav_path), run, stop_event=stop_event)
+            exported_wav = wav_path
 
-    if options.export_mp3:
-        report("Extracting MP3 audio...")
-        _run_ffmpeg(build_extract_mp3_command(ffmpeg, video_path, mp3_path), run)
-        exported_mp3 = mp3_path
+        if options.export_mp3:
+            report("Extracting MP3 audio...")
+            _run_ffmpeg(build_extract_mp3_command(ffmpeg, video_path, mp3_path), run, stop_event=stop_event)
+            exported_mp3 = mp3_path
+    except Exception:
+        # A failed run must not leave a partial project folder behind.
+        shutil.rmtree(project_dir, ignore_errors=True)
+        raise
 
     manifest = {
         "app": "Galaxy AI Voice & Subtitle Studio",
@@ -135,8 +150,12 @@ def build_extract_mp3_command(ffmpeg: str, video_path: Path, output_path: Path) 
     ]
 
 
-def _run_ffmpeg(command: list[str], runner: Runner) -> None:
-    completed = runner(command)
+def _run_ffmpeg(
+    command: list[str],
+    runner: Runner,
+    stop_event: threading.Event | None = None,
+) -> None:
+    completed = runner(command) if stop_event is None else runner(command, stop_event=stop_event)
     if completed.returncode != 0:
         message = completed.stderr.strip() or completed.stdout.strip() or "ffmpeg failed while extracting audio."
         raise RuntimeError(message)
@@ -146,5 +165,70 @@ def _run_ffmpeg(command: list[str], runner: Runner) -> None:
         raise RuntimeError(f"ffmpeg did not create an audio file: {output_path}")
 
 
-def _run_command(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(command, capture_output=True, text=True, check=False)
+def _drain_lines(stream, target: list[str]) -> None:
+    """Read a text pipe line by line on a daemon thread so the writer can
+    never deadlock on a full pipe buffer while we wait for exit."""
+    for line in stream:
+        target.append(line)
+
+
+def _run_command(
+    command: list[str],
+    *,
+    stop_event: threading.Event | None = None,
+    timeout: float = MEDIA_COMMAND_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
+    process = subprocess.Popen(
+        command,
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+    )
+    managed_media_processes.add(process)
+    stdout_lines: list[str] = []
+    stderr_lines: list[str] = []
+    drainers = [
+        threading.Thread(
+            target=_drain_lines,
+            args=(stream, target),
+            name=f"galaxy-drain-{process.pid}",
+            daemon=True,
+        )
+        for stream, target in ((process.stdout, stdout_lines), (process.stderr, stderr_lines))
+    ]
+    for drainer in drainers:
+        drainer.start()
+    try:
+        deadline = time.monotonic() + timeout
+        try:
+            while True:
+                try:
+                    process.wait(timeout=0.5)
+                    break
+                except subprocess.TimeoutExpired:
+                    if stop_event is not None and stop_event.is_set():
+                        terminate_process_tree(process)
+                        process.wait(timeout=10)
+                        raise TaskCancelledError() from None
+                    if time.monotonic() > deadline:
+                        terminate_process_tree(process)
+                        process.wait(timeout=10)
+                        raise RuntimeError(
+                            f"ffmpeg timed out after {int(timeout)} s: {' '.join(command[:2])}"
+                        ) from None
+        finally:
+            for drainer in drainers:
+                drainer.join(timeout=5)
+    finally:
+        managed_media_processes.discard(process)
+
+    return subprocess.CompletedProcess(
+        command,
+        process.returncode,
+        "".join(stdout_lines),
+        "".join(stderr_lines),
+    )

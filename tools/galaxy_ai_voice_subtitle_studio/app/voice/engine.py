@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import json
+import shutil
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
 from .audio import concatenate_wavs, try_convert_to_mp3
+from ..common.errors import TaskCancelledError
 from ..common.paths import unique_project_dir
 from .srt import SubtitleCue, render_srt
 from .text_splitter import split_text
@@ -45,6 +48,7 @@ def generate_package(
     options: GenerationOptions,
     tts: TTSEngine | None = None,
     progress: ProgressCallback | None = None,
+    stop_event: threading.Event | None = None,
 ) -> GenerationResult:
     report = progress or (lambda _message: None)
     chunks = split_text(options.text, max_chars=options.max_chars)
@@ -62,21 +66,28 @@ def generate_package(
     report(f"Preparing {len(chunks)} narration segments...")
     segment_paths: list[Path] = []
 
-    for index, chunk in enumerate(chunks, start=1):
-        report(f"Synthesizing segment {index}/{len(chunks)}")
-        segment_path = segments_dir / f"segment_{index:03}.wav"
-        try:
-            tts_engine.synthesize_to_wav(
-                chunk,
-                segment_path,
-                voice_name=options.voice_name,
-                rate=options.rate,
-                volume=options.volume,
-            )
-        except Exception as error:
-            preview = chunk if len(chunk) <= 80 else f"{chunk[:77]}..."
-            raise RuntimeError(f"Segment {index}/{len(chunks)} failed ({preview!r}): {error}") from error
-        segment_paths.append(segment_path)
+    try:
+        for index, chunk in enumerate(chunks, start=1):
+            if stop_event is not None and stop_event.is_set():
+                raise TaskCancelledError()
+            report(f"Synthesizing segment {index}/{len(chunks)}")
+            segment_path = segments_dir / f"segment_{index:03}.wav"
+            try:
+                tts_engine.synthesize_to_wav(
+                    chunk,
+                    segment_path,
+                    voice_name=options.voice_name,
+                    rate=options.rate,
+                    volume=options.volume,
+                )
+            except Exception as error:
+                preview = chunk if len(chunk) <= 80 else f"{chunk[:77]}..."
+                raise RuntimeError(f"Segment {index}/{len(chunks)} failed ({preview!r}): {error}") from error
+            segment_paths.append(segment_path)
+    except Exception:
+        # A failed or cancelled run must not leave a partial project behind.
+        shutil.rmtree(project_dir, ignore_errors=True)
+        raise
 
     project_slug = project_dir.name
     wav_path = project_dir / f"{project_slug}.wav"

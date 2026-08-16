@@ -5,6 +5,7 @@ and the translation API key flows through env vars / per-request input only.
 """
 from __future__ import annotations
 
+import os
 from dataclasses import asdict, fields
 from pathlib import Path
 from typing import Any
@@ -153,3 +154,20 @@ def get_system_processes() -> dict[str, Any]:
         "media_processes": managed_media_processes.snapshot(),
         "running_tasks": task_registry.running_count(),
     }
+
+
+@router.post("/system/open-path")
+def open_path(body: dict[str, Any]) -> dict[str, bool]:
+    path = Path(str(body.get("path") or "")).expanduser()
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="Đường dẫn không tồn tại")
+    try:
+        if os.name == "nt":
+            os.startfile(path)  # type: ignore[attr-defined]
+        else:  # pragma: no cover - Windows-only app
+            import webbrowser
+
+            webbrowser.open(path.as_uri())
+    except OSError as error:
+        raise HTTPException(status_code=500, detail=f"Không mở được đường dẫn: {error}")
+    return {"ok": True}

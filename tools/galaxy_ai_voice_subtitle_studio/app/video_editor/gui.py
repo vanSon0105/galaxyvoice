@@ -71,23 +71,53 @@ AUDIO_MODE_LABELS = {MIX_AUDIO: "Trộn với âm thanh gốc", REPLACE_AUDIO: "
 
 class VideoEditorTabMixin:
     def _build_video_editor_tab(self) -> None:
-        self.editor_tab = ttk.Frame(self.main_notebook, padding=(0, 10, 0, 0))
+        self.editor_tab = ttk.Frame(self.main_notebook, padding=(4, 0))
         self.editor_tab.columnconfigure(0, weight=1)
         self.editor_tab.rowconfigure(1, weight=1)
         self.main_notebook.add(self.editor_tab, text="Dựng video")
 
-        toolbar = ttk.Frame(self.editor_tab)
-        toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
-        self.editor_video_button = ttk.Button(toolbar, text="Thêm video", command=self.browse_editor_video)
+        toolbar = ttk.Frame(self.editor_tab, style="Toolbar.TFrame", padding=(8, 0))
+        toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        self.editor_video_button = ttk.Button(
+            toolbar,
+            text="Thêm video",
+            style="Accent.TButton",
+            command=self.browse_editor_video,
+        )
         self.editor_video_button.grid(row=0, column=0, padx=(0, 6))
-        self.editor_audio_button = ttk.Button(toolbar, text="Thêm audio", command=self.browse_editor_audio)
+        self.editor_audio_button = ttk.Button(
+            toolbar,
+            text="Thêm audio",
+            style="Tool.TButton",
+            command=self.browse_editor_audio,
+        )
         self.editor_audio_button.grid(row=0, column=1, padx=(0, 6))
-        self.editor_subtitle_button = ttk.Button(toolbar, text="Thêm SRT", command=self.browse_editor_subtitle)
+        self.editor_subtitle_button = ttk.Button(
+            toolbar,
+            text="Thêm SRT",
+            style="Tool.TButton",
+            command=self.browse_editor_subtitle,
+        )
         self.editor_subtitle_button.grid(row=0, column=2, padx=(0, 6))
-        ttk.Button(toolbar, text="Xóa audio", command=self.clear_editor_audio).grid(row=0, column=3, padx=(10, 6))
-        ttk.Button(toolbar, text="Xóa sub", command=self.clear_editor_subtitles).grid(row=0, column=4)
-        ttk.Label(toolbar, textvariable=self.editor_project_summary).grid(row=0, column=5, sticky="e", padx=(14, 0))
-        toolbar.columnconfigure(5, weight=1)
+        ttk.Separator(toolbar, orient="vertical").grid(row=0, column=3, sticky="ns", padx=8)
+        ttk.Button(
+            toolbar,
+            text="Xóa audio",
+            style="Ghost.TButton",
+            command=self.clear_editor_audio,
+        ).grid(row=0, column=4, padx=(0, 4))
+        ttk.Button(
+            toolbar,
+            text="Xóa phụ đề",
+            style="Ghost.TButton",
+            command=self.clear_editor_subtitles,
+        ).grid(row=0, column=5)
+        ttk.Label(
+            toolbar,
+            textvariable=self.editor_project_summary,
+            style="Toolbar.TLabel",
+        ).grid(row=0, column=6, sticky="e", padx=(14, 0))
+        toolbar.columnconfigure(6, weight=1)
 
         self.editor_vertical_pane = ttk.Panedwindow(self.editor_tab, orient="vertical")
         self.editor_vertical_pane.grid(row=1, column=0, sticky="nsew")
@@ -95,20 +125,20 @@ class VideoEditorTabMixin:
         workspace = ttk.Frame(self.editor_vertical_pane)
         workspace.columnconfigure(0, weight=1)
         workspace.rowconfigure(0, weight=1)
-        timeline_panel = ttk.Frame(self.editor_vertical_pane)
+        timeline_panel = ttk.Frame(self.editor_vertical_pane, style="Card.TFrame", padding=4)
         timeline_panel.columnconfigure(0, weight=1)
         timeline_panel.rowconfigure(1, weight=1)
-        self.editor_vertical_pane.add(workspace, weight=3)
+        self.editor_vertical_pane.add(workspace, weight=2)
         self.editor_vertical_pane.add(timeline_panel, weight=2)
 
         workspace_pane = ttk.Panedwindow(workspace, orient="horizontal")
         workspace_pane.grid(row=0, column=0, sticky="nsew")
         media_panel = ttk.Frame(
-            workspace_pane, style="Panel.TFrame", padding=10, width=self._px(220)
+            workspace_pane, style="Card.TFrame", padding=12, width=self._px(260)
         )
-        preview_panel = ttk.Frame(workspace_pane, style="Panel.TFrame", padding=10)
+        preview_panel = ttk.Frame(workspace_pane, style="Card.TFrame", padding=12)
         inspector = ttk.Frame(
-            workspace_pane, style="Panel.TFrame", padding=10, width=self._px(350)
+            workspace_pane, style="Card.TFrame", padding=10, width=self._px(350)
         )
         media_panel.columnconfigure(0, weight=1)
         media_panel.rowconfigure(0, weight=1)
@@ -130,7 +160,7 @@ class VideoEditorTabMixin:
         )
         self.editor_media_bin.grid(row=0, column=0, sticky="nsew")
 
-        preview_holder = ttk.Frame(preview_panel, style="Surface.TFrame")
+        preview_holder = ttk.Frame(preview_panel, style="Inset.TFrame")
         preview_holder.grid(row=0, column=0, sticky="nsew")
         preview_holder.columnconfigure(0, weight=1)
         preview_holder.rowconfigure(0, weight=1)
@@ -152,12 +182,13 @@ class VideoEditorTabMixin:
             tags=("editor-placeholder",),
         )
 
-        transport = ttk.Frame(preview_panel, style="Surface.TFrame")
-        transport.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        transport = ttk.Frame(preview_panel, style="Transport.TFrame", padding=(10, 8))
+        transport.grid(row=1, column=0, sticky="ew", pady=(10, 0))
         transport.columnconfigure(1, weight=1)
         self.editor_play_button = ttk.Button(
             transport,
             text="Phát",
+            style="Tool.TButton",
             command=self.toggle_editor_playback,
             state="disabled",
             width=9,
@@ -175,19 +206,21 @@ class VideoEditorTabMixin:
         self.editor_seek.grid(row=0, column=1, sticky="ew")
         self.editor_seek.bind("<ButtonPress-1>", self._start_editor_seek)
         self.editor_seek.bind("<ButtonRelease-1>", self._finish_editor_seek)
-        ttk.Label(transport, textvariable=self.editor_time_text, width=16, anchor="e", style="Panel.TLabel").grid(
+        ttk.Label(transport, textvariable=self.editor_time_text, width=16, anchor="e", style="Toolbar.TLabel").grid(
             row=0, column=2, padx=(8, 0)
         )
 
-        self.editor_inspector_notebook = ttk.Notebook(inspector)
+        self.editor_inspector_notebook = ttk.Notebook(inspector, style="Compact.TNotebook")
         self.editor_inspector_notebook.grid(row=0, column=0, sticky="nsew")
         self._build_editor_subtitle_inspector()
         self._build_editor_export_inspector()
 
-        timeline_toolbar = ttk.Frame(timeline_panel)
-        timeline_toolbar.grid(row=0, column=0, sticky="ew", pady=(6, 5))
-        ttk.Label(timeline_toolbar, text="Timeline", style="PageSection.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(timeline_toolbar, text="Thu phóng").grid(row=0, column=1, padx=(18, 6))
+        timeline_toolbar = ttk.Frame(timeline_panel, style="CardHeader.TFrame")
+        timeline_toolbar.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        ttk.Label(timeline_toolbar, text="TIMELINE", style="Eyebrow.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(timeline_toolbar, text="Thu phóng", style="CardMuted.TLabel").grid(
+            row=0, column=1, padx=(18, 6)
+        )
         self.editor_zoom_scale = ttk.Scale(
             timeline_toolbar,
             from_=0.1,
@@ -198,9 +231,6 @@ class VideoEditorTabMixin:
             length=self._px(180),
         )
         self.editor_zoom_scale.grid(row=0, column=2)
-        ttk.Label(timeline_toolbar, text="Kéo clip audio để đổi vị trí; kéo hai mép sub để sửa thời gian").grid(
-            row=0, column=3, sticky="e", padx=(16, 0)
-        )
         timeline_toolbar.columnconfigure(3, weight=1)
 
         self.editor_timeline = EditorTimeline(
@@ -226,7 +256,7 @@ class VideoEditorTabMixin:
         ]
 
     def _build_editor_subtitle_inspector(self) -> None:
-        tab = ttk.Frame(self.editor_inspector_notebook, padding=8)
+        tab = ttk.Frame(self.editor_inspector_notebook, style="Card.TFrame", padding=10)
         tab.columnconfigure(0, weight=1)
         tab.rowconfigure(0, weight=1)
         self.editor_inspector_notebook.add(tab, text="Phụ đề")
@@ -249,16 +279,22 @@ class VideoEditorTabMixin:
         self.editor_cue_tree.configure(yscrollcommand=cue_scroll.set)
         self.editor_cue_tree.bind("<<TreeviewSelect>>", self._on_editor_cue_selected)
 
-        timing = ttk.Frame(tab)
+        timing = ttk.Frame(tab, style="Card.TFrame")
         timing.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         timing.columnconfigure(1, weight=1)
         timing.columnconfigure(3, weight=1)
-        ttk.Label(timing, text="Bắt đầu").grid(row=0, column=0, sticky="w", padx=(0, 5))
+        ttk.Label(timing, text="Bắt đầu", style="CardMuted.TLabel").grid(
+            row=0, column=0, sticky="w", padx=(0, 5)
+        )
         ttk.Entry(timing, textvariable=self.editor_cue_start, width=13).grid(row=0, column=1, sticky="ew")
-        ttk.Label(timing, text="Kết thúc").grid(row=0, column=2, sticky="w", padx=(10, 5))
+        ttk.Label(timing, text="Kết thúc", style="CardMuted.TLabel").grid(
+            row=0, column=2, sticky="w", padx=(10, 5)
+        )
         ttk.Entry(timing, textvariable=self.editor_cue_end, width=13).grid(row=0, column=3, sticky="ew")
 
-        ttk.Label(tab, text="Nội dung").grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 3))
+        ttk.Label(tab, text="Nội dung", style="CardMuted.TLabel").grid(
+            row=2, column=0, columnspan=2, sticky="w", pady=(8, 3)
+        )
         self.editor_cue_text = tk.Text(
             tab,
             height=3,
@@ -270,19 +306,25 @@ class VideoEditorTabMixin:
         )
         self.editor_cue_text.grid(row=3, column=0, columnspan=2, sticky="ew")
 
-        actions = ttk.Frame(tab)
+        actions = ttk.Frame(tab, style="Card.TFrame")
         actions.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         for column in range(4):
             actions.columnconfigure(column, weight=1)
-        ttk.Button(actions, text="Áp dụng", command=self.apply_editor_cue).grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        ttk.Button(actions, text="Thêm", command=self.add_editor_cue).grid(row=0, column=1, sticky="ew", padx=4)
-        ttk.Button(actions, text="Xóa", command=self.delete_editor_cue).grid(row=0, column=2, sticky="ew", padx=4)
-        ttk.Button(actions, text="Căn theo video", command=self.fit_editor_subtitles).grid(
+        ttk.Button(actions, text="Áp dụng", style="Accent.TButton", command=self.apply_editor_cue).grid(
+            row=0, column=0, sticky="ew", padx=(0, 4)
+        )
+        ttk.Button(actions, text="Thêm", style="Tool.TButton", command=self.add_editor_cue).grid(
+            row=0, column=1, sticky="ew", padx=4
+        )
+        ttk.Button(actions, text="Xóa", style="Danger.TButton", command=self.delete_editor_cue).grid(
+            row=0, column=2, sticky="ew", padx=4
+        )
+        ttk.Button(actions, text="Căn theo video", style="Tool.TButton", command=self.fit_editor_subtitles).grid(
             row=0, column=3, sticky="ew", padx=(4, 0)
         )
 
     def _build_editor_export_inspector(self) -> None:
-        container = ttk.Frame(self.editor_inspector_notebook, padding=8)
+        container = ttk.Frame(self.editor_inspector_notebook, style="Card.TFrame", padding=10)
         container.columnconfigure(0, weight=1)
         container.rowconfigure(0, weight=1)
         self.editor_inspector_notebook.add(container, text="Xuất video")
@@ -297,7 +339,9 @@ class VideoEditorTabMixin:
         output.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(3, 8))
         output.columnconfigure(0, weight=1)
         ttk.Entry(output, textvariable=self.editor_output_dir).grid(row=0, column=0, sticky="ew")
-        ttk.Button(output, text="Browse", command=self.browse_editor_output).grid(row=0, column=1, padx=(6, 0))
+        ttk.Button(output, text="Chọn", style="Tool.TButton", command=self.browse_editor_output).grid(
+            row=0, column=1, padx=(6, 0)
+        )
 
         ttk.Label(tab, text="Độ phân giải").grid(row=4, column=0, sticky="w")
         ttk.Label(tab, text="Khung hình").grid(row=4, column=1, sticky="w", padx=(8, 0))
@@ -347,9 +391,21 @@ class VideoEditorTabMixin:
             actions, text="Xuất video", style="Accent.TButton", command=self.start_editor_export, state="disabled"
         )
         self.editor_export_button.grid(row=0, column=0, sticky="ew", padx=(0, 4))
-        self.editor_stop_button = ttk.Button(actions, text="Dừng", command=self.stop_editor_export, state="disabled")
+        self.editor_stop_button = ttk.Button(
+            actions,
+            text="Dừng",
+            style="Danger.TButton",
+            command=self.stop_editor_export,
+            state="disabled",
+        )
         self.editor_stop_button.grid(row=0, column=1, sticky="ew", padx=(4, 0))
-        self.editor_open_button = ttk.Button(tab, text="Mở thư mục output", command=self.open_editor_output, state="disabled")
+        self.editor_open_button = ttk.Button(
+            tab,
+            text="Mở thư mục output",
+            style="Ghost.TButton",
+            command=self.open_editor_output,
+            state="disabled",
+        )
         self.editor_open_button.grid(row=row + 1, column=0, columnspan=2, sticky="ew", pady=(6, 0))
         self.editor_progress = ttk.Progressbar(tab, mode="determinate", maximum=100)
         self.editor_progress.grid(row=row + 2, column=0, columnspan=2, sticky="ew", pady=(8, 0))

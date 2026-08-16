@@ -321,7 +321,7 @@ class GalaxyStudioApp(
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        shell = ttk.Frame(self.root, padding=(14, 10))
+        shell = ttk.Frame(self.root, padding=(12, 8))
         shell.grid(row=0, column=0, sticky="nsew")
         shell.columnconfigure(0, weight=1)
         shell.rowconfigure(1, weight=1)
@@ -336,27 +336,27 @@ class GalaxyStudioApp(
             row=0, column=1, sticky="e"
         )
 
-        self.main_notebook = ttk.Notebook(shell)
+        self.main_notebook = ttk.Notebook(shell, style="Nav.TNotebook")
         self.main_notebook.grid(row=1, column=0, sticky="nsew")
 
-        self.voice_tab = ttk.Frame(self.main_notebook, padding=(0, 10, 0, 0))
+        self.voice_tab = ttk.Frame(self.main_notebook, padding=(0, 8, 0, 0))
         self.voice_tab.columnconfigure(0, weight=1)
         self.voice_tab.rowconfigure(0, weight=1)
         self.main_notebook.add(self.voice_tab, text="Voice")
 
-        self.voice_feature_notebook = ttk.Notebook(self.voice_tab)
+        self.voice_feature_notebook = ttk.Notebook(self.voice_tab, style="Subnav.TNotebook")
         self.voice_feature_notebook.grid(row=0, column=0, sticky="nsew")
-        self.classic_voice_tab = ttk.Frame(self.voice_feature_notebook, padding=(0, 10, 0, 0))
+        self.classic_voice_tab = ttk.Frame(self.voice_feature_notebook, padding=12)
         self.classic_voice_tab.columnconfigure(0, weight=1)
         self.classic_voice_tab.columnconfigure(1, minsize=self._px(340))
         self.classic_voice_tab.rowconfigure(0, weight=1)
         self.voice_feature_notebook.add(self.classic_voice_tab, text="Video Dubbing")
 
-        left = ttk.Frame(self.classic_voice_tab)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        left = ttk.Frame(self.classic_voice_tab, style="Card.TFrame", padding=10)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         left.columnconfigure(0, weight=1)
         left.rowconfigure(0, weight=1)
-        self.subtitle_notebook = ttk.Notebook(left)
+        self.subtitle_notebook = ttk.Notebook(left, style="Compact.TNotebook")
         self.subtitle_notebook.grid(row=0, column=0, sticky="nsew")
         self.script_tab, self.script_text = self._build_text_tab(
             self.subtitle_notebook,
@@ -380,7 +380,7 @@ class GalaxyStudioApp(
         self.source_subtitle_text.bind("<<Modified>>", self._on_subtitle_modified)
         self.translated_subtitle_text.bind("<<Modified>>", self._on_subtitle_modified)
 
-        right = ttk.Frame(self.classic_voice_tab, style="Panel.TFrame", padding=14)
+        right = ttk.Frame(self.classic_voice_tab, padding=0)
         right.grid(row=0, column=1, sticky="nsew")
         right.columnconfigure(0, weight=1)
         right.rowconfigure(0, weight=1)
@@ -391,17 +391,29 @@ class GalaxyStudioApp(
         self._build_export_panel(controls)
         self._build_video_panel(controls)
 
-        actions = ttk.Frame(right, style="Surface.TFrame")
+        actions = ttk.Frame(right, style="Toolbar.TFrame", padding=(10, 8))
         actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
         actions.columnconfigure(0, weight=1)
         actions.columnconfigure(1, weight=1)
-        self.generate_button = ttk.Button(actions, text="Generate", style="Accent.TButton", command=self.start_generate)
+        self.generate_button = ttk.Button(
+            actions,
+            text="Tạo voice",
+            style="Accent.TButton",
+            command=self.start_generate,
+        )
         self.generate_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self.open_button = ttk.Button(actions, text="Open Output", command=self.open_output, state="disabled")
+        self.open_button = ttk.Button(
+            actions,
+            text="Mở output",
+            style="Ghost.TButton",
+            command=self.open_output,
+            state="disabled",
+        )
         self.open_button.grid(row=0, column=1, sticky="ew")
         self.dub_generate_button = ttk.Button(
             actions,
             text="Tạo voice theo sub",
+            style="Tool.TButton",
             command=self.start_omnivoice_dubbing,
             state="disabled",
         )
@@ -409,6 +421,7 @@ class GalaxyStudioApp(
         self.dub_editor_button = ttk.Button(
             actions,
             text="Đưa sang dựng video",
+            style="Tool.TButton",
             command=self.send_dubbing_to_editor,
             state="disabled",
         )
@@ -427,13 +440,15 @@ class GalaxyStudioApp(
             "<<NotebookTabChanged>>", self._on_voice_feature_tab_changed
         )
 
-        self.log_frame = ttk.Frame(shell)
+        self.log_frame = ttk.Frame(shell, style="Card.TFrame", padding=10)
         self.log_frame.grid(row=2, column=0, sticky="nsew", pady=(12, 0))
         self.log_frame.columnconfigure(0, weight=1)
-        ttk.Label(self.log_frame, text="Log").grid(row=0, column=0, sticky="w", pady=(0, 4))
+        ttk.Label(self.log_frame, text="NHẬT KÝ", style="Eyebrow.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 7)
+        )
         self.log_text = tk.Text(
             self.log_frame,
-            height=6,
+            height=5,
             wrap="word",
             font="TkFixedFont",
             padx=10,

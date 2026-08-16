@@ -34,22 +34,25 @@ from .service import (
 
 class SubtitleRemovalTabMixin:
     def _build_removal_tab(self) -> None:
-        self.removal_tab = ttk.Frame(self.main_notebook, padding=(0, 10, 0, 0))
+        self.removal_tab = ttk.Frame(self.main_notebook, padding=12)
         self.removal_tab.columnconfigure(0, weight=1)
-        self.removal_tab.columnconfigure(1, minsize=340)
+        self.removal_tab.columnconfigure(1, minsize=self._px(360))
         self.removal_tab.rowconfigure(0, weight=1)
         self.main_notebook.add(self.removal_tab, text="Xóa phụ đề")
 
-        preview_panel = ttk.Frame(self.removal_tab)
-        preview_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 12))
+        preview_panel = ttk.Frame(self.removal_tab, style="Card.TFrame", padding=16)
+        preview_panel.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
         preview_panel.columnconfigure(0, weight=1)
-        preview_panel.rowconfigure(1, weight=1)
-        ttk.Label(preview_panel, text="Xem trước", style="PageSection.TLabel").grid(
-            row=0, column=0, sticky="w", pady=(0, 8)
+        preview_panel.rowconfigure(2, weight=1)
+        ttk.Label(preview_panel, text="XÓA PHỤ ĐỀ", style="Eyebrow.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(preview_panel, text="Xem trước video", style="CardTitle.TLabel").grid(
+            row=1, column=0, sticky="w", pady=(2, 12)
         )
 
-        preview_holder = ttk.Frame(preview_panel)
-        preview_holder.grid(row=1, column=0, sticky="nsew")
+        preview_holder = ttk.Frame(preview_panel, style="Inset.TFrame")
+        preview_holder.grid(row=2, column=0, sticky="nsew")
         preview_holder.columnconfigure(0, weight=1)
         preview_holder.rowconfigure(0, weight=1)
         self.removal_preview_canvas = tk.Canvas(
@@ -85,12 +88,13 @@ class SubtitleRemovalTabMixin:
         )
         self._draw_removal_region()
 
-        transport = ttk.Frame(preview_panel)
-        transport.grid(row=2, column=0, sticky="ew", pady=(8, 0))
+        transport = ttk.Frame(preview_panel, style="Transport.TFrame", padding=(10, 8))
+        transport.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         transport.columnconfigure(1, weight=1)
         self.removal_play_button = ttk.Button(
             transport,
             text="Phát",
+            style="Tool.TButton",
             command=self.toggle_removal_playback,
             state="disabled",
             width=10,
@@ -113,41 +117,56 @@ class SubtitleRemovalTabMixin:
             textvariable=self.removal_time_text,
             width=14,
             anchor="e",
+            style="Toolbar.TLabel",
         ).grid(row=0, column=2, padx=(8, 0))
 
-        controls_panel = ttk.Frame(self.removal_tab, style="Panel.TFrame", padding=14)
+        controls_panel = ttk.Frame(self.removal_tab, style="Card.TFrame", padding=16)
         controls_panel.grid(row=0, column=1, sticky="nsew")
-        controls_panel.configure(width=self._px(360))
+        controls_panel.configure(width=self._px(390))
         controls_panel.grid_propagate(False)
         controls_panel.columnconfigure(0, weight=1)
         controls_panel.rowconfigure(0, weight=1)
         controls = self._build_scrollable_controls(controls_panel)
 
-        ttk.Label(controls, text="Video đầu vào", style="Section.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(controls, text="THIẾT LẬP XỬ LÝ", style="Eyebrow.TLabel").grid(
+            row=0, column=0, sticky="w"
+        )
+        ttk.Label(controls, text="Video đầu vào", style="CardTitle.TLabel").grid(
+            row=1, column=0, sticky="w", pady=(2, 10)
+        )
         input_row = ttk.Frame(controls, style="Surface.TFrame")
-        input_row.grid(row=1, column=0, sticky="ew", pady=(8, 0))
+        input_row.grid(row=2, column=0, sticky="ew")
         input_row.columnconfigure(0, weight=1)
         ttk.Entry(input_row, textvariable=self.removal_video_path).grid(
             row=0, column=0, sticky="ew", padx=(0, 6)
         )
-        ttk.Button(input_row, text="Browse", command=self.browse_removal_video).grid(row=0, column=1)
+        ttk.Button(
+            input_row,
+            text="Chọn",
+            style="Tool.TButton",
+            command=self.browse_removal_video,
+        ).grid(row=0, column=1)
 
-        ttk.Label(controls, text="Tên project", style="Panel.TLabel").grid(
-            row=2, column=0, sticky="w", pady=(12, 2)
+        ttk.Label(controls, text="Tên project", style="CardMuted.TLabel").grid(
+            row=3, column=0, sticky="w", pady=(14, 4)
         )
-        ttk.Entry(controls, textvariable=self.removal_project_name).grid(row=3, column=0, sticky="ew")
+        ttk.Entry(controls, textvariable=self.removal_project_name).grid(row=4, column=0, sticky="ew")
 
-        ttk.Label(controls, text="Output folder", style="Panel.TLabel").grid(
-            row=4, column=0, sticky="w", pady=(12, 2)
+        ttk.Label(controls, text="Thư mục output", style="CardMuted.TLabel").grid(
+            row=5, column=0, sticky="w", pady=(12, 4)
         )
         output_row = ttk.Frame(controls, style="Surface.TFrame")
-        output_row.grid(row=5, column=0, sticky="ew")
+        output_row.grid(row=6, column=0, sticky="ew")
         output_row.columnconfigure(0, weight=1)
         ttk.Entry(output_row, textvariable=self.output_dir).grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        ttk.Button(output_row, text="Browse", command=self.browse_output).grid(row=0, column=1)
+        ttk.Button(output_row, text="Chọn", style="Tool.TButton", command=self.browse_output).grid(
+            row=0, column=1
+        )
 
-        ttk.Label(controls, text="Chế độ", style="Panel.TLabel").grid(
-            row=6, column=0, sticky="w", pady=(12, 2)
+        ttk.Separator(controls).grid(row=7, column=0, sticky="ew", pady=(16, 12))
+
+        ttk.Label(controls, text="Chế độ xóa", style="CardMuted.TLabel").grid(
+            row=8, column=0, sticky="w", pady=(0, 4)
         )
         self.removal_mode_combo = ttk.Combobox(
             controls,
@@ -155,14 +174,14 @@ class SubtitleRemovalTabMixin:
             values=tuple(REMOVAL_MODE_LABELS.values()),
             state="readonly",
         )
-        self.removal_mode_combo.grid(row=7, column=0, sticky="ew")
+        self.removal_mode_combo.grid(row=9, column=0, sticky="ew")
         self.removal_mode_combo.bind("<<ComboboxSelected>>", self._on_removal_mode_changed)
 
         device_row = ttk.Frame(controls, style="Surface.TFrame")
-        device_row.grid(row=8, column=0, sticky="ew", pady=(12, 0))
+        device_row.grid(row=10, column=0, sticky="ew", pady=(12, 0))
         device_row.columnconfigure(0, weight=1)
-        ttk.Label(device_row, text="Thiết bị xử lý", style="Panel.TLabel").grid(
-            row=0, column=0, columnspan=2, sticky="w", pady=(0, 2)
+        ttk.Label(device_row, text="Thiết bị xử lý", style="CardMuted.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w", pady=(0, 4)
         )
         self.removal_device_combo = ttk.Combobox(
             device_row,
@@ -174,15 +193,16 @@ class SubtitleRemovalTabMixin:
         self.propainter_install_button = ttk.Button(
             device_row,
             text="Cài ProPainter",
+            style="Tool.TButton",
             command=self.install_propainter,
         )
         self.propainter_install_button.grid(row=1, column=1, sticky="e")
 
         region = ttk.Frame(controls, style="Surface.TFrame")
-        region.grid(row=9, column=0, sticky="ew", pady=(14, 0))
+        region.grid(row=11, column=0, sticky="ew", pady=(16, 0))
         region.columnconfigure(1, weight=1)
         region.columnconfigure(3, weight=1)
-        ttk.Label(region, text="Vùng phụ đề (%)", style="Section.TLabel").grid(
+        ttk.Label(region, text="VÙNG PHỤ ĐỀ (%)", style="Eyebrow.TLabel").grid(
             row=0, column=0, columnspan=4, sticky="w", pady=(0, 8)
         )
         self.removal_region_widgets: list[tk.Widget] = []
@@ -195,7 +215,7 @@ class SubtitleRemovalTabMixin:
         for index, (label, variable, minimum, maximum) in enumerate(region_fields):
             row = 1 + index // 2
             column = (index % 2) * 2
-            ttk.Label(region, text=label, style="Panel.TLabel").grid(
+            ttk.Label(region, text=label, style="CardMuted.TLabel").grid(
                 row=row, column=column, sticky="w", pady=3, padx=(0, 6)
             )
             spinbox = ttk.Spinbox(
@@ -210,9 +230,9 @@ class SubtitleRemovalTabMixin:
             self.removal_region_widgets.append(spinbox)
 
         blur_row = ttk.Frame(controls, style="Surface.TFrame")
-        blur_row.grid(row=10, column=0, sticky="ew", pady=(12, 0))
+        blur_row.grid(row=12, column=0, sticky="ew", pady=(12, 0))
         blur_row.columnconfigure(1, weight=1)
-        ttk.Label(blur_row, text="Độ mờ", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(blur_row, text="Độ mờ", style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
         self.removal_blur_scale = ttk.Scale(
             blur_row,
             from_=1,
@@ -225,18 +245,19 @@ class SubtitleRemovalTabMixin:
         ttk.Label(
             blur_row,
             textvariable=self.subtitle_blur_strength,
-            style="Panel.TLabel",
+            style="Card.TLabel",
             width=4,
             anchor="e",
         ).grid(row=0, column=2, sticky="e")
 
         action_row = ttk.Frame(controls, style="Surface.TFrame")
-        action_row.grid(row=11, column=0, sticky="ew", pady=(18, 0))
+        action_row.grid(row=13, column=0, sticky="ew", pady=(18, 0))
         action_row.columnconfigure(0, weight=1)
         action_row.columnconfigure(1, weight=1)
         self.removal_preview_button = ttk.Button(
             action_row,
             text="Xem trước",
+            style="Ghost.TButton",
             command=self.start_removal_preview,
         )
         self.removal_preview_button.grid(row=0, column=0, sticky="ew", padx=(0, 6))
@@ -250,13 +271,14 @@ class SubtitleRemovalTabMixin:
 
         self.removal_open_button = ttk.Button(
             controls,
-            text="Open Output",
+            text="Mở output",
+            style="Ghost.TButton",
             command=self.open_output,
             state="disabled",
         )
-        self.removal_open_button.grid(row=12, column=0, sticky="ew", pady=(8, 0))
+        self.removal_open_button.grid(row=14, column=0, sticky="ew", pady=(8, 0))
         self.removal_progress = ttk.Progressbar(controls, mode="indeterminate")
-        self.removal_progress.grid(row=13, column=0, sticky="ew", pady=(12, 0))
+        self.removal_progress.grid(row=15, column=0, sticky="ew", pady=(12, 0))
         self._on_removal_mode_changed()
 
     def browse_removal_video(self) -> None:

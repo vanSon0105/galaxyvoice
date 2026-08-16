@@ -82,85 +82,112 @@ class VoiceTabMixin:
         return controls
 
     def _build_project_panel(self, parent: ttk.Frame) -> None:
-        ttk.Label(parent, text="Project", style="Section.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(parent, text="Name", style="Panel.TLabel").grid(row=1, column=0, sticky="w", pady=(8, 2))
-        ttk.Entry(parent, textvariable=self.project_name).grid(row=2, column=0, sticky="ew")
+        project = ttk.Frame(parent, style="Card.TFrame", padding=14)
+        project.grid(row=0, column=0, sticky="ew")
+        project.columnconfigure(0, weight=1)
+        ttk.Label(project, text="DỰ ÁN", style="Eyebrow.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(project, text="Tên project", style="CardMuted.TLabel").grid(
+            row=1, column=0, sticky="w", pady=(10, 4)
+        )
+        ttk.Entry(project, textvariable=self.project_name).grid(row=2, column=0, sticky="ew")
 
-        ttk.Label(parent, text="Output folder", style="Panel.TLabel").grid(row=3, column=0, sticky="w", pady=(10, 2))
-        output_row = ttk.Frame(parent, style="Surface.TFrame")
+        ttk.Label(project, text="Thư mục output", style="CardMuted.TLabel").grid(
+            row=3, column=0, sticky="w", pady=(10, 4)
+        )
+        output_row = ttk.Frame(project, style="Card.TFrame")
         output_row.grid(row=4, column=0, sticky="ew")
         output_row.columnconfigure(0, weight=1)
         ttk.Entry(output_row, textvariable=self.output_dir).grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        ttk.Button(output_row, text="Browse", command=self.browse_output).grid(row=0, column=1)
+        ttk.Button(output_row, text="Chọn", style="Tool.TButton", command=self.browse_output).grid(
+            row=0, column=1
+        )
 
     def _build_voice_panel(self, parent: ttk.Frame) -> None:
-        ttk.Label(parent, text="Voice", style="Section.TLabel").grid(row=5, column=0, sticky="w", pady=(18, 8))
-        ttk.Label(parent, text="Engine", style="Panel.TLabel").grid(row=6, column=0, sticky="w", pady=(0, 2))
+        voice = ttk.Frame(parent, style="Card.TFrame", padding=14)
+        voice.grid(row=1, column=0, sticky="ew", pady=(10, 0))
+        voice.columnconfigure(0, weight=1)
+        ttk.Label(voice, text="GIỌNG ĐỌC", style="Eyebrow.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(voice, text="Engine", style="CardMuted.TLabel").grid(
+            row=1, column=0, sticky="w", pady=(10, 4)
+        )
         self.tts_engine_combo = ttk.Combobox(
-            parent,
+            voice,
             textvariable=self.tts_engine_name,
             values=tts_engine_labels(),
             state="readonly",
         )
-        self.tts_engine_combo.grid(row=7, column=0, sticky="ew")
+        self.tts_engine_combo.grid(row=2, column=0, sticky="ew")
         self.tts_engine_combo.bind("<<ComboboxSelected>>", self._on_tts_engine_changed)
 
-        ttk.Label(parent, text="Voice", style="Panel.TLabel").grid(row=8, column=0, sticky="w", pady=(10, 2))
-        voice_row = ttk.Frame(parent, style="Surface.TFrame")
-        voice_row.grid(row=9, column=0, sticky="ew")
+        ttk.Label(voice, text="Giọng đọc", style="CardMuted.TLabel").grid(
+            row=3, column=0, sticky="w", pady=(10, 4)
+        )
+        voice_row = ttk.Frame(voice, style="Card.TFrame")
+        voice_row.grid(row=4, column=0, sticky="ew")
         voice_row.columnconfigure(0, weight=1)
         self.voice_combo = ttk.Combobox(voice_row, textvariable=self.voice_name, state="readonly")
         self.voice_combo.grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        self.refresh_voices_button = ttk.Button(voice_row, text="Refresh", command=self.refresh_voices)
+        self.refresh_voices_button = ttk.Button(
+            voice_row,
+            text="Làm mới",
+            style="Tool.TButton",
+            command=self.refresh_voices,
+        )
         self.refresh_voices_button.grid(row=0, column=1)
 
-        sliders = ttk.Frame(parent, style="Surface.TFrame")
-        sliders.grid(row=10, column=0, sticky="ew", pady=(10, 0))
+        sliders = ttk.Frame(voice, style="Card.TFrame")
+        sliders.grid(row=5, column=0, sticky="ew", pady=(10, 0))
         sliders.columnconfigure(1, weight=1)
-        self._add_slider(sliders, row=0, label="Speed", variable=self.rate, from_=-10, to=10)
-        self._add_slider(sliders, row=1, label="Volume", variable=self.volume, from_=0, to=100)
-        self._add_slider(sliders, row=2, label="Pause", variable=self.pause_ms, from_=0, to=1200)
+        self._add_slider(sliders, row=0, label="Tốc độ", variable=self.rate, from_=-10, to=10)
+        self._add_slider(sliders, row=1, label="Âm lượng", variable=self.volume, from_=0, to=100)
+        self._add_slider(sliders, row=2, label="Khoảng nghỉ", variable=self.pause_ms, from_=0, to=1200)
 
     def _build_export_panel(self, parent: ttk.Frame) -> None:
-        export = ttk.Frame(parent, style="Surface.TFrame")
-        export.grid(row=11, column=0, sticky="ew", pady=(18, 0))
+        export = ttk.Frame(parent, style="Card.TFrame", padding=14)
+        export.grid(row=2, column=0, sticky="ew", pady=(10, 0))
         export.columnconfigure(1, weight=1)
-        ttk.Label(export, text="Subtitle", style="Section.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
-        ttk.Label(export, text="Max chars", style="Panel.TLabel").grid(row=1, column=0, sticky="w", pady=(10, 0))
+        ttk.Label(export, text="ĐẦU RA VOICE", style="Eyebrow.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w"
+        )
+        ttk.Label(export, text="Ký tự tối đa mỗi đoạn", style="CardMuted.TLabel").grid(
+            row=1, column=0, sticky="w", pady=(10, 0)
+        )
         ttk.Spinbox(export, from_=60, to=260, increment=10, textvariable=self.max_chars, width=8).grid(
             row=1, column=1, sticky="e", pady=(10, 0)
         )
-        ttk.Checkbutton(export, text="Export MP3 when ffmpeg is available", variable=self.export_mp3).grid(
+        ttk.Checkbutton(export, text="Xuất MP3 khi có ffmpeg", variable=self.export_mp3).grid(
             row=2, column=0, columnspan=2, sticky="w", pady=(10, 0)
         )
-        ttk.Checkbutton(export, text="Keep segment WAV files", variable=self.keep_segments).grid(
+        ttk.Checkbutton(export, text="Giữ các đoạn WAV trung gian", variable=self.keep_segments).grid(
             row=3, column=0, columnspan=2, sticky="w", pady=(6, 0)
         )
 
     def _build_video_panel(self, parent: ttk.Frame) -> None:
-        video = ttk.Frame(parent, style="Surface.TFrame")
-        video.grid(row=12, column=0, sticky="ew", pady=(18, 0))
+        video = ttk.Frame(parent, style="Card.TFrame", padding=14)
+        video.grid(row=3, column=0, sticky="ew", pady=(10, 0))
         video.columnconfigure(0, weight=1)
         video.columnconfigure(1, weight=1)
-        ttk.Label(video, text="Video", style="Section.TLabel").grid(row=0, column=0, columnspan=2, sticky="w")
+        ttk.Label(video, text="VIDEO & PHỤ ĐỀ", style="Eyebrow.TLabel").grid(
+            row=0, column=0, columnspan=2, sticky="w"
+        )
 
-        file_row = ttk.Frame(video, style="Surface.TFrame")
+        file_row = ttk.Frame(video, style="Card.TFrame")
         file_row.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         file_row.columnconfigure(0, weight=1)
         ttk.Entry(file_row, textvariable=self.video_path).grid(row=0, column=0, sticky="ew", padx=(0, 6))
-        ttk.Button(file_row, text="Browse", command=self.browse_video).grid(row=0, column=1)
+        ttk.Button(file_row, text="Chọn", style="Tool.TButton", command=self.browse_video).grid(row=0, column=1)
 
-        checks = ttk.Frame(video, style="Surface.TFrame")
+        checks = ttk.Frame(video, style="Card.TFrame")
         checks.grid(row=2, column=0, columnspan=2, sticky="w", pady=(10, 0))
         ttk.Checkbutton(checks, text="WAV", variable=self.video_export_wav).grid(row=0, column=0, sticky="w")
         ttk.Checkbutton(checks, text="MP3", variable=self.video_export_mp3).grid(row=0, column=1, sticky="w", padx=(12, 0))
 
-        language_row = ttk.Frame(video, style="Surface.TFrame")
+        language_row = ttk.Frame(video, style="Card.TFrame")
         language_row.grid(row=3, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         language_row.columnconfigure(0, weight=1)
         language_row.columnconfigure(1, weight=1)
-        ttk.Label(language_row, text="Video language", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(language_row, text="Translate to", style="Panel.TLabel").grid(row=0, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(language_row, text="Ngôn ngữ video", style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(language_row, text="Dịch sang", style="CardMuted.TLabel").grid(row=0, column=1, sticky="w", padx=(8, 0))
         ttk.Combobox(
             language_row,
             textvariable=self.video_source_language,
@@ -174,12 +201,12 @@ class VoiceTabMixin:
             state="readonly",
         ).grid(row=1, column=1, sticky="ew", pady=(2, 0), padx=(8, 0))
 
-        model_row = ttk.Frame(video, style="Surface.TFrame")
+        model_row = ttk.Frame(video, style="Card.TFrame")
         model_row.grid(row=4, column=0, columnspan=2, sticky="ew", pady=(10, 0))
         model_row.columnconfigure(0, weight=1)
         model_row.columnconfigure(1, weight=1)
-        ttk.Label(model_row, text="Whisper", style="Panel.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(model_row, text="AI provider", style="Panel.TLabel").grid(row=0, column=1, sticky="w", padx=(8, 0))
+        ttk.Label(model_row, text="Whisper", style="CardMuted.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(model_row, text="Nhà cung cấp AI", style="CardMuted.TLabel").grid(row=0, column=1, sticky="w", padx=(8, 0))
         ttk.Combobox(
             model_row,
             textvariable=self.whisper_model,
@@ -195,7 +222,7 @@ class VoiceTabMixin:
         self.ai_provider_combo.grid(row=1, column=1, sticky="ew", pady=(2, 0), padx=(8, 0))
         self.ai_provider_combo.bind("<<ComboboxSelected>>", self._on_ai_provider_changed)
 
-        ttk.Label(model_row, text="Thiết bị xử lý", style="Panel.TLabel").grid(
+        ttk.Label(model_row, text="Thiết bị xử lý", style="CardMuted.TLabel").grid(
             row=2, column=0, columnspan=2, sticky="w", pady=(10, 2)
         )
         self.voice_device_combo = ttk.Combobox(
@@ -206,29 +233,40 @@ class VoiceTabMixin:
         )
         self.voice_device_combo.grid(row=3, column=0, columnspan=2, sticky="ew")
 
-        ttk.Label(video, text="AI model", style="Panel.TLabel").grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 2))
+        ttk.Label(video, text="AI model", style="CardMuted.TLabel").grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 4))
         self.ai_model_combo = ttk.Combobox(
             video,
             textvariable=self.ai_model,
             values=translation_provider_models(translation_provider_code(self.ai_provider.get())),
         )
         self.ai_model_combo.grid(row=6, column=0, columnspan=2, sticky="ew")
-        ttk.Label(video, text="AI base URL", style="Panel.TLabel").grid(row=7, column=0, columnspan=2, sticky="w", pady=(10, 2))
+        ttk.Label(video, text="AI base URL", style="CardMuted.TLabel").grid(row=7, column=0, columnspan=2, sticky="w", pady=(10, 4))
         ttk.Entry(video, textvariable=self.ai_base_url).grid(row=8, column=0, columnspan=2, sticky="ew")
-        ttk.Label(video, text="AI API key", style="Panel.TLabel").grid(row=9, column=0, columnspan=2, sticky="w", pady=(10, 2))
+        ttk.Label(video, text="AI API key", style="CardMuted.TLabel").grid(row=9, column=0, columnspan=2, sticky="w", pady=(10, 4))
         ttk.Entry(video, textvariable=self.ai_api_key, show="*").grid(row=10, column=0, columnspan=2, sticky="ew")
 
-        button_row = ttk.Frame(video, style="Surface.TFrame")
+        button_row = ttk.Frame(video, style="Card.TFrame")
         button_row.grid(row=11, column=0, columnspan=2, sticky="ew", pady=(12, 0))
         button_row.columnconfigure(0, weight=1)
         button_row.columnconfigure(1, weight=1)
-        self.extract_button = ttk.Button(button_row, text="Extract Audio", command=self.start_extract_video)
+        self.extract_button = ttk.Button(
+            button_row,
+            text="Tách audio",
+            style="Tool.TButton",
+            command=self.start_extract_video,
+        )
         self.extract_button.grid(row=0, column=0, sticky="ew", padx=(0, 8))
-        self.subtitle_button = ttk.Button(button_row, text="Create Subtitles", command=self.start_create_video_subtitles)
+        self.subtitle_button = ttk.Button(
+            button_row,
+            text="Tạo phụ đề",
+            style="Accent.TButton",
+            command=self.start_create_video_subtitles,
+        )
         self.subtitle_button.grid(row=0, column=1, sticky="ew", padx=(8, 0))
         self.subtitle_export_button = ttk.Button(
             button_row,
-            text="Export Subtitles",
+            text="Xuất phụ đề",
+            style="Ghost.TButton",
             command=self.start_export_subtitles,
             state="disabled",
         )
@@ -243,8 +281,8 @@ class VoiceTabMixin:
         from_: int,
         to: int,
     ) -> None:
-        value = ttk.Label(parent, textvariable=variable, style="Panel.TLabel", width=5, anchor="e")
-        ttk.Label(parent, text=label, style="Panel.TLabel").grid(row=row, column=0, sticky="w", pady=4)
+        value = ttk.Label(parent, textvariable=variable, style="Card.TLabel", width=5, anchor="e")
+        ttk.Label(parent, text=label, style="CardMuted.TLabel").grid(row=row, column=0, sticky="w", pady=4)
         ttk.Scale(parent, from_=from_, to=to, variable=variable, orient="horizontal").grid(
             row=row, column=1, sticky="ew", padx=8, pady=4
         )

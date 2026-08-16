@@ -27,7 +27,7 @@ class EditorMediaBin(ttk.Frame):
         on_activate: Callable[[str], None],
         on_remove: Callable[[str], None],
     ) -> None:
-        super().__init__(master, style="Surface.TFrame")
+        super().__init__(master, style="Card.TFrame")
         self.on_drop = on_drop
         self.on_activate = on_activate
         self.on_remove = on_remove
@@ -38,8 +38,8 @@ class EditorMediaBin(ttk.Frame):
 
         self.columnconfigure(0, weight=1)
         self.rowconfigure(1, weight=1)
-        ttk.Label(self, text="Tệp phương tiện", style="Section.TLabel").grid(
-            row=0, column=0, sticky="w", pady=(0, 7)
+        ttk.Label(self, text="TỆP PHƯƠNG TIỆN", style="Eyebrow.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 9)
         )
 
         self.tree = ttk.Treeview(
@@ -65,12 +65,23 @@ class EditorMediaBin(ttk.Frame):
         scrollbar.grid(row=1, column=1, sticky="ns")
         self.tree.configure(yscrollcommand=scrollbar.set)
 
-        actions = ttk.Frame(self, style="Surface.TFrame")
+        actions = ttk.Frame(self, style="Card.TFrame")
         actions.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(7, 0))
         actions.columnconfigure(0, weight=1)
-        self.insert_button = ttk.Button(actions, text="Đưa vào timeline", command=self._activate_selected)
+        self.insert_button = ttk.Button(
+            actions,
+            text="Đưa vào timeline",
+            style="Tool.TButton",
+            command=self._activate_selected,
+        )
         self.insert_button.grid(row=0, column=0, sticky="ew", padx=(0, 5))
-        self.remove_button = ttk.Button(actions, text="Gỡ", command=self._remove_selected, width=6)
+        self.remove_button = ttk.Button(
+            actions,
+            text="Gỡ",
+            style="Danger.TButton",
+            command=self._remove_selected,
+            width=6,
+        )
         self.remove_button.grid(row=0, column=1)
 
         self.tree.bind("<Double-1>", self._on_double_click)

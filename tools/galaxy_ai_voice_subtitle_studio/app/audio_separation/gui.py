@@ -37,55 +37,23 @@ from .service import (
 
 class AudioSeparationTabMixin:
     def _build_audio_separation_tab(self) -> None:
-        self.audio_tab = ttk.Frame(self.main_notebook, padding=(0, 10, 0, 0))
-        self.audio_tab.columnconfigure(0, weight=1)
-        self.audio_tab.rowconfigure(0, weight=1)
+        self.audio_tab = ttk.Frame(self.main_notebook, padding=8)
+        self.audio_tab.columnconfigure(0, weight=2, uniform="audio-top")
+        self.audio_tab.columnconfigure(1, weight=3, uniform="audio-top")
+        self.audio_tab.rowconfigure(1, weight=1)
         self.main_notebook.add(self.audio_tab, text="Tách âm thanh")
 
-        panel = ttk.Frame(self.audio_tab, style="Panel.TFrame", padding=14)
-        panel.grid(row=0, column=0, sticky="nsew")
-        panel.columnconfigure(0, weight=1)
-        panel.rowconfigure(5, weight=1)
-
-        paths = ttk.Frame(panel, style="Surface.TFrame")
-        paths.grid(row=0, column=0, sticky="ew")
-        paths.columnconfigure(1, weight=1)
-        self.audio_input_button = ttk.Button(
-            paths,
-            text="Select Input",
-            command=self.browse_audio_input,
-            width=16,
+        source_card = ttk.Frame(self.audio_tab, style="Card.TFrame", padding=10)
+        source_card.grid(row=0, column=0, sticky="new", padx=(0, 6))
+        source_card.columnconfigure(0, weight=1)
+        source_header = ttk.Frame(source_card, style="CardHeader.TFrame")
+        source_header.grid(row=0, column=0, sticky="ew", pady=(0, 12))
+        source_header.columnconfigure(0, weight=1)
+        ttk.Label(source_header, text="NGUỒN ÂM THANH", style="Eyebrow.TLabel").grid(
+            row=0, column=0, sticky="w"
         )
-        self.audio_input_button.grid(row=0, column=0, sticky="ew", padx=(0, 8), pady=(0, 6))
-        self.audio_input_entry = ttk.Entry(paths, textvariable=self.audio_input_path)
-        self.audio_input_entry.grid(row=0, column=1, sticky="ew", pady=(0, 6))
-        self.audio_input_browse_button = ttk.Button(
-            paths,
-            text="Browse",
-            command=self.browse_audio_input,
-            width=10,
-        )
-        self.audio_input_browse_button.grid(row=0, column=2, padx=(8, 0), pady=(0, 6))
-
-        self.audio_output_button = ttk.Button(
-            paths,
-            text="Select Output",
-            command=self.browse_audio_output,
-            width=16,
-        )
-        self.audio_output_button.grid(row=1, column=0, sticky="ew", padx=(0, 8))
-        self.audio_output_entry = ttk.Entry(paths, textvariable=self.audio_output_dir)
-        self.audio_output_entry.grid(row=1, column=1, sticky="ew")
-        self.audio_output_browse_button = ttk.Button(
-            paths,
-            text="Browse",
-            command=self.browse_audio_output,
-            width=10,
-        )
-        self.audio_output_browse_button.grid(row=1, column=2, padx=(8, 0))
-
-        format_row = ttk.Frame(panel, style="Surface.TFrame")
-        format_row.grid(row=1, column=0, sticky="e", pady=(10, 4))
+        format_row = ttk.Frame(source_header, style="CardHeader.TFrame")
+        format_row.grid(row=0, column=1, sticky="e")
         self.audio_format_buttons: list[ttk.Radiobutton] = []
         for column, output_format in enumerate(AUDIO_OUTPUT_FORMATS):
             button = ttk.Radiobutton(
@@ -94,21 +62,68 @@ class AudioSeparationTabMixin:
                 value=output_format,
                 variable=self.audio_format,
             )
-            button.grid(row=0, column=column, padx=(12 if column else 0, 0))
+            button.grid(row=0, column=column, padx=(10 if column else 0, 0))
             self.audio_format_buttons.append(button)
 
-        options = ttk.Frame(panel, style="Surface.TFrame")
-        options.grid(row=2, column=0, sticky="ew", pady=(4, 0))
+        paths = ttk.Frame(source_card, style="Card.TFrame")
+        paths.grid(row=1, column=0, sticky="ew")
+        paths.columnconfigure(1, weight=1)
+        self.audio_input_button = ttk.Button(
+            paths,
+            text="Tệp đầu vào",
+            style="Tool.TButton",
+            command=self.browse_audio_input,
+            width=13,
+        )
+        self.audio_input_button.grid(row=0, column=0, sticky="ew", padx=(0, 10), pady=(0, 8))
+        self.audio_input_entry = ttk.Entry(paths, textvariable=self.audio_input_path, width=12)
+        self.audio_input_entry.grid(row=0, column=1, sticky="ew", pady=(0, 8))
+        self.audio_input_browse_button = ttk.Button(
+            paths,
+            text="Chọn",
+            style="Tool.TButton",
+            command=self.browse_audio_input,
+            width=7,
+        )
+        self.audio_input_browse_button.grid(row=0, column=2, padx=(10, 0), pady=(0, 8))
+
+        self.audio_output_button = ttk.Button(
+            paths,
+            text="Thư mục output",
+            style="Tool.TButton",
+            command=self.browse_audio_output,
+            width=13,
+        )
+        self.audio_output_button.grid(row=1, column=0, sticky="ew", padx=(0, 10))
+        self.audio_output_entry = ttk.Entry(paths, textvariable=self.audio_output_dir, width=12)
+        self.audio_output_entry.grid(row=1, column=1, sticky="ew")
+        self.audio_output_browse_button = ttk.Button(
+            paths,
+            text="Chọn",
+            style="Tool.TButton",
+            command=self.browse_audio_output,
+            width=7,
+        )
+        self.audio_output_browse_button.grid(row=1, column=2, padx=(10, 0))
+
+        settings_card = ttk.Frame(self.audio_tab, style="Card.TFrame", padding=10)
+        settings_card.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        settings_card.columnconfigure(0, weight=1)
+        ttk.Label(settings_card, text="THIẾT LẬP XỬ LÝ", style="Eyebrow.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 12)
+        )
+        options = ttk.Frame(settings_card, style="Card.TFrame")
+        options.grid(row=1, column=0, sticky="ew")
         for column in range(3):
             options.columnconfigure(column, weight=1, uniform="audio-options")
 
-        ttk.Label(options, text="Choose Process Method", style="Panel.TLabel").grid(
+        ttk.Label(options, text="Phương pháp", style="CardMuted.TLabel").grid(
             row=0, column=0, sticky="w"
         )
-        ttk.Label(options, textvariable=self.audio_segment_label, style="Panel.TLabel").grid(
+        ttk.Label(options, textvariable=self.audio_segment_label, style="CardMuted.TLabel").grid(
             row=0, column=1, sticky="w", padx=(12, 0)
         )
-        ttk.Label(options, textvariable=self.audio_overlap_label, style="Panel.TLabel").grid(
+        ttk.Label(options, textvariable=self.audio_overlap_label, style="CardMuted.TLabel").grid(
             row=0, column=2, sticky="w", padx=(12, 0)
         )
         self.audio_method_combo = ttk.Combobox(
@@ -116,6 +131,7 @@ class AudioSeparationTabMixin:
             textvariable=self.audio_method,
             values=tuple(AUDIO_PROCESS_METHOD_LABELS.values()),
             state="readonly",
+            width=12,
         )
         self.audio_method_combo.grid(row=1, column=0, sticky="ew", pady=(4, 0))
         self.audio_method_combo.bind("<<ComboboxSelected>>", self._on_audio_method_changed)
@@ -123,28 +139,31 @@ class AudioSeparationTabMixin:
             options,
             textvariable=self.audio_segment_size,
             state="readonly",
+            width=10,
         )
         self.audio_segment_combo.grid(row=1, column=1, sticky="ew", padx=(12, 0), pady=(4, 0))
         self.audio_overlap_combo = ttk.Combobox(
             options,
             textvariable=self.audio_overlap,
             state="readonly",
+            width=10,
         )
         self.audio_overlap_combo.grid(row=1, column=2, sticky="ew", padx=(12, 0), pady=(4, 0))
 
-        ttk.Label(options, text="Choose Model", style="Panel.TLabel").grid(
+        ttk.Label(options, text="Model", style="CardMuted.TLabel").grid(
             row=2, column=0, sticky="w", pady=(12, 0)
         )
-        ttk.Label(options, text="Processing Device", style="Panel.TLabel").grid(
+        ttk.Label(options, text="Thiết bị xử lý", style="CardMuted.TLabel").grid(
             row=2, column=1, sticky="w", padx=(12, 0), pady=(12, 0)
         )
-        ttk.Label(options, text="Select Saved Settings", style="Panel.TLabel").grid(
+        ttk.Label(options, text="Cấu hình đã lưu", style="CardMuted.TLabel").grid(
             row=2, column=2, sticky="w", padx=(12, 0), pady=(12, 0)
         )
         self.audio_model_combo = ttk.Combobox(
             options,
             textvariable=self.audio_model,
             state="readonly",
+            width=12,
         )
         self.audio_model_combo.grid(row=3, column=0, sticky="ew", pady=(4, 0))
         self.audio_device_combo = ttk.Combobox(
@@ -152,6 +171,7 @@ class AudioSeparationTabMixin:
             textvariable=self.audio_processing_device,
             values=tuple(AUDIO_PROCESSING_DEVICE_LABELS.values()),
             state="readonly" if self.audio_gpu_conversion.get() else "disabled",
+            width=10,
         )
         self.audio_device_combo.grid(row=3, column=1, sticky="ew", padx=(12, 0), pady=(4, 0))
         self.audio_preset_combo = ttk.Combobox(
@@ -159,81 +179,89 @@ class AudioSeparationTabMixin:
             textvariable=self.audio_saved_setting,
             values=self._audio_preset_names(),
             state="readonly",
+            width=10,
         )
         self.audio_preset_combo.grid(row=3, column=2, sticky="ew", padx=(12, 0), pady=(4, 0))
         self.audio_preset_combo.bind("<<ComboboxSelected>>", self._on_audio_preset_changed)
 
-        flags = ttk.Frame(panel, style="Surface.TFrame")
-        flags.grid(row=3, column=0, sticky="ew", pady=(10, 0))
+        ttk.Separator(settings_card).grid(row=2, column=0, sticky="ew", pady=(14, 10))
+        flags = ttk.Frame(settings_card, style="Card.TFrame")
+        flags.grid(row=3, column=0, sticky="ew")
         for column in range(4):
             flags.columnconfigure(column, weight=1)
         self.audio_gpu_check = ttk.Checkbutton(
             flags,
-            text="GPU Conversion",
+            text="Dùng GPU",
             variable=self.audio_gpu_conversion,
             command=self._on_audio_gpu_changed,
         )
         self.audio_gpu_check.grid(row=0, column=0, sticky="w")
         self.audio_vocals_check = ttk.Checkbutton(
             flags,
-            text="Vocals Only",
+            text="Chỉ giọng hát",
             variable=self.audio_vocals_only,
             command=self._on_audio_vocals_changed,
         )
         self.audio_vocals_check.grid(row=0, column=1, sticky="w")
         self.audio_instrumental_check = ttk.Checkbutton(
             flags,
-            text="Instrumental Only",
+            text="Chỉ nhạc nền",
             variable=self.audio_instrumental_only,
             command=self._on_audio_instrumental_changed,
         )
         self.audio_instrumental_check.grid(row=0, column=2, sticky="w")
         self.audio_sample_check = ttk.Checkbutton(
             flags,
-            text="Sample Mode (30s)",
+            text="Chạy thử 30 giây",
             variable=self.audio_sample_mode,
         )
         self.audio_sample_check.grid(row=0, column=3, sticky="w")
 
-        actions = ttk.Frame(panel, style="Surface.TFrame")
-        actions.grid(row=4, column=0, sticky="ew", pady=(10, 8))
+        actions = ttk.Frame(settings_card, style="Card.TFrame")
+        actions.grid(row=4, column=0, sticky="ew", pady=(14, 0))
         actions.columnconfigure(1, weight=1)
         self.audio_settings_button = ttk.Button(
             actions,
-            text="Settings",
+            text="Cài đặt",
+            style="Ghost.TButton",
             command=self.open_audio_settings,
             width=9,
         )
         self.audio_settings_button.grid(row=0, column=0, padx=(0, 8))
         self.audio_process_button = ttk.Button(
             actions,
-            text="Start Processing",
+            text="Bắt đầu tách",
             style="Accent.TButton",
             command=self.start_audio_separation,
         )
         self.audio_process_button.grid(row=0, column=1, sticky="ew")
         self.audio_open_button = ttk.Button(
             actions,
-            text="Open Output",
+            text="Mở output",
+            style="Ghost.TButton",
             command=self.open_output,
             state="disabled",
         )
         self.audio_open_button.grid(row=0, column=2, padx=(8, 0))
         self.audio_stop_button = ttk.Button(
             actions,
-            text="Stop",
+            text="Dừng",
+            style="Danger.TButton",
             command=self.stop_audio_separation,
             state="disabled",
             width=7,
         )
         self.audio_stop_button.grid(row=0, column=3, padx=(8, 0))
 
-        console_frame = ttk.Frame(panel, style="Surface.TFrame")
-        console_frame.grid(row=5, column=0, sticky="nsew")
+        console_frame = ttk.Frame(self.audio_tab, style="Card.TFrame", padding=10)
+        console_frame.grid(row=1, column=0, columnspan=2, sticky="nsew", pady=(10, 0))
         console_frame.columnconfigure(0, weight=1)
-        console_frame.rowconfigure(1, weight=1)
+        console_frame.rowconfigure(2, weight=1)
+        ttk.Label(console_frame, text="NHẬT KÝ XỬ LÝ", style="Eyebrow.TLabel").grid(
+            row=0, column=0, sticky="w", pady=(0, 9)
+        )
         self.audio_progress = ttk.Progressbar(console_frame, mode="indeterminate")
-        self.audio_progress.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        self.audio_progress.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         self.audio_log_text = tk.Text(
             console_frame,
             height=5,
@@ -243,7 +271,7 @@ class AudioSeparationTabMixin:
             pady=8,
             **text_widget_options(log=True),
         )
-        self.audio_log_text.grid(row=1, column=0, sticky="nsew")
+        self.audio_log_text.grid(row=2, column=0, sticky="nsew")
         self.audio_log_text.configure(state="disabled")
 
         self.audio_mutable_widgets: tuple[tk.Widget, ...] = (

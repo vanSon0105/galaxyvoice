@@ -10,12 +10,12 @@ from tkinter import ttk
 
 @dataclass(frozen=True)
 class AppPalette:
-    background: str = "#111315"
-    surface: str = "#191c1f"
-    surface_raised: str = "#23272b"
-    input: str = "#15181b"
-    border: str = "#383d43"
-    border_strong: str = "#555c64"
+    background: str = "#0e1012"
+    surface: str = "#16191c"
+    surface_raised: str = "#202428"
+    input: str = "#111417"
+    border: str = "#30353a"
+    border_strong: str = "#4a5158"
     text: str = "#f4f1ea"
     text_muted: str = "#c3c0b9"
     text_subtle: str = "#959ba2"
@@ -254,10 +254,51 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
         relief="solid",
     )
     style.configure("Surface.TFrame", background=palette.surface)
+    style.configure(
+        "Card.TFrame",
+        background=palette.surface,
+        bordercolor=palette.border,
+        borderwidth=1,
+        relief="solid",
+    )
+    style.configure("CardHeader.TFrame", background=palette.surface)
+    style.configure("Inset.TFrame", background=palette.input)
+    style.configure("Transport.TFrame", background=palette.surface_raised)
 
     style.configure("TLabel", background=palette.background, foreground=palette.text)
     style.configure("Panel.TLabel", background=palette.surface, foreground=palette.text)
     style.configure("Toolbar.TLabel", background=palette.surface, foreground=palette.text)
+    style.configure("Card.TLabel", background=palette.surface, foreground=palette.text)
+    style.configure(
+        "CardMuted.TLabel",
+        background=palette.surface,
+        foreground=palette.text_muted,
+        font=small_font,
+    )
+    style.configure(
+        "CardTitle.TLabel",
+        background=palette.surface,
+        foreground=palette.text,
+        font=(body_family, BODY_FONT_SIZE + 1, "bold"),
+    )
+    style.configure(
+        "Eyebrow.TLabel",
+        background=palette.surface,
+        foreground=palette.accent,
+        font=(mono_family, SMALL_FONT_SIZE, "bold"),
+    )
+    style.configure(
+        "EmptyTitle.TLabel",
+        background=palette.preview,
+        foreground=palette.text,
+        font=(body_family, BODY_FONT_SIZE + 1, "bold"),
+    )
+    style.configure(
+        "EmptyMuted.TLabel",
+        background=palette.preview,
+        foreground=palette.text_muted,
+        font=small_font,
+    )
     style.configure(
         "Muted.TLabel",
         background=palette.background,
@@ -290,7 +331,13 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
         font=medium_font,
     )
 
-    style.configure("TNotebook", background=palette.background, borderwidth=0, tabmargins=(0, 0, 0, 0))
+    style.configure(
+        "TNotebook",
+        background=palette.background,
+        bordercolor=palette.border,
+        borderwidth=0,
+        tabmargins=(0, 0, 0, 0),
+    )
     style.configure(
         "TNotebook.Tab",
         background=palette.background,
@@ -302,9 +349,54 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
     )
     style.map(
         "TNotebook.Tab",
+        background=[("selected", palette.surface_raised), ("active", palette.surface)],
+        foreground=[("selected", palette.accent), ("active", palette.text)],
+        bordercolor=[("selected", palette.surface_raised), ("active", palette.surface)],
+    )
+    style.configure("Nav.TNotebook", background=palette.background, borderwidth=0)
+    style.configure(
+        "Nav.TNotebook.Tab",
+        background=palette.background,
+        foreground=palette.text_muted,
+        font=medium_font,
+        padding=(18, 7),
+        borderwidth=0,
+    )
+    style.map(
+        "Nav.TNotebook.Tab",
         background=[("selected", palette.surface), ("active", palette.surface_raised)],
+        foreground=[("selected", palette.accent), ("active", palette.text)],
+        bordercolor=[("selected", palette.surface), ("active", palette.surface_raised)],
+    )
+    style.configure("Subnav.TNotebook", background=palette.background, borderwidth=0)
+    style.configure(
+        "Subnav.TNotebook.Tab",
+        background=palette.background,
+        foreground=palette.text_muted,
+        font=body_font,
+        padding=(13, 7),
+        borderwidth=0,
+    )
+    style.map(
+        "Subnav.TNotebook.Tab",
+        background=[("selected", palette.surface_raised), ("active", palette.surface)],
         foreground=[("selected", palette.text), ("active", palette.text)],
-        bordercolor=[("selected", palette.accent), ("active", palette.border_strong)],
+        bordercolor=[("selected", palette.surface_raised), ("active", palette.surface)],
+    )
+    style.configure("Compact.TNotebook", background=palette.surface, borderwidth=0)
+    style.configure(
+        "Compact.TNotebook.Tab",
+        background=palette.surface,
+        foreground=palette.text_muted,
+        font=small_font,
+        padding=(11, 6),
+        borderwidth=0,
+    )
+    style.map(
+        "Compact.TNotebook.Tab",
+        background=[("selected", palette.surface_raised), ("active", palette.border)],
+        foreground=[("selected", palette.accent), ("active", palette.text)],
+        bordercolor=[("selected", palette.surface_raised), ("active", palette.border)],
     )
 
     style.configure(
@@ -327,6 +419,40 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
         ],
         foreground=[("disabled", palette.text_subtle)],
         bordercolor=[("focus", palette.accent), ("active", palette.border_strong)],
+    )
+    style.configure(
+        "Tool.TButton",
+        background=palette.surface_raised,
+        foreground=palette.text,
+        bordercolor=palette.border,
+        padding=(9, 5),
+        font=small_font,
+    )
+    style.configure(
+        "Ghost.TButton",
+        background=palette.surface,
+        foreground=palette.text_muted,
+        bordercolor=palette.surface,
+        padding=(10, 6),
+    )
+    style.map(
+        "Ghost.TButton",
+        background=[("active", palette.surface_raised), ("pressed", palette.input)],
+        foreground=[("active", palette.text), ("disabled", palette.text_subtle)],
+        bordercolor=[("active", palette.surface_raised)],
+    )
+    style.configure(
+        "Danger.TButton",
+        background=palette.surface,
+        foreground=palette.danger,
+        bordercolor=palette.border,
+        padding=(10, 6),
+    )
+    style.map(
+        "Danger.TButton",
+        background=[("active", "#342024"), ("pressed", "#451f24")],
+        foreground=[("active", "#f0968e"), ("disabled", palette.text_subtle)],
+        bordercolor=[("active", "#704047")],
     )
     style.configure(
         "Accent.TButton",

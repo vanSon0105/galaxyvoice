@@ -68,6 +68,18 @@ class ThemeTests(unittest.TestCase):
             self.assertEqual(root.cget("background"), PALETTE.background)
             self.assertEqual(style.lookup("TEntry", "fieldbackground"), PALETTE.input)
             self.assertEqual(style.lookup("Treeview", "background"), PALETTE.input)
+            self.assertEqual(
+                style.layout("Nav.TNotebook.Tab")[0][0],
+                "GalaxyNavTab",
+            )
+            self.assertEqual(
+                style.lookup("Accent.TButton", "background"),
+                PALETTE.accent_surface,
+            )
+            self.assertEqual(
+                style.lookup("Accent.TButton", "foreground"),
+                PALETTE.accent,
+            )
             self.assertGreaterEqual(int(style.lookup("Treeview", "rowheight")), 30)
             self.assertGreaterEqual(tkfont.nametofont("TkDefaultFont", root=root).cget("size"), BODY_FONT_SIZE)
             self.assertGreaterEqual(scaled_pixels(root, 20), 20)
@@ -86,6 +98,8 @@ class ThemeTests(unittest.TestCase):
 
     def test_voicestudio_override_increases_readability(self) -> None:
         self.assertIn('"--color-fg": "#f4f1ea"', VOICESTUDIO_THEME_SCRIPT)
+        self.assertIn(f'"--color-bg": "{PALETTE.background}"', VOICESTUDIO_THEME_SCRIPT)
+        self.assertIn(f'"--color-brand": "{PALETTE.accent}"', VOICESTUDIO_THEME_SCRIPT)
         self.assertIn('"--text-base": "0.84rem"', VOICESTUDIO_THEME_SCRIPT)
         self.assertIn("webkitFontSmoothing", VOICESTUDIO_THEME_SCRIPT)
         self.assertIn("galaxy-visual-theme", VOICESTUDIO_THEME_SCRIPT)

@@ -10,19 +10,22 @@ from tkinter import ttk
 
 @dataclass(frozen=True)
 class AppPalette:
-    background: str = "#0e1012"
-    surface: str = "#16191c"
-    surface_raised: str = "#202428"
-    input: str = "#111417"
-    border: str = "#30353a"
-    border_strong: str = "#4a5158"
+    background: str = "#111315"
+    chrome: str = "#0c0f11"
+    surface: str = "#15181b"
+    surface_raised: str = "#191c1f"
+    input: str = "#15181b"
+    border: str = "#2e3033"
+    border_strong: str = "#484b4e"
     text: str = "#f4f1ea"
     text_muted: str = "#c3c0b9"
-    text_subtle: str = "#959ba2"
+    text_subtle: str = "#9da2a8"
     accent: str = "#d08ca1"
     accent_hover: str = "#e09bb0"
     accent_pressed: str = "#b9758a"
     accent_text: str = "#171214"
+    accent_surface: str = "#2b1d23"
+    accent_surface_hover: str = "#3a252e"
     selection: str = "#70495a"
     success: str = "#78b9a8"
     warning: str = "#e0ad67"
@@ -31,10 +34,10 @@ class AppPalette:
 
 
 PALETTE = AppPalette()
-BODY_FONT_SIZE = 11
-SMALL_FONT_SIZE = 10
-HEADING_FONT_SIZE = 18
-MONO_FONT_SIZE = 10
+BODY_FONT_SIZE = 10
+SMALL_FONT_SIZE = 9
+HEADING_FONT_SIZE = 12
+MONO_FONT_SIZE = 9
 BASE_DPI = 96.0
 
 
@@ -214,6 +217,106 @@ def _enable_windows_dark_title_bar(root: tk.Tk) -> None:
         pass
 
 
+def _tab_surface_image(
+    root: tk.Misc,
+    *,
+    background: str,
+    accent: str | None = None,
+) -> tk.PhotoImage:
+    """Create a tiny stretchable tab surface with an optional top accent rule."""
+    image = tk.PhotoImage(master=root, width=3, height=3)
+    image.put(accent or background, to=(0, 0, 3, 1))
+    image.put(background, to=(0, 1, 3, 3))
+    return image
+
+
+def _configure_notebook_tab(
+    style: ttk.Style,
+    root: tk.Misc,
+    *,
+    style_name: str,
+    element_name: str,
+    shelf: str,
+    selected_surface: str,
+    hover_surface: str,
+    font: tuple[object, ...],
+    padding: tuple[int, int],
+    selected_foreground: str,
+) -> list[tk.PhotoImage]:
+    palette = PALETTE
+    normal = _tab_surface_image(root, background=shelf)
+    hover = _tab_surface_image(root, background=hover_surface)
+    selected = _tab_surface_image(
+        root,
+        background=selected_surface,
+        accent=palette.accent,
+    )
+    style.element_create(
+        element_name,
+        "image",
+        normal,
+        ("selected", selected),
+        ("active", hover),
+        border=1,
+        sticky="nsew",
+    )
+    style.layout(
+        f"{style_name}.Tab",
+        [
+            (
+                element_name,
+                {
+                    "sticky": "nsew",
+                    "children": [
+                        (
+                            "Notebook.padding",
+                            {
+                                "side": "top",
+                                "sticky": "nsew",
+                                "children": [
+                                    (
+                                        "Notebook.focus",
+                                        {
+                                            "side": "top",
+                                            "sticky": "nsew",
+                                            "children": [
+                                                (
+                                                    "Notebook.label",
+                                                    {"side": "top", "sticky": ""},
+                                                )
+                                            ],
+                                        },
+                                    )
+                                ],
+                            },
+                        )
+                    ],
+                },
+            )
+        ],
+    )
+    style.configure(
+        f"{style_name}.Tab",
+        background=shelf,
+        foreground=palette.text_muted,
+        font=font,
+        padding=padding,
+        borderwidth=0,
+        focuscolor=palette.accent,
+        focusthickness=1,
+    )
+    style.map(
+        f"{style_name}.Tab",
+        foreground=[
+            ("selected", selected_foreground),
+            ("active", palette.text),
+            ("disabled", palette.text_subtle),
+        ],
+        focuscolor=[("!focus", selected_surface)],
+    )
+    return [normal, hover, selected]
+
+
 def apply_app_theme(root: tk.Tk) -> ttk.Style:
     palette = PALETTE
     scale = display_scale(root)
@@ -235,6 +338,7 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
     medium_font = (body_family, BODY_FONT_SIZE, "bold")
     heading_font = (body_family, HEADING_FONT_SIZE, "bold")
     mono_font = (mono_family, MONO_FONT_SIZE)
+    tab_font = (body_family, SMALL_FONT_SIZE)
 
     style.configure(
         ".",
@@ -248,28 +352,47 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
         troughcolor=palette.input,
     )
     style.configure("TFrame", background=palette.background)
-    style.configure("Header.TFrame", background=palette.background)
-    style.configure("Toolbar.TFrame", background=palette.surface)
+    style.configure("Header.TFrame", background=palette.chrome)
+    style.configure("HeaderCluster.TFrame", background=palette.chrome)
+    style.configure("Toolbar.TFrame", background=palette.chrome)
     style.configure(
         "Panel.TFrame",
         background=palette.surface,
-        bordercolor=palette.border,
-        borderwidth=1,
-        relief="solid",
+        bordercolor=palette.surface,
+        borderwidth=0,
+        relief="flat",
     )
     style.configure("Surface.TFrame", background=palette.surface)
     style.configure(
         "Card.TFrame",
         background=palette.surface,
-        bordercolor=palette.border,
-        borderwidth=1,
-        relief="solid",
+        bordercolor=palette.surface,
+        borderwidth=0,
+        relief="flat",
     )
     style.configure("CardHeader.TFrame", background=palette.surface)
     style.configure("Inset.TFrame", background=palette.input)
     style.configure("Transport.TFrame", background=palette.surface_raised)
 
     style.configure("TLabel", background=palette.background, foreground=palette.text)
+    style.configure(
+        "Brand.TLabel",
+        background=palette.chrome,
+        foreground=palette.text,
+        font=(body_family, HEADING_FONT_SIZE, "bold"),
+    )
+    style.configure(
+        "BrandAccent.TLabel",
+        background=palette.chrome,
+        foreground=palette.accent,
+        font=(body_family, HEADING_FONT_SIZE, "bold"),
+    )
+    style.configure(
+        "StatusDot.TLabel",
+        background=palette.chrome,
+        foreground=palette.success,
+        font=(body_family, SMALL_FONT_SIZE),
+    )
     style.configure("Panel.TLabel", background=palette.surface, foreground=palette.text)
     style.configure("Toolbar.TLabel", background=palette.surface, foreground=palette.text)
     style.configure("Card.TLabel", background=palette.surface, foreground=palette.text)
@@ -288,7 +411,7 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
     style.configure(
         "Eyebrow.TLabel",
         background=palette.surface,
-        foreground=palette.accent,
+        foreground=palette.text_muted,
         font=(mono_family, SMALL_FONT_SIZE, "bold"),
     )
     style.configure(
@@ -311,14 +434,14 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
     )
     style.configure(
         "Status.TLabel",
-        background=palette.surface_raised,
+        background=palette.chrome,
         foreground=palette.text_muted,
         font=small_font,
-        padding=(9, 4),
+        padding=(4, 2),
     )
     style.configure(
         "Header.TLabel",
-        background=palette.background,
+        background=palette.chrome,
         foreground=palette.text,
         font=heading_font,
     )
@@ -338,97 +461,127 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
     style.configure(
         "TNotebook",
         background=palette.background,
-        bordercolor=palette.border,
+        bordercolor=palette.background,
+        lightcolor=palette.background,
+        darkcolor=palette.background,
         borderwidth=0,
         tabmargins=(0, 0, 0, 0),
     )
     style.configure(
-        "TNotebook.Tab",
-        background=palette.background,
-        foreground=palette.text_muted,
-        font=body_font,
-        padding=(14, 7),
+        "Nav.TNotebook",
+        background=palette.chrome,
+        bordercolor=palette.background,
+        lightcolor=palette.background,
+        darkcolor=palette.background,
         borderwidth=0,
-        focuscolor=palette.background,
+        tabmargins=(8, 0, 0, 0),
     )
-    style.map(
-        "TNotebook.Tab",
-        background=[("selected", palette.surface_raised), ("active", palette.surface)],
-        foreground=[("selected", palette.accent), ("active", palette.text)],
-        bordercolor=[("selected", palette.surface_raised), ("active", palette.surface)],
-    )
-    style.configure("Nav.TNotebook", background=palette.background, borderwidth=0)
     style.configure(
-        "Nav.TNotebook.Tab",
-        background=palette.background,
-        foreground=palette.text_muted,
-        font=medium_font,
-        padding=(18, 7),
+        "Subnav.TNotebook",
+        background=palette.chrome,
+        bordercolor=palette.background,
+        lightcolor=palette.background,
+        darkcolor=palette.background,
         borderwidth=0,
+        tabmargins=(8, 0, 0, 0),
     )
-    style.map(
-        "Nav.TNotebook.Tab",
-        background=[("selected", palette.surface), ("active", palette.surface_raised)],
-        foreground=[("selected", palette.accent), ("active", palette.text)],
-        bordercolor=[("selected", palette.surface), ("active", palette.surface_raised)],
-    )
-    style.configure("Subnav.TNotebook", background=palette.background, borderwidth=0)
     style.configure(
-        "Subnav.TNotebook.Tab",
-        background=palette.background,
-        foreground=palette.text_muted,
-        font=body_font,
-        padding=(13, 7),
-        borderwidth=0,
-    )
-    style.map(
-        "Subnav.TNotebook.Tab",
-        background=[("selected", palette.surface_raised), ("active", palette.surface)],
-        foreground=[("selected", palette.text), ("active", palette.text)],
-        bordercolor=[("selected", palette.surface_raised), ("active", palette.surface)],
-    )
-    style.configure("Compact.TNotebook", background=palette.surface, borderwidth=0)
-    style.configure(
-        "Compact.TNotebook.Tab",
+        "Compact.TNotebook",
         background=palette.surface,
-        foreground=palette.text_muted,
-        font=small_font,
-        padding=(11, 6),
+        bordercolor=palette.surface,
+        lightcolor=palette.surface,
+        darkcolor=palette.surface,
         borderwidth=0,
+        tabmargins=(0, 0, 0, 0),
     )
-    style.map(
-        "Compact.TNotebook.Tab",
-        background=[("selected", palette.surface_raised), ("active", palette.border)],
-        foreground=[("selected", palette.accent), ("active", palette.text)],
-        bordercolor=[("selected", palette.surface_raised), ("active", palette.border)],
+
+    tab_images: list[tk.PhotoImage] = []
+    tab_images.extend(
+        _configure_notebook_tab(
+            style,
+            root,
+            style_name="TNotebook",
+            element_name="GalaxyTab",
+            shelf=palette.surface,
+            selected_surface=palette.background,
+            hover_surface=palette.surface_raised,
+            font=tab_font,
+            padding=(11, 6),
+            selected_foreground=palette.text,
+        )
     )
+    tab_images.extend(
+        _configure_notebook_tab(
+            style,
+            root,
+            style_name="Nav.TNotebook",
+            element_name="GalaxyNavTab",
+            shelf=palette.chrome,
+            selected_surface=palette.background,
+            hover_surface=palette.surface,
+            font=tab_font,
+            padding=(14, 7),
+            selected_foreground=palette.text,
+        )
+    )
+    tab_images.extend(
+        _configure_notebook_tab(
+            style,
+            root,
+            style_name="Subnav.TNotebook",
+            element_name="GalaxySubnavTab",
+            shelf=palette.chrome,
+            selected_surface=palette.background,
+            hover_surface=palette.surface,
+            font=tab_font,
+            padding=(12, 6),
+            selected_foreground=palette.text,
+        )
+    )
+    tab_images.extend(
+        _configure_notebook_tab(
+            style,
+            root,
+            style_name="Compact.TNotebook",
+            element_name="GalaxyCompactTab",
+            shelf=palette.surface,
+            selected_surface=palette.input,
+            hover_surface=palette.surface_raised,
+            font=small_font,
+            padding=(10, 5),
+            selected_foreground=palette.text,
+        )
+    )
+    root._galaxy_tab_images = tab_images  # type: ignore[attr-defined]
 
     style.configure(
         "TButton",
         background=palette.surface_raised,
         foreground=palette.text,
-        bordercolor=palette.border,
-        borderwidth=1,
+        bordercolor=palette.surface_raised,
+        lightcolor=palette.surface_raised,
+        darkcolor=palette.surface_raised,
+        borderwidth=0,
         focusthickness=1,
         focuscolor=palette.accent,
-        padding=(11, 7),
+        padding=(10, 6),
         relief="flat",
     )
     style.map(
         "TButton",
         background=[
             ("pressed", palette.selection),
-            ("active", palette.border),
+            ("active", "#24282c"),
             ("disabled", palette.surface),
         ],
         foreground=[("disabled", palette.text_subtle)],
-        bordercolor=[("focus", palette.accent), ("active", palette.border_strong)],
+        bordercolor=[("focus", palette.accent), ("active", "#24282c")],
     )
     style.configure(
         "Tool.TButton",
         background=palette.surface_raised,
         foreground=palette.text,
-        bordercolor=palette.border,
+        bordercolor=palette.surface_raised,
         padding=(9, 5),
         font=small_font,
     )
@@ -437,7 +590,7 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
         background=palette.surface,
         foreground=palette.text_muted,
         bordercolor=palette.surface,
-        padding=(10, 6),
+        padding=(9, 5),
     )
     style.map(
         "Ghost.TButton",
@@ -449,8 +602,8 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
         "Danger.TButton",
         background=palette.surface,
         foreground=palette.danger,
-        bordercolor=palette.border,
-        padding=(10, 6),
+        bordercolor=palette.surface,
+        padding=(9, 5),
     )
     style.map(
         "Danger.TButton",
@@ -460,20 +613,23 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
     )
     style.configure(
         "Accent.TButton",
-        background=palette.accent,
-        foreground=palette.accent_text,
-        bordercolor=palette.accent,
+        background=palette.accent_surface,
+        foreground=palette.accent,
+        bordercolor=palette.accent_surface,
+        lightcolor=palette.accent_surface,
+        darkcolor=palette.accent_surface,
         font=medium_font,
+        padding=(11, 6),
     )
     style.map(
         "Accent.TButton",
         background=[
-            ("pressed", palette.accent_pressed),
-            ("active", palette.accent_hover),
-            ("disabled", palette.surface_raised),
+            ("pressed", "#4a2d38"),
+            ("active", palette.accent_surface_hover),
+            ("disabled", palette.surface),
         ],
-        foreground=[("disabled", palette.text_subtle)],
-        bordercolor=[("focus", palette.text), ("disabled", palette.border)],
+        foreground=[("active", palette.accent_hover), ("disabled", palette.text_subtle)],
+        bordercolor=[("focus", palette.accent), ("disabled", palette.surface)],
     )
 
     style.layout(
@@ -490,27 +646,27 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
     )
     style.configure(
         "Segment.TRadiobutton",
-        background=palette.surface_raised,
+        background=palette.surface,
         foreground=palette.text_muted,
-        bordercolor=palette.border,
-        borderwidth=1,
-        relief="solid",
-        padding=(14, 8),
+        bordercolor=palette.surface,
+        borderwidth=0,
+        relief="flat",
+        padding=(12, 7),
         anchor="center",
     )
     style.map(
         "Segment.TRadiobutton",
         background=[
-            ("selected active", palette.accent_hover),
-            ("selected", palette.accent),
-            ("active", palette.input),
+            ("selected active", palette.accent_surface_hover),
+            ("selected", palette.accent_surface),
+            ("active", palette.surface_raised),
         ],
         foreground=[
-            ("selected", palette.accent_text),
+            ("selected", palette.accent),
             ("active", palette.text),
             ("disabled", palette.text_subtle),
         ],
-        bordercolor=[("selected", palette.accent), ("focus", palette.text)],
+        bordercolor=[("selected", palette.accent_surface), ("focus", palette.accent)],
     )
 
     for widget_style in ("TEntry", "TSpinbox", "TCombobox"):
@@ -519,10 +675,12 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
             fieldbackground=palette.input,
             background=palette.input,
             foreground=palette.text,
-            bordercolor=palette.border,
+            bordercolor=palette.input,
+            lightcolor=palette.input,
+            darkcolor=palette.input,
             insertcolor=palette.text,
             arrowcolor=palette.text_muted,
-            padding=(7, 6),
+            padding=(7, 5),
         )
         style.map(
             widget_style,
@@ -535,7 +693,7 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
                 ("readonly", palette.text),
                 ("disabled", palette.text_subtle),
             ],
-            bordercolor=[("focus", palette.accent), ("active", palette.border_strong)],
+            bordercolor=[("focus", palette.accent), ("active", palette.surface_raised)],
             arrowcolor=[("disabled", palette.text_subtle), ("active", palette.text)],
             selectbackground=[("readonly", palette.selection)],
             selectforeground=[("readonly", palette.text)],
@@ -567,9 +725,9 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
     style.configure(
         "TLabelframe",
         background=palette.surface,
-        bordercolor=palette.border,
-        borderwidth=1,
-        relief="solid",
+        bordercolor=palette.surface,
+        borderwidth=0,
+        relief="flat",
     )
     style.configure(
         "TLabelframe.Label",
@@ -582,7 +740,7 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
         background=palette.input,
         fieldbackground=palette.input,
         foreground=palette.text,
-        bordercolor=palette.border,
+        bordercolor=palette.input,
         rowheight=metric(30),
         font=body_font,
     )
@@ -593,16 +751,16 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
     )
     style.configure(
         "Treeview.Heading",
-        background=palette.surface_raised,
+        background=palette.chrome,
         foreground=palette.text_muted,
-        bordercolor=palette.border,
-        font=medium_font,
-        padding=(7, 7),
+        bordercolor=palette.chrome,
+        font=(mono_family, SMALL_FONT_SIZE, "bold"),
+        padding=(7, 6),
         relief="flat",
     )
     style.map(
         "Treeview.Heading",
-        background=[("active", palette.border)],
+        background=[("active", palette.surface_raised)],
         foreground=[("active", palette.text)],
     )
 
@@ -610,20 +768,20 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
         "TScale",
         background=palette.surface,
         troughcolor=palette.input,
-        bordercolor=palette.border,
+        bordercolor=palette.input,
         lightcolor=palette.accent,
         darkcolor=palette.accent,
-        sliderlength=metric(18),
-        sliderthickness=metric(18),
+        sliderlength=metric(14),
+        sliderthickness=metric(14),
     )
     style.configure(
         "TProgressbar",
         background=palette.accent,
         troughcolor=palette.input,
-        bordercolor=palette.border,
+        bordercolor=palette.input,
         lightcolor=palette.accent,
         darkcolor=palette.accent,
-        thickness=metric(8),
+        thickness=metric(5),
     )
     style.configure(
         "TScrollbar",
@@ -631,8 +789,8 @@ def apply_app_theme(root: tk.Tk) -> ttk.Style:
         troughcolor=palette.input,
         bordercolor=palette.input,
         arrowcolor=palette.text_muted,
-        arrowsize=metric(13),
-        width=metric(14),
+        arrowsize=metric(10),
+        width=metric(11),
         relief="flat",
     )
     style.map(
@@ -655,7 +813,7 @@ def text_widget_options(*, log: bool = False) -> dict[str, object]:
         "insertbackground": palette.text,
         "selectbackground": palette.selection,
         "selectforeground": palette.text,
-        "highlightbackground": palette.border,
+        "highlightbackground": palette.input if not log else palette.preview,
         "highlightcolor": palette.accent,
         "highlightthickness": 1,
         "relief": "flat",

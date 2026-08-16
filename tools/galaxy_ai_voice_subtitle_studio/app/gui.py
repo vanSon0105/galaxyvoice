@@ -321,39 +321,45 @@ class GalaxyStudioApp(
         self.root.columnconfigure(0, weight=1)
         self.root.rowconfigure(0, weight=1)
 
-        shell = ttk.Frame(self.root, padding=(12, 8))
+        shell = ttk.Frame(self.root, padding=0)
         shell.grid(row=0, column=0, sticky="nsew")
         shell.columnconfigure(0, weight=1)
         shell.rowconfigure(1, weight=1)
 
-        header = ttk.Frame(shell, style="Header.TFrame")
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 9))
+        header = ttk.Frame(shell, style="Header.TFrame", padding=(14, 5, 12, 5))
+        header.grid(row=0, column=0, sticky="ew")
         header.columnconfigure(0, weight=1)
-        ttk.Label(header, text="Galaxy AI Voice & Subtitle Studio", style="Header.TLabel").grid(
-            row=0, column=0, sticky="w"
+        brand = ttk.Frame(header, style="HeaderCluster.TFrame")
+        brand.grid(row=0, column=0, sticky="w")
+        ttk.Label(brand, text="Galaxy", style="BrandAccent.TLabel").pack(side="left")
+        ttk.Label(brand, text=" AI Voice & Subtitle Studio", style="Brand.TLabel").pack(
+            side="left"
         )
-        ttk.Label(header, textvariable=self.status, style="Status.TLabel").grid(
-            row=0, column=1, sticky="e"
+        status_cluster = ttk.Frame(header, style="HeaderCluster.TFrame")
+        status_cluster.grid(row=0, column=1, sticky="e")
+        ttk.Label(status_cluster, text="●", style="StatusDot.TLabel").pack(side="left")
+        ttk.Label(status_cluster, textvariable=self.status, style="Status.TLabel").pack(
+            side="left"
         )
 
         self.main_notebook = ttk.Notebook(shell, style="Nav.TNotebook")
         self.main_notebook.grid(row=1, column=0, sticky="nsew")
 
-        self.voice_tab = ttk.Frame(self.main_notebook, padding=(0, 8, 0, 0))
+        self.voice_tab = ttk.Frame(self.main_notebook, padding=0)
         self.voice_tab.columnconfigure(0, weight=1)
         self.voice_tab.rowconfigure(0, weight=1)
         self.main_notebook.add(self.voice_tab, text="Voice")
 
         self.voice_feature_notebook = ttk.Notebook(self.voice_tab, style="Subnav.TNotebook")
         self.voice_feature_notebook.grid(row=0, column=0, sticky="nsew")
-        self.classic_voice_tab = ttk.Frame(self.voice_feature_notebook, padding=12)
+        self.classic_voice_tab = ttk.Frame(self.voice_feature_notebook, padding=8)
         self.classic_voice_tab.columnconfigure(0, weight=1)
         self.classic_voice_tab.columnconfigure(1, minsize=self._px(340))
         self.classic_voice_tab.rowconfigure(0, weight=1)
         self.voice_feature_notebook.add(self.classic_voice_tab, text="Video Dubbing")
 
-        left = ttk.Frame(self.classic_voice_tab, style="Card.TFrame", padding=10)
-        left.grid(row=0, column=0, sticky="nsew", padx=(0, 10))
+        left = ttk.Frame(self.classic_voice_tab, style="Card.TFrame", padding=8)
+        left.grid(row=0, column=0, sticky="nsew", padx=(0, 8))
         left.columnconfigure(0, weight=1)
         left.rowconfigure(0, weight=1)
         self.subtitle_notebook = ttk.Notebook(left, style="Compact.TNotebook")
@@ -391,8 +397,8 @@ class GalaxyStudioApp(
         self._build_export_panel(controls)
         self._build_video_panel(controls)
 
-        actions = ttk.Frame(right, style="Toolbar.TFrame", padding=(10, 8))
-        actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(14, 0))
+        actions = ttk.Frame(right, style="Toolbar.TFrame", padding=(8, 7))
+        actions.grid(row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
         actions.columnconfigure(0, weight=1)
         actions.columnconfigure(1, weight=1)
         self.generate_button = ttk.Button(
@@ -428,7 +434,7 @@ class GalaxyStudioApp(
         self.dub_editor_button.grid(row=1, column=1, sticky="ew", pady=(8, 0))
 
         self.progress = ttk.Progressbar(right, mode="indeterminate")
-        self.progress.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(12, 0))
+        self.progress.grid(row=2, column=0, columnspan=2, sticky="ew", pady=(7, 0))
 
         self._build_omnivoice_tabs(self.voice_feature_notebook)
         self._build_voicestudio_tab(self.voice_feature_notebook)
@@ -440,19 +446,19 @@ class GalaxyStudioApp(
             "<<NotebookTabChanged>>", self._on_voice_feature_tab_changed
         )
 
-        self.log_frame = ttk.Frame(shell, style="Card.TFrame", padding=10)
-        self.log_frame.grid(row=2, column=0, sticky="nsew", pady=(12, 0))
+        self.log_frame = ttk.Frame(shell, style="Card.TFrame", padding=(12, 7))
+        self.log_frame.grid(row=2, column=0, sticky="nsew")
         self.log_frame.columnconfigure(0, weight=1)
         ttk.Label(self.log_frame, text="NHẬT KÝ", style="Eyebrow.TLabel").grid(
             row=0, column=0, sticky="w", pady=(0, 7)
         )
         self.log_text = tk.Text(
             self.log_frame,
-            height=5,
+            height=4,
             wrap="word",
             font="TkFixedFont",
-            padx=10,
-            pady=8,
+            padx=8,
+            pady=6,
             **text_widget_options(log=True),
         )
         self.log_text.grid(row=1, column=0, sticky="ew")

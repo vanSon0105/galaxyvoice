@@ -12,6 +12,7 @@ from app.voicestudio.runtime import (
     DEFAULT_BACKEND_URL,
     VOICESTUDIO_LICENSE,
     VoiceStudioRuntime,
+    acquire_webview_profile,
     inspect_runtime,
 )
 
@@ -64,6 +65,10 @@ class VoiceStudioRuntimeTests(unittest.TestCase):
         self.assertEqual(runtime.snapshot_dir, snapshot)
         self.assertEqual(runtime.installer_log_path, runtime_root / "logs" / "install.log")
         self.assertEqual(runtime.source_dir, runtime_root / "sources" / "0.4.2")
+        self.assertEqual(
+            runtime.webview_data_dir,
+            runtime_root / "webview" / "profile",
+        )
         self.assertTrue(status.snapshot_present)
         self.assertFalse(status.installed)
         self.assertEqual(status.version, "0.4.2")
@@ -173,6 +178,57 @@ class VoiceStudioRuntimeTests(unittest.TestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stdout + completed.stderr)
         self.assertIn("PYTHON_RUNTIME=", completed.stdout)
+
+    def test_webview_profile_uses_recovery_directory_while_owner_is_alive(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = VoiceStudioRuntime.from_repository(
+                Path(temp_dir),
+                environ={"VOICESTUDIO_RUNTIME_ROOT": str(Path(temp_dir) / "managed")},
+            )
+            first = acquire_webview_profile(runtime, process_id=101)
+            self.assertEqual(first.owner_path.parent, first.data_directory.parent)
+            self.assertNotEqual(first.owner_path.parent, first.data_directory)
+            seed = first.data_directory / "EBWebView" / "Local State"
+            seed.parent.mkdir(parents=True)
+            seed.write_text("warm", encoding="utf-8")
+            with patch("app.voicestudio.runtime._process_is_running", return_value=True):
+                second = acquire_webview_profile(runtime, process_id=202)
+
+            self.assertFalse(first.recovered)
+            self.assertTrue(second.recovered)
+            self.assertNotEqual(first.data_directory, second.data_directory)
+            self.assertEqual(
+                (second.data_directory / "EBWebView" / "Local State").read_text(
+                    encoding="utf-8"
+                ),
+                "warm",
+            )
+            second.release()
+            first.release()
+
+    def test_stale_webview_profile_is_skipped_once_then_reclaimed(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            runtime = VoiceStudioRuntime.from_repository(
+                Path(temp_dir),
+                environ={"VOICESTUDIO_RUNTIME_ROOT": str(Path(temp_dir) / "managed")},
+            )
+            stale = acquire_webview_profile(runtime, process_id=101)
+            with (
+                patch("app.voicestudio.runtime._process_is_running", return_value=False),
+                patch(
+                    "app.voicestudio.runtime._webview_child_is_running",
+                    return_value=False,
+                ),
+            ):
+                recovery = acquire_webview_profile(runtime, process_id=202)
+
+            self.assertTrue(recovery.recovered)
+            self.assertFalse(stale.owner_path.exists())
+            recovery.release()
+
+            fresh = acquire_webview_profile(runtime, process_id=303)
+            self.assertFalse(fresh.recovered)
+            fresh.release()
 
 
 if __name__ == "__main__":

@@ -7,8 +7,10 @@ from typing import Any
 
 from ..common.theme import PALETTE
 from .runtime import (
+    WebViewProfileLease,
     VoiceStudioRuntime,
     VoiceStudioRuntimeStatus,
+    acquire_webview_profile,
     inspect_runtime,
     load_webview_class,
 )
@@ -127,6 +129,9 @@ class VoiceStudioTabMixin:
         self.voicestudio_bootstrap_title = tk.StringVar(value="VoiceStudio local")
         self.voicestudio_runtime_detail = tk.StringVar(value="Runtime local chưa được cài")
         self.voicestudio_webview: Any | None = None
+        self._voicestudio_profile_lease: WebViewProfileLease | None = None
+        self._voicestudio_pending_profile_lease: WebViewProfileLease | None = None
+        self._voicestudio_profile_lock = threading.Lock()
         self._voicestudio_launching = False
         self._voicestudio_installing = False
         self._voicestudio_launch_cancelled = False
@@ -359,6 +364,7 @@ class VoiceStudioTabMixin:
         ).start()
 
     def _launch_voicestudio_worker(self) -> None:
+        profile_lease: WebViewProfileLease | None = None
         try:
             if self._voicestudio_launch_cancelled:
                 return
@@ -376,8 +382,21 @@ class VoiceStudioTabMixin:
                 self.voicestudio_controller.stop()
                 return
             self.voicestudio_controller.disable_upstream_analytics()
+            profile_lease = acquire_webview_profile(self.voicestudio_runtime)
+            with self._voicestudio_profile_lock:
+                cancelled = self._voicestudio_launch_cancelled
+                if not cancelled:
+                    self._voicestudio_pending_profile_lease = profile_lease
+                    profile_lease = None
+            if cancelled:
+                if profile_lease is not None:
+                    profile_lease.release()
+                self.voicestudio_controller.stop()
+                return
             self.events.put(("voicestudio_launched", mode))
         except Exception as error:
+            if profile_lease is not None:
+                profile_lease.release()
             self.events.put(("voicestudio_error", error))
 
     def _install_voicestudio(self) -> None:
@@ -423,20 +442,31 @@ class VoiceStudioTabMixin:
         self.voicestudio_controller.finish_installer(process)
         self.events.put(("voicestudio_installed", return_code))
 
-    def _mount_voicestudio_webview(self) -> None:
+    def _mount_voicestudio_webview(
+        self,
+        profile_lease: WebViewProfileLease | None = None,
+    ) -> None:
         if self.voicestudio_webview is not None:
+            if profile_lease is not None:
+                profile_lease.release()
             self.voicestudio_webview.reload()
             return
         self.voicestudio_runtime.ensure_directories()
-        webview_class = load_webview_class(self.voicestudio_runtime)
-        self.voicestudio_bootstrap.grid_remove()
-        self.voicestudio_webview_host.grid(row=0, column=0, sticky="nsew")
-        self.voicestudio_webview_host.update_idletasks()
+        profile_lease = profile_lease or acquire_webview_profile(self.voicestudio_runtime)
+        self._voicestudio_profile_lease = profile_lease
+        if profile_lease.recovered:
+            self._append_log(
+                "VoiceStudio dùng profile WebView2 khôi phục vì phiên trước chưa thoát sạch."
+            )
         try:
+            webview_class = load_webview_class(self.voicestudio_runtime)
+            self.voicestudio_bootstrap.grid_remove()
+            self.voicestudio_webview_host.grid(row=0, column=0, sticky="nsew")
+            self.voicestudio_webview_host.update_idletasks()
             self.voicestudio_webview = webview_class(
                 self.voicestudio_webview_host,
                 url=self.voicestudio_runtime.backend_url,
-                data_directory=self.voicestudio_runtime.webview_data_dir,
+                data_directory=profile_lease.data_directory,
                 open_external=True,
                 background_color=(12, 15, 17, 255),
                 initialization_script=VOICESTUDIO_THEME_SCRIPT,
@@ -447,9 +477,28 @@ class VoiceStudioTabMixin:
         except Exception:
             self.voicestudio_webview_host.grid_remove()
             self.voicestudio_bootstrap.grid(row=0, column=0, sticky="nsew")
+            self._release_voicestudio_profile()
             raise
 
+    def _release_voicestudio_profile(self) -> None:
+        lease = self._voicestudio_profile_lease
+        self._voicestudio_profile_lease = None
+        if lease is not None:
+            lease.release()
+
+    def _take_pending_voicestudio_profile(self) -> WebViewProfileLease | None:
+        with self._voicestudio_profile_lock:
+            lease = self._voicestudio_pending_profile_lease
+            self._voicestudio_pending_profile_lease = None
+        return lease
+
+    def _release_pending_voicestudio_profile(self) -> None:
+        lease = self._take_pending_voicestudio_profile()
+        if lease is not None:
+            lease.release()
+
     def _destroy_voicestudio_webview(self) -> None:
+        self._release_pending_voicestudio_profile()
         webview = self.voicestudio_webview
         self.voicestudio_webview = None
         if webview is not None:
@@ -457,6 +506,7 @@ class VoiceStudioTabMixin:
                 webview.destroy()
             except Exception as error:
                 self._append_log(f"VoiceStudio WebView cleanup: {error}")
+        self._release_voicestudio_profile()
         try:
             self.voicestudio_webview_host.grid_remove()
             self.voicestudio_bootstrap.grid(row=0, column=0, sticky="nsew")
@@ -510,11 +560,14 @@ class VoiceStudioTabMixin:
             return True
         if event == "voicestudio_launched":
             self._voicestudio_launching = False
+            profile_lease = self._take_pending_voicestudio_profile()
             if self._voicestudio_launch_cancelled:
                 self._voicestudio_launch_cancelled = False
+                if profile_lease is not None:
+                    profile_lease.release()
                 return True
             try:
-                self._mount_voicestudio_webview()
+                self._mount_voicestudio_webview(profile_lease)
             except Exception as error:
                 self._voicestudio_launch_failed = True
                 self.voicestudio_status.set("Không thể nhúng giao diện VoiceStudio")

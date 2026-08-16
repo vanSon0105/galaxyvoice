@@ -1,9 +1,13 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import os
+import shutil
+import subprocess
 import sys
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -17,6 +21,8 @@ VOICESTUDIO_LICENSE = "AGPL-3.0-only"
 VOICESTUDIO_SNAPSHOT_VERSION = "0.4.2"
 DEFAULT_BACKEND_URL = "http://127.0.0.1:3900"
 WEBVIEW_PACKAGE = "tkwry"
+WEBVIEW_PROFILE_DIRECTORY = "profile"
+_PROFILE_OWNER_FILE = ".galaxy-owner.json"
 
 
 @dataclass(frozen=True)
@@ -65,7 +71,7 @@ class VoiceStudioRuntime:
             cache_dir=root / "cache",
             logs_dir=root / "logs",
             webview_site_packages=root / "webview" / "site-packages",
-            webview_data_dir=root / "webview" / "profile",
+            webview_data_dir=root / "webview" / WEBVIEW_PROFILE_DIRECTORY,
             webview_wheel=(
                 tool_root
                 / "vendor"
@@ -102,6 +108,199 @@ class VoiceStudioRuntime:
             self.webview_data_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)
+
+
+@dataclass
+class WebViewProfileLease:
+    data_directory: Path
+    owner_path: Path
+    token: str
+    recovered: bool = False
+    _released: bool = False
+
+    def release(self) -> None:
+        if self._released:
+            return
+        self._released = True
+        owner = _read_json(self.owner_path)
+        if owner is None or str(owner.get("token") or "") != self.token:
+            return
+        try:
+            self.owner_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+
+def acquire_webview_profile(
+    runtime: VoiceStudioRuntime,
+    *,
+    process_id: int | None = None,
+) -> WebViewProfileLease:
+    """Claim the persistent WebView profile or isolate this launch after a crash.
+
+    WebView2 can block the Tk thread indefinitely when another process still
+    owns the same data directory. A recovery profile keeps the current launch
+    responsive while preserving the normal persistent profile for clean runs.
+    """
+
+    runtime.ensure_directories()
+    pid = os.getpid() if process_id is None else int(process_id)
+    lease = _try_claim_profile(runtime.webview_data_dir, pid=pid, recovered=False)
+    if lease is not None:
+        return lease
+
+    persistent_owner_path = _profile_owner_path(runtime.webview_data_dir)
+    owner = _read_json(persistent_owner_path) or {}
+    owner_pid = _positive_int(owner.get("pid"))
+    if (
+        owner_pid is None
+        or (
+            not _process_is_running(owner_pid)
+            and not _webview_child_is_running(owner_pid)
+        )
+    ):
+        try:
+            persistent_owner_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+
+    recovery_root = runtime.webview_data_dir.parent / "recovery-profiles"
+    for _attempt in range(10):
+        token = uuid.uuid4().hex
+        recovery_dir = recovery_root / f"session-{pid}-{token[:8]}"
+        _clone_profile(runtime.webview_data_dir, recovery_dir)
+        lease = _try_claim_profile(
+            recovery_dir,
+            pid=pid,
+            recovered=True,
+            token=token,
+        )
+        if lease is not None:
+            return lease
+    raise RuntimeError("Không thể tạo profile WebView2 riêng cho phiên hiện tại.")
+
+
+def _clone_profile(source: Path, destination: Path) -> None:
+    """Best-effort warm clone; volatile WebView cache files may be locked."""
+
+    destination.mkdir(parents=True, exist_ok=True)
+    if not source.is_dir():
+        return
+    for source_path in source.rglob("*"):
+        if source_path.name == _PROFILE_OWNER_FILE:
+            continue
+        try:
+            relative_path = source_path.relative_to(source)
+            destination_path = destination / relative_path
+            if source_path.is_dir():
+                destination_path.mkdir(parents=True, exist_ok=True)
+            elif source_path.is_file():
+                destination_path.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source_path, destination_path)
+        except OSError:
+            continue
+
+
+def _try_claim_profile(
+    directory: Path,
+    *,
+    pid: int,
+    recovered: bool,
+    token: str | None = None,
+) -> WebViewProfileLease | None:
+    directory.mkdir(parents=True, exist_ok=True)
+    owner_path = _profile_owner_path(directory)
+    lease_token = token or uuid.uuid4().hex
+    try:
+        descriptor = os.open(owner_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return None
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            json.dump({"pid": pid, "token": lease_token}, stream)
+    except Exception:
+        try:
+            owner_path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        raise
+    return WebViewProfileLease(
+        data_directory=directory,
+        owner_path=owner_path,
+        token=lease_token,
+        recovered=recovered,
+    )
+
+
+def _profile_owner_path(directory: Path) -> Path:
+    return directory.parent / f".{directory.name}{_PROFILE_OWNER_FILE}"
+
+
+def _positive_int(value: object) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _process_is_running(process_id: int) -> bool:
+    if process_id == os.getpid():
+        return True
+    if sys.platform == "win32":
+        synchronize = 0x00100000
+        wait_timeout = 0x00000102
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.argtypes = (
+            ctypes.c_ulong,
+            ctypes.c_int,
+            ctypes.c_ulong,
+        )
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.WaitForSingleObject.argtypes = (ctypes.c_void_p, ctypes.c_ulong)
+        kernel32.WaitForSingleObject.restype = ctypes.c_ulong
+        kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+        handle = kernel32.OpenProcess(synchronize, False, process_id)
+        if not handle:
+            return ctypes.get_last_error() == 5
+        try:
+            return kernel32.WaitForSingleObject(handle, 0) == wait_timeout
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(process_id, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def _webview_child_is_running(owner_process_id: int) -> bool:
+    if sys.platform != "win32" or owner_process_id <= 0:
+        return False
+    script = (
+        "$p=Get-CimInstance Win32_Process -Filter \"ParentProcessId="
+        f"{owner_process_id}\" -ErrorAction SilentlyContinue | "
+        "Where-Object Name -eq 'msedgewebview2.exe' | Select-Object -First 1; "
+        "if($p){'1'}"
+    )
+    try:
+        completed = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-Command", script],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=3,
+            check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+    return completed.returncode == 0 and completed.stdout.strip() == "1"
 
 
 @dataclass(frozen=True)

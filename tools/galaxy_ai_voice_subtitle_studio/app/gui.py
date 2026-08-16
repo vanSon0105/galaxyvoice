@@ -1010,6 +1010,9 @@ class GalaxyStudioApp(
         ):
             return
         self._save_config_now()
+        self._voicestudio_launch_cancelled = True
+        self._destroy_voicestudio_webview()
+        self.voicestudio_controller.stop_all()
         self.root.destroy()
 
     def _on_destroy(self, event: tk.Event) -> None:

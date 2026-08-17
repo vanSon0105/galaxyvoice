@@ -535,7 +535,19 @@ export function DubPage() {
             </div>
             <div className="field">
               <label>Model AI dịch</label>
-              <input type="text" value={aiModel} onChange={(event) => setAiModel(event.target.value)} />
+              <input
+                type="text"
+                list="dub-ai-model-options"
+                value={aiModel}
+                onChange={(event) => setAiModel(event.target.value)}
+              />
+              <datalist id="dub-ai-model-options">
+                {(
+                  meta?.translation_providers.find((item) => item.code === provider)?.models ?? []
+                ).map((model) => (
+                  <option key={model} value={model} />
+                ))}
+              </datalist>
             </div>
             <div className="field">
               <label>Base URL</label>

@@ -6,9 +6,13 @@ import { AppShell } from './components/AppShell'
 import { DEFAULT_ROUTE } from './nav'
 import { DubPage } from './pages/dubbing/DubPage'
 import { BatchPage } from './pages/omnivoice/BatchPage'
+import { DubbingPage } from './pages/omnivoice/DubbingPage'
+import { GalleryPage } from './pages/omnivoice/GalleryPage'
 import { OmniVoiceWorkspace } from './pages/omnivoice/OmniVoiceWorkspace'
 import { ProfilesPage } from './pages/omnivoice/ProfilesPage'
 import { StudioPage } from './pages/omnivoice/StudioPage'
+import { TranscriptsPage } from './pages/omnivoice/TranscriptsPage'
+import { WorkspacesPage } from './pages/omnivoice/WorkspacesPage'
 import { PlaceholderPage } from './pages/PlaceholderPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { subscribeEvents } from './ws/hub'
@@ -43,9 +47,10 @@ export default function App() {
           <Route index element={<StudioPage />} />
           <Route path="batch" element={<BatchPage />} />
           <Route path="profiles" element={<ProfilesPage />} />
-          <Route path="gallery" element={<PlaceholderPage title="Gallery" phase="Pha 3b" />} />
-          <Route path="transcripts" element={<PlaceholderPage title="Transcripts" phase="Pha 3b" />} />
-          <Route path="workspaces" element={<PlaceholderPage title="Truyện & Sách nói" phase="Pha 3b" />} />
+          <Route path="gallery" element={<GalleryPage />} />
+          <Route path="transcripts" element={<TranscriptsPage />} />
+          <Route path="workspaces" element={<WorkspacesPage />} />
+          <Route path="dubbing" element={<DubbingPage />} />
         </Route>
         <Route path="/voicestudio" element={<PlaceholderPage title="VoiceStudio" phase="Pha 4" />} />
         <Route path="/editor" element={<PlaceholderPage title="Dựng video" phase="Pha 7" />} />

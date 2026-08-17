@@ -9,6 +9,7 @@ export function OmniVoiceWorkspace() {
     { id: 'gallery', label: 'Gallery', route: '/omnivoice/gallery' },
     { id: 'transcripts', label: 'Transcripts', route: '/omnivoice/transcripts' },
     { id: 'workspaces', label: 'Truyện & Sách nói', route: '/omnivoice/workspaces' },
+    { id: 'dubbing', label: 'Dubbing', route: '/omnivoice/dubbing' },
   ]
   return (
     <div>

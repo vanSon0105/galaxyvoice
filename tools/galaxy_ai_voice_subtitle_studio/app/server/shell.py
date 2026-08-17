@@ -171,6 +171,10 @@ def run_web_app(
             "All files (*.*)",
         )
         _SRT_FILE_TYPES = ("Subtitle files (*.srt)", "All files (*.*)")
+        _BOOK_FILE_TYPES = (
+            "Sách và kịch bản (*.txt;*.md;*.epub;*.pdf)",
+            "All files (*.*)",
+        )
 
         def choose_video_file(self) -> tuple[str] | None:
             result = window.create_file_dialog(
@@ -196,6 +200,14 @@ def run_web_app(
                     "Audio files (*.wav;*.mp3;*.flac;*.m4a;*.ogg)",
                     "All files (*.*)",
                 ),
+            )
+            return result
+
+        def choose_book_file(self) -> tuple[str] | None:
+            result = window.create_file_dialog(
+                webview.OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=self._BOOK_FILE_TYPES,
             )
             return result
 

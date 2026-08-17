@@ -7,9 +7,11 @@ from array import array
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
+import threading
 from typing import Callable, Mapping
 
 from ...common.cache import read_json, stable_digest, write_json_atomic
+from ...common.errors import TaskCancelledError
 from ...common.ffmpeg import find_ffmpeg
 from ...common.paths import slugify, unique_project_dir
 from ...voice.audio import concatenate_wavs, try_convert_to_mp3
@@ -67,6 +69,7 @@ def render_longform_plan(
     cover_path: Path | None = None,
     progress: WorkspaceProgress | None = None,
     resume_project_dir: Path | None = None,
+    stop_event: threading.Event | None = None,
 ) -> LongformWorkspaceResult:
     report = progress or (lambda _message: None)
     speech_spans = [span for span in plan.spans if span.kind == SPEECH_SPAN]
@@ -108,6 +111,8 @@ def render_longform_plan(
         for span_index, span in enumerate(plan.spans):
             if span.kind != SPEECH_SPAN:
                 continue
+            if stop_event is not None and stop_event.is_set():
+                raise TaskCancelledError()
             speech_index += 1
             profile_id = span.profile_id
             if not profile_id and span.voice_name:

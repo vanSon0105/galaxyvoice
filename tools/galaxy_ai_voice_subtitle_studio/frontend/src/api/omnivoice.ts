@@ -21,6 +21,7 @@ export interface OmniVoiceStatus {
   python_path: string
   languages: string[]
   devices: Option[]
+  expression_tags: DesignOption[]
   design_options: DesignOptions
 }
 

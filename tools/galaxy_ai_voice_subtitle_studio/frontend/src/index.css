@@ -428,6 +428,36 @@ body {
   border-bottom: 1px solid var(--border-soft);
 }
 
+/* ---------- Markup toolbar ---------- */
+.markup-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 8px;
+}
+
+.markup-bar .btn {
+  font-size: 11.5px;
+  padding: 4px 9px;
+}
+
+.markup-expression {
+  background: var(--color-input);
+  border: 1px solid var(--border-soft);
+  color: var(--color-fg);
+  font-family: inherit;
+  font-size: 11.5px;
+  border-radius: 4px;
+  padding: 4px 8px;
+  outline: none;
+}
+
+.markup-hint {
+  color: var(--color-fg-subtle);
+  font-size: 11px;
+}
+
 .transcript-text {
   flex: 1;
   overflow: hidden;

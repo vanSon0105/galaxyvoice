@@ -27,6 +27,7 @@ from ...omnivoice.features import (
     COMMON_LANGUAGES,
     DIALECT_CHOICES,
     GENDER_CHOICES,
+    NON_VERBAL_TAGS,
     PITCH_CHOICES,
     STYLE_CHOICES,
 )
@@ -217,6 +218,9 @@ def status() -> dict[str, Any]:
             "languages": list(languages),
             "devices": [
                 {"code": code, "label": omnivoice_device_label(code)} for code in OMNIVOICE_DEVICES
+            ],
+            "expression_tags": [
+                {"label": label, "value": value} for label, value in NON_VERBAL_TAGS.items()
             ],
             "design_options": {
                 "gender": [{"label": label, "value": value} for label, value in GENDER_CHOICES.items()],

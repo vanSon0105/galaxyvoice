@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { fetchSettings } from '../../api/settings'
@@ -17,6 +17,20 @@ import { pickBookFile, pickFolder } from '../../lib/dialogs'
 import type { TaskState } from '../../ws/useTasks'
 
 type Kind = 'stories' | 'audiobook'
+
+const STORY_SAMPLE = `# Mở đầu
+Người kể: Một buổi sáng yên tĩnh bắt đầu. [pause 500ms]
+Lan: [slow]Hôm nay chúng ta sẽ đi đâu?[/slow]
+Minh: Đi tìm một câu chuyện mới.
+`
+
+const AUDIOBOOK_SAMPLE = `# Chương 1 - Khởi đầu
+[voice:Người kể] Mỗi hành trình đều bắt đầu bằng một lựa chọn.
+[pause 700ms]
+
+# Chương 2 - Cuộc gặp
+[voice:Lan] Tôi đã đợi ở đây rất lâu rồi.
+`
 
 /** Stories / audiobook longform workspace: source → document editor → render. */
 export function WorkspacesPage() {
@@ -43,6 +57,38 @@ export function WorkspacesPage() {
   const [resumeJobs, setResumeJobs] = useState<ResumeJob[]>([])
   const [result, setResult] = useState<RenderResultPayload | null>(null)
   const [error, setError] = useState('')
+  const sourceRef = useRef<HTMLTextAreaElement | null>(null)
+
+  /** Insert markup at the cursor; wrap the selection for paired tokens. */
+  const insertToken = (before: string, after = '') => {
+    const textarea = sourceRef.current
+    if (!textarea) return
+    const start = textarea.selectionStart
+    const end = textarea.selectionEnd
+    const selected = source.slice(start, end)
+    const next =
+      source.slice(0, start) + before + (selected || (after ? '' : ' ')) + after + source.slice(end)
+    setSource(next)
+    requestAnimationFrame(() => {
+      textarea.focus()
+      const cursor = selected
+        ? start + before.length + selected.length + after.length
+        : start + before.length
+      textarea.setSelectionRange(cursor, cursor)
+    })
+  }
+
+  const wrapToken = (token: string) => {
+    const textarea = sourceRef.current
+    if (!textarea) return
+    const start = textarea.selectionStart
+    const end = textarea.selectionEnd
+    if (start !== end) {
+      insertToken(`[${token}]`, `[/${token}]`)
+    } else {
+      insertToken(`[${token}][/${token}]`)
+    }
+  }
 
   useEffect(() => {
     const settings = settingsQuery.data
@@ -184,7 +230,51 @@ export function WorkspacesPage() {
             Sách nói
           </button>
         </div>
+        <div className="markup-bar">
+          <button className="btn" onClick={() => insertToken(kind === 'stories' ? STORY_SAMPLE : AUDIOBOOK_SAMPLE)}>
+            Mẫu
+          </button>
+          <button className="btn" onClick={() => insertToken('[voice:Người kể] ')}>
+            [voice:]
+          </button>
+          <button className="btn" onClick={() => insertToken('[pause 500ms]')}>
+            [pause]
+          </button>
+          <button className="btn" onClick={() => wrapToken('slow')}>
+            [slow]
+          </button>
+          <button className="btn" onClick={() => wrapToken('fast')}>
+            [fast]
+          </button>
+          <button className="btn" onClick={() => wrapToken('emphasis')}>
+            [emphasis]
+          </button>
+          <button className="btn" onClick={() => wrapToken('spell')}>
+            [spell]
+          </button>
+          <select
+            className="markup-expression"
+            value=""
+            onChange={(event) => {
+              if (event.target.value) {
+                insertToken(event.target.value)
+                event.target.value = ''
+              }
+            }}
+          >
+            <option value="">Biểu cảm…</option>
+            {(statusQuery.data?.expression_tags ?? []).map((tag) => (
+              <option key={tag.value} value={tag.value}>
+                {tag.label}
+              </option>
+            ))}
+          </select>
+          <span className="markup-hint">
+            Bôi đen đoạn chữ rồi bấm [slow]/[fast]/… để bọc quanh đoạn đó.
+          </span>
+        </div>
         <textarea
+          ref={sourceRef}
           className="srt-editor"
           rows={9}
           placeholder={

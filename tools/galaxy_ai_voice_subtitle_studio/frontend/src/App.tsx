@@ -5,6 +5,10 @@ import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
 import { DEFAULT_ROUTE } from './nav'
 import { DubPage } from './pages/dubbing/DubPage'
+import { BatchPage } from './pages/omnivoice/BatchPage'
+import { OmniVoiceWorkspace } from './pages/omnivoice/OmniVoiceWorkspace'
+import { ProfilesPage } from './pages/omnivoice/ProfilesPage'
+import { StudioPage } from './pages/omnivoice/StudioPage'
 import { PlaceholderPage } from './pages/PlaceholderPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { subscribeEvents } from './ws/hub'
@@ -35,7 +39,14 @@ export default function App() {
     <AppShell wsState={wsState}>
       <Routes>
         <Route path="/dubbing" element={<DubPage />} />
-        <Route path="/omnivoice" element={<PlaceholderPage title="OmniVoice" phase="Pha 3" />} />
+        <Route path="/omnivoice" element={<OmniVoiceWorkspace />}>
+          <Route index element={<StudioPage />} />
+          <Route path="batch" element={<BatchPage />} />
+          <Route path="profiles" element={<ProfilesPage />} />
+          <Route path="gallery" element={<PlaceholderPage title="Gallery" phase="Pha 3b" />} />
+          <Route path="transcripts" element={<PlaceholderPage title="Transcripts" phase="Pha 3b" />} />
+          <Route path="workspaces" element={<PlaceholderPage title="Truyện & Sách nói" phase="Pha 3b" />} />
+        </Route>
         <Route path="/voicestudio" element={<PlaceholderPage title="VoiceStudio" phase="Pha 4" />} />
         <Route path="/editor" element={<PlaceholderPage title="Dựng video" phase="Pha 7" />} />
         <Route path="/separation" element={<PlaceholderPage title="Tách âm thanh" phase="Pha 5" />} />

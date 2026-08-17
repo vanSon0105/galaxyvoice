@@ -14,7 +14,17 @@ from ..common.theme import PALETTE, text_widget_options
 from .advanced_gui import OmniVoiceAdvancedGuiMixin
 from .batch import OmniVoiceBatchResult
 from .client import OmniVoiceWorkerClient
-from .features import MODE_LABELS, NON_VERBAL_TAGS
+from .features import (
+    ACCENT_CHOICES,
+    AGE_CHOICES,
+    COMMON_LANGUAGES,
+    DIALECT_CHOICES,
+    GENDER_CHOICES,
+    MODE_LABELS,
+    NON_VERBAL_TAGS,
+    PITCH_CHOICES,
+    STYLE_CHOICES,
+)
 from .models import (
     AUTO_MODE,
     CLONE_MODE,
@@ -38,60 +48,7 @@ from .workspaces.gui import OmniVoiceWorkspaceGuiMixin
 from .workspaces.renderer import LongformWorkspaceResult
 
 
-COMMON_LANGUAGES = (
-    "vi",
-    "en",
-    "zh",
-    "ja",
-    "ko",
-    "th",
-    "id",
-    "fr",
-    "de",
-    "es",
-    "ru",
-    "auto",
-)
-GENDER_CHOICES = {"Không chọn": "", "Nam": "male", "Nữ": "female"}
-AGE_CHOICES = {
-    "Không chọn": "",
-    "Trẻ em": "child",
-    "Thiếu niên": "teenager",
-    "Thanh niên": "young adult",
-    "Trung niên": "middle-aged",
-    "Cao tuổi": "elderly",
-}
-PITCH_CHOICES = {
-    "Không chọn": "",
-    "Rất trầm": "very low pitch",
-    "Trầm": "low pitch",
-    "Trung bình": "moderate pitch",
-    "Cao": "high pitch",
-    "Rất cao": "very high pitch",
-}
-STYLE_CHOICES = {"Không chọn": "", "Thì thầm": "whisper"}
-ACCENT_CHOICES = {
-    "Không chọn": "",
-    "Mỹ": "american accent",
-    "Anh": "british accent",
-    "Úc": "australian accent",
-    "Canada": "canadian accent",
-    "Ấn Độ": "indian accent",
-    "Trung Quốc": "chinese accent",
-    "Hàn Quốc": "korean accent",
-    "Nhật Bản": "japanese accent",
-    "Bồ Đào Nha": "portuguese accent",
-    "Nga": "russian accent",
-}
-DIALECT_CHOICES = {
-    "Không chọn": "",
-    "Hà Nam": "河南话",
-    "Thiểm Tây": "陕西话",
-    "Tứ Xuyên": "四川话",
-    "Quý Châu": "贵州话",
-    "Vân Nam": "云南话",
-    "Đông Bắc": "东北话",
-}
+# Voice-design tables moved to features.py (shared with the web studio).
 
 
 class OmniVoiceTabMixin(OmniVoiceWorkspaceGuiMixin, OmniVoiceAdvancedGuiMixin):

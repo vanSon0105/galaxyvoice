@@ -122,6 +122,8 @@ def generate_omnivoice_audio(
                 reference_text=options.reference_text,
             )
             profile_id = profile.profile_id
+            # Finalized: a later failure must NOT delete the saved profile.
+            pending_profile = None
 
         warnings: list[str] = []
         mp3_path: Path | None = None
@@ -160,5 +162,6 @@ def generate_omnivoice_audio(
             warnings=tuple(warnings),
         )
     except Exception:
-        discard_pending_profile(pending_profile)
+        if pending_profile is not None:
+            discard_pending_profile(pending_profile)
         raise

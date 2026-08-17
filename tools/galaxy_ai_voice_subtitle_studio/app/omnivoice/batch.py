@@ -4,11 +4,13 @@ from collections import Counter
 import json
 import math
 import re
+import threading
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Callable
 
 from ..common.cache import write_json_atomic
+from ..common.errors import TaskCancelledError
 from ..common.paths import slugify, unique_project_dir
 from ..voice.audio import concatenate_wavs, try_convert_to_mp3
 from .models import OmniVoiceGenerationOptions, OmniVoiceResult
@@ -115,6 +117,7 @@ def generate_omnivoice_batch(
     combine: bool = False,
     gap_ms: int = 250,
     progress: BatchProgressCallback | None = None,
+    stop_event: threading.Event | None = None,
 ) -> OmniVoiceBatchResult:
     if not items:
         raise ValueError("Batch Voice không có mục nào để xử lý.")
@@ -129,6 +132,8 @@ def generate_omnivoice_batch(
     warnings: list[str] = []
 
     for index, item in enumerate(items, start=1):
+        if stop_event is not None and stop_event.is_set():
+            raise TaskCancelledError()
         if progress is not None:
             progress(f"Đang tạo {index}/{len(items)}: {item.item_id}")
         item_options = replace(

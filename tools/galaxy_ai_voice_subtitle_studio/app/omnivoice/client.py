@@ -9,6 +9,7 @@ from collections import deque
 from pathlib import Path
 from typing import Callable
 
+from ..common.errors import TaskCancelledError
 from ..common.paths import studio_root
 from ..common.processes import managed_media_processes, terminate_process_tree
 from .protocol import decode_message, encode_message, request_message
@@ -17,6 +18,12 @@ from .runtime import OmniVoiceRuntime, inspect_runtime
 
 LogCallback = Callable[[str], None]
 ProgressCallback = Callable[[str], None]
+
+# Bounded transport for worker stderr: the tail deque keeps the diagnostics,
+# the queue only carries lines to the caller's log callback. Drop-oldest so
+# a chatty model download can never grow memory without bound.
+STDERR_QUEUE_MAX = 200
+STDERR_LINE_MAX_CHARS = 400
 
 
 class OmniVoiceWorkerClient:
@@ -33,8 +40,10 @@ class OmniVoiceWorkerClient:
         self._process: subprocess.Popen[str] | None = None
         self._request_lock = threading.Lock()
         self._stderr_lines: deque[str] = deque(maxlen=30)
-        self._stderr_queue: queue.Queue[str] = queue.Queue()
+        self._stderr_queue: queue.Queue[str] = queue.Queue(maxsize=STDERR_QUEUE_MAX)
         self._stderr_thread: threading.Thread | None = None
+        # Set by stop(): a spawn in flight must not survive cancellation.
+        self._stop_requested = threading.Event()
 
     @property
     def is_running(self) -> bool:
@@ -49,7 +58,13 @@ class OmniVoiceWorkerClient:
         on_log: LogCallback | None = None,
     ) -> dict[str, object]:
         with self._request_lock:
+            # A new request starts fresh after a stop; a stop that lands
+            # mid-request must abort it instead of being silently lost.
+            self._stop_requested.clear()
             process = self._ensure_started()
+            if self._stop_requested.is_set():
+                self._discard_process()
+                raise TaskCancelledError()
             request_id = uuid.uuid4().hex
             message = request_message(request_id, command, payload)
             if process.stdin is None or process.stdout is None:
@@ -59,6 +74,8 @@ class OmniVoiceWorkerClient:
                 process.stdin.flush()
             except (BrokenPipeError, OSError) as error:
                 self._discard_process()
+                if self._stop_requested.is_set():
+                    raise TaskCancelledError() from None
                 raise RuntimeError("Không thể gửi lệnh tới OmniVoice worker.") from error
 
             while True:
@@ -67,6 +84,8 @@ class OmniVoiceWorkerClient:
                 if not raw:
                     details = "\n".join(self._stderr_lines)
                     self._discard_process()
+                    if self._stop_requested.is_set():
+                        raise TaskCancelledError()
                     suffix = f"\n{details}" if details else ""
                     raise RuntimeError(f"OmniVoice worker đã dừng ngoài ý muốn.{suffix}")
                 response = decode_message(raw)
@@ -143,6 +162,10 @@ class OmniVoiceWorkerClient:
         )
         managed_media_processes.add(process)
         self._process = process
+        # A stop() that arrived while the spawn was in flight must kill it.
+        if self._stop_requested.is_set():
+            self._discard_process()
+            raise TaskCancelledError()
         self._stderr_thread = threading.Thread(
             target=self._read_stderr,
             args=(process,),
@@ -156,10 +179,20 @@ class OmniVoiceWorkerClient:
         if process.stderr is None:
             return
         for line in process.stderr:
-            message = line.rstrip()
+            message = line.rstrip()[:STDERR_LINE_MAX_CHARS]
             if message:
                 self._stderr_lines.append(message)
-                self._stderr_queue.put(message)
+                try:
+                    self._stderr_queue.put_nowait(message)
+                except queue.Full:
+                    try:
+                        self._stderr_queue.get_nowait()
+                    except queue.Empty:
+                        pass
+                    try:
+                        self._stderr_queue.put_nowait(message)
+                    except queue.Full:
+                        pass
 
     def _drain_stderr(self, callback: LogCallback | None) -> None:
         target = callback or self._default_log
@@ -172,6 +205,8 @@ class OmniVoiceWorkerClient:
                 target(message)
 
     def _terminate_process(self) -> None:
+        # Cancel any in-flight request AND a spawn that is still starting.
+        self._stop_requested.set()
         process = self._process
         stderr_thread = self._stderr_thread
         self._process = None

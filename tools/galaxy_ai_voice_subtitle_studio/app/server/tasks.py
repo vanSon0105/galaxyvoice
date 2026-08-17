@@ -32,6 +32,7 @@ class TaskRecord:
     error: str | None = None
     created_at: float = field(default_factory=time.time)
     finished_at: float | None = None
+    on_cancel: Callable[[], None] | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self.stop_event = threading.Event()
@@ -57,6 +58,14 @@ class TaskRegistry:
         if record is None or record.status != RUNNING:
             return False
         record.stop_event.set()
+        on_cancel = record.on_cancel
+        if on_cancel is not None:
+            try:
+                on_cancel()
+            except Exception:
+                # The task thread reports its own terminal state; the cancel
+                # hook is best-effort (e.g. killing a worker subprocess).
+                pass
         return True
 
     def finish(

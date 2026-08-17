@@ -74,6 +74,13 @@ class OmniVoiceApiTests(unittest.TestCase):
         self.assertIn("languages", body)
         self.assertIn("vi", body["languages"])
 
+    def test_worker_path_points_at_real_worker_file(self) -> None:
+        # Regression guard: the router used to resolve app/server/omnivoice/worker.py.
+        path = omnivoice_router._worker_path()
+        self.assertEqual(path.name, "worker.py")
+        self.assertTrue(path.is_file(), f"worker không tồn tại: {path}")
+        self.assertIn("app" + str(Path("/omnivoice/worker.py")), str(path))
+
     def test_generate_requires_text(self) -> None:
         response = self.client.post("/api/omnivoice/generate", json={"text": "  "})
         self.assertEqual(response.status_code, 422)

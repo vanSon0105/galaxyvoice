@@ -212,6 +212,12 @@ class WorkspacesApiTests(unittest.TestCase):
         )
         self.assertEqual(response.status_code, 404)
 
+    def test_worker_path_points_at_real_worker_file(self) -> None:
+        # Regression guard: the router used to resolve app/server/omnivoice/worker.py.
+        path = workspaces_router._worker_path()
+        self.assertEqual(path.name, "worker.py")
+        self.assertTrue(path.is_file(), f"worker không tồn tại: {path}")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -56,12 +56,16 @@ def _runtime() -> OmniVoiceRuntime:
     return OmniVoiceRuntime.default()
 
 
+def _worker_path() -> Path:
+    """app/server/routers/omnivoice_workspaces.py -> app/omnivoice/worker.py"""
+    return Path(__file__).resolve().parents[2] / "omnivoice" / "worker.py"
+
+
 def _worker_client() -> OmniVoiceWorkerClient:
     global _client
     with _client_lock:
         if _client is None:
-            worker_path = Path(__file__).resolve().parents[1] / "omnivoice" / "worker.py"
-            _client = OmniVoiceWorkerClient(_runtime(), worker_path)
+            _client = OmniVoiceWorkerClient(_runtime(), _worker_path())
         return _client
 
 

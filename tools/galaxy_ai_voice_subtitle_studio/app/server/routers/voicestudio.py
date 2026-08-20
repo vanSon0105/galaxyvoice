@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ...common.config import load_app_config
+from ...common.errors import TaskCancelledError
 from ...voicestudio.runtime import VoiceStudioRuntime, inspect_runtime
 from ...voicestudio.service import VoiceStudioController
 
@@ -16,16 +16,27 @@ router = APIRouter(prefix="/api/voicestudio", tags=["voicestudio"])
 
 _controller: VoiceStudioController | None = None
 _controller_lock = threading.Lock()
+_launch_lock = threading.Lock()
+_install_task_id: str | None = None
 
 
 def _get_controller() -> VoiceStudioController:
     global _controller
     with _controller_lock:
         if _controller is None:
-            cfg = load_app_config()
-            runtime = VoiceStudioRuntime.from_repository(environ=cfg.as_environ())
-            _controller = VoiceStudioController(runtime)
+            _controller = VoiceStudioController(VoiceStudioRuntime.from_repository())
         return _controller
+
+
+def shutdown_voicestudio() -> None:
+    """Stop processes owned by the shared web controller."""
+    global _controller, _install_task_id
+    with _controller_lock:
+        controller = _controller
+        _controller = None
+        _install_task_id = None
+    if controller is not None:
+        controller.stop_all()
 
 
 class StatusResponse(BaseModel):
@@ -35,6 +46,7 @@ class StatusResponse(BaseModel):
     backend_online: bool
     update_required: bool
     missing_components: list[str]
+    backend_url: str
 
 
 class LaunchResponse(BaseModel):
@@ -49,16 +61,17 @@ class InstallRequest(BaseModel):
 @router.get("/status")
 def status() -> StatusResponse:
     """Check VoiceStudio installation and runtime status."""
-    cfg = load_app_config()
-    runtime = VoiceStudioRuntime.from_repository(environ=cfg.as_environ())
-    s = inspect_runtime(runtime, probe_backend=True)
+    controller = _get_controller()
+    runtime = controller.runtime
+    s = inspect_runtime(runtime, probe_backend=False)
     return StatusResponse(
         installed=s.installed,
         version=s.version,
         message=s.message,
-        backend_online=s.backend_online,
+        backend_online=controller.is_running(),
         update_required=s.update_required,
         missing_components=list(s.missing_components),
+        backend_url=runtime.backend_url,
     )
 
 
@@ -66,10 +79,19 @@ def status() -> StatusResponse:
 def launch() -> LaunchResponse:
     """Launch VoiceStudio backend (or attach if already running)."""
     controller = _get_controller()
-    cfg = load_app_config()
-    runtime = VoiceStudioRuntime.from_repository(environ=cfg.as_environ())
-    result = controller.launch()
-    return LaunchResponse(result=result, url=runtime.backend_url)
+    with _launch_lock:
+        result = controller.launch()
+        if not controller.wait_until_ready():
+            detail = controller.backend_log_tail(max_chars=1800)
+            if result == "local":
+                controller.stop()
+            suffix = f"\n\nLog cuối:\n{detail}" if detail else ""
+            raise HTTPException(
+                status_code=503,
+                detail=f"VoiceStudio không sẵn sàng sau khi khởi động.{suffix}",
+            )
+        controller.disable_upstream_analytics()
+        return LaunchResponse(result=result, url=controller.runtime.backend_url)
 
 
 @router.post("/install")
@@ -78,40 +100,51 @@ def install(request: InstallRequest) -> dict[str, Any]:
     from ..tasks import run_task, task_registry
     from ..event_bus import event_bus
 
+    global _install_task_id
     controller = _get_controller()
 
-    if controller.installer_running():
-        raise HTTPException(status_code=409, detail="Đang cài đặt VoiceStudio")
-
-    # Check snapshot
-    cfg = load_app_config()
-    runtime = VoiceStudioRuntime.from_repository(environ=cfg.as_environ())
+    runtime = controller.runtime
     if not runtime.snapshot_metadata_path.is_file():
         raise HTTPException(status_code=404, detail="Không tìm thấy snapshot VoiceStudio")
 
-    record = task_registry.create("voicestudio-install")
+    with _controller_lock:
+        if _install_task_id is not None or controller.installer_running():
+            raise HTTPException(status_code=409, detail="Đang cài đặt VoiceStudio")
+        record = task_registry.create("voicestudio-install")
+        _install_task_id = record.task_id
     record.on_cancel = controller.stop_installer
+    event_bus.emit({"type": "task", "task_id": record.task_id, "status": "running"})
 
     def _install_task() -> dict[str, Any]:
-        process = controller.run_installer()
-        # Monitor installer process
-        while True:
-            if process.poll() is not None:
-                break
-            # Emit log tail as progress
-            tail = controller.installer_log_tail()
-            event_bus.emit({"type": "progress", "task_id": record.task_id, "message": tail})
-            time.sleep(1)
-        controller.finish_installer(process)
-        if process.returncode != 0:
-            raise RuntimeError(f"Cài đặt thất bại (exit {process.returncode})")
-        return {"success": True}
-
-    def _on_done(task_record) -> None:
-        if task_record.status == "done":
+        global _install_task_id
+        process = None
+        try:
+            process = controller.run_installer()
+            last_tail = ""
+            while process.poll() is None:
+                if record.stop_event.is_set():
+                    raise TaskCancelledError("Đã dừng cài đặt VoiceStudio")
+                tail = controller.installer_log_tail()
+                if tail and tail != last_tail:
+                    event_bus.emit(
+                        {"type": "progress", "task_id": record.task_id, "message": tail}
+                    )
+                    last_tail = tail
+                time.sleep(1)
+            if record.stop_event.is_set():
+                raise TaskCancelledError("Đã dừng cài đặt VoiceStudio")
+            if process.returncode != 0:
+                raise RuntimeError(f"Cài đặt thất bại (exit {process.returncode})")
             event_bus.emit({"type": "event", "kind": "voicestudio_installed", "payload": {}})
+            return {"success": True}
+        finally:
+            if process is not None:
+                controller.finish_installer(process)
+            with _controller_lock:
+                if _install_task_id == record.task_id:
+                    _install_task_id = None
 
-    run_task(record, _install_task, _on_done)
+    run_task(record, _install_task, lambda result: result)
     return {"task_id": record.task_id}
 
 

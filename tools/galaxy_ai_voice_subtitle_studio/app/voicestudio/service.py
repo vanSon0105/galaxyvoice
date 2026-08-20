@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import threading
 import time
 import webbrowser
 from typing import Any
@@ -24,59 +25,62 @@ class VoiceStudioController:
         self.runtime = runtime
         self.process: subprocess.Popen[Any] | None = None
         self.installer_process: subprocess.Popen[Any] | None = None
+        self._lock = threading.RLock()
+        self._generation = 0
 
     def launch(self) -> str:
-        status = inspect_runtime(self.runtime)
-        if status.backend_online and frontend_available(self.runtime.backend_url):
-            return "attached"
-        if not status.installed:
-            details = ", ".join(status.missing_components) or "runtime cần cập nhật"
-            raise RuntimeError(
-                f"VoiceStudio chưa sẵn sàng ({details}). Hãy bấm 'Cài runtime local'."
-            )
-        if self.is_running():
-            return "local"
+        with self._lock:
+            status = inspect_runtime(self.runtime)
+            if status.backend_online and frontend_available(self.runtime.backend_url):
+                return "attached"
+            if not status.installed:
+                details = ", ".join(status.missing_components) or "runtime cần cập nhật"
+                raise RuntimeError(
+                    f"VoiceStudio chưa sẵn sàng ({details}). Hãy bấm 'Cài runtime local'."
+                )
+            if self._process_is_running():
+                return "local"
 
-        self.runtime.ensure_directories()
-        parsed = urlparse(self.runtime.backend_url)
-        host = parsed.hostname or "127.0.0.1"
-        port = parsed.port or 3900
-        command = [
-            str(self.runtime.python_path),
-            "-m",
-            "uvicorn",
-            "main:app",
-            "--app-dir",
-            str(self.runtime.source_dir / "backend"),
-            "--host",
-            host,
-            "--port",
-            str(port),
-        ]
-        environment = os.environ.copy()
-        environment.update(
-            {
-                "PYTHONUTF8": "1",
-                "PYTHONIOENCODING": "utf-8",
-                "OMNIVOICE_PROJECT_ROOT": str(self.runtime.source_dir),
-                "OMNIVOICE_DATA_DIR": str(self.runtime.data_dir),
-                "OMNIVOICE_CACHE_DIR": str(self.runtime.cache_dir),
-                "HF_HOME": str(self.runtime.cache_dir),
-                "OMNIVOICE_MCP_DISABLE": "1",
-                "OMNIVOICE_ANALYTICS_DISABLED": "1",
-            }
-        )
-        with self.runtime.backend_log_path.open("a", encoding="utf-8") as log_file:
-            process = subprocess.Popen(
-                command,
-                cwd=str(self.runtime.source_dir),
-                env=environment,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                creationflags=_background_creation_flags(),
+            self.runtime.ensure_directories()
+            parsed = urlparse(self.runtime.backend_url)
+            host = parsed.hostname or "127.0.0.1"
+            port = parsed.port or 3900
+            command = [
+                str(self.runtime.python_path),
+                "-m",
+                "uvicorn",
+                "main:app",
+                "--app-dir",
+                str(self.runtime.source_dir / "backend"),
+                "--host",
+                host,
+                "--port",
+                str(port),
+            ]
+            environment = os.environ.copy()
+            environment.update(
+                {
+                    "PYTHONUTF8": "1",
+                    "PYTHONIOENCODING": "utf-8",
+                    "OMNIVOICE_PROJECT_ROOT": str(self.runtime.source_dir),
+                    "OMNIVOICE_DATA_DIR": str(self.runtime.data_dir),
+                    "OMNIVOICE_CACHE_DIR": str(self.runtime.cache_dir),
+                    "HF_HOME": str(self.runtime.cache_dir),
+                    "OMNIVOICE_MCP_DISABLE": "1",
+                    "OMNIVOICE_ANALYTICS_DISABLED": "1",
+                }
             )
-        self._replace_process(process)
-        return "local"
+            with self.runtime.backend_log_path.open("a", encoding="utf-8") as log_file:
+                process = subprocess.Popen(
+                    command,
+                    cwd=str(self.runtime.source_dir),
+                    env=environment,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    creationflags=_background_creation_flags(),
+                )
+            self._replace_process(process)
+            return "local"
 
     def wait_until_ready(
         self,
@@ -84,15 +88,19 @@ class VoiceStudioController:
         timeout: float = 240.0,
         poll_interval: float = 0.75,
     ) -> bool:
+        with self._lock:
+            generation = self._generation
+            process = self.process
         deadline = time.monotonic() + timeout
         while time.monotonic() < deadline:
             if backend_available(self.runtime.backend_url) and frontend_available(
                 self.runtime.backend_url
             ):
                 return True
-            if self.process is None:
-                return False
-            if self.process is not None and self.process.poll() is not None:
+            with self._lock:
+                if generation != self._generation:
+                    return False
+            if process is not None and process.poll() is not None:
                 return False
             time.sleep(poll_interval)
         return False
@@ -153,8 +161,10 @@ class VoiceStudioController:
         return process
 
     def stop(self) -> None:
-        process = self.process
-        self.process = None
+        with self._lock:
+            self._generation += 1
+            process = self.process
+            self.process = None
         if process is None:
             return
         managed_media_processes.discard(process)
@@ -179,7 +189,8 @@ class VoiceStudioController:
         self.stop_installer()
 
     def is_running(self) -> bool:
-        return self.process is not None and self.process.poll() is None
+        with self._lock:
+            return self._process_is_running()
 
     def installer_running(self) -> bool:
         return self.installer_process is not None and self.installer_process.poll() is None
@@ -200,9 +211,16 @@ class VoiceStudioController:
         return content[-max_chars:].strip()
 
     def _replace_process(self, process: subprocess.Popen[Any]) -> None:
-        self.stop()
+        previous = self.process
+        self._generation += 1
         self.process = process
         managed_media_processes.add(process)
+        if previous is not None and previous is not process:
+            managed_media_processes.discard(previous)
+            terminate_process_tree(previous)
+
+    def _process_is_running(self) -> bool:
+        return self.process is not None and self.process.poll() is None
 
 
 def _background_creation_flags() -> int:

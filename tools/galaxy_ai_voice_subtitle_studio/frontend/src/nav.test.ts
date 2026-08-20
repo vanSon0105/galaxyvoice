@@ -19,4 +19,10 @@ describe('nav', () => {
       expect(item.route.startsWith('/')).toBe(true)
     }
   })
+
+  it('routes the top-level VoiceStudio tab to its nested workspace', () => {
+    expect(NAV_ITEMS.find((item) => item.id === 'voicestudio')?.route).toBe(
+      '/omnivoice/voicestudio',
+    )
+  })
 })

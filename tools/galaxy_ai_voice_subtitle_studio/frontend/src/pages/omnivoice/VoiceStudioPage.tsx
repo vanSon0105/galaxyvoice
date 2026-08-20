@@ -1,164 +1,165 @@
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import {
   fetchVoiceStudioStatus,
-  launchVoiceStudio,
   installVoiceStudio,
+  launchVoiceStudio,
   stopVoiceStudio,
 } from '../../api/voiceStudio'
-import type { VoiceStudioStatus } from '../../api/voiceStudio'
 import { TaskButton } from '../../components/TaskButton'
+import type { TaskState } from '../../ws/useTasks'
 
-type State = 'checking' | 'not_installed' | 'installing' | 'ready' | 'error'
+type PageState = 'checking' | 'not-installed' | 'launching' | 'ready' | 'error'
 
-/** VoiceStudio iframe page: install → launch → embed. */
 export function VoiceStudioPage() {
   const queryClient = useQueryClient()
-  const [state, setState] = useState<State>('checking')
+  const launchAttempted = useRef(false)
+  const [pageState, setPageState] = useState<PageState>('checking')
   const [iframeSrc, setIframeSrc] = useState('')
-  const [errorMsg, setErrorMsg] = useState('')
+  const [errorMessage, setErrorMessage] = useState('')
 
   const statusQuery = useQuery({
     queryKey: ['voicestudio-status'],
     queryFn: fetchVoiceStudioStatus,
-    refetchInterval: state === 'ready' ? 10000 : false,
+    refetchInterval: iframeSrc ? 10_000 : false,
   })
+  const status = statusQuery.data
 
-  const status: VoiceStudioStatus | undefined = statusQuery.data
+  const startBackend = useCallback(async () => {
+    setPageState('launching')
+    setErrorMessage('')
+    try {
+      const response = await launchVoiceStudio()
+      setIframeSrc(response.url)
+      setPageState('ready')
+    } catch (cause) {
+      setPageState('error')
+      setErrorMessage(cause instanceof Error ? cause.message : String(cause))
+    }
+  }, [])
 
-  // State machine
   useEffect(() => {
     if (statusQuery.isPending) return
-    if (!status) {
-      setState('error')
-      setErrorMsg('Không tải được trạng thái VoiceStudio')
+    if (statusQuery.isError || !status) {
+      setPageState('error')
+      setErrorMessage('Không tải được trạng thái VoiceStudio')
       return
     }
     if (!status.installed) {
-      setState('not_installed')
+      launchAttempted.current = false
+      setIframeSrc('')
+      setPageState('not-installed')
       return
     }
-    if (status.backend_online) {
-      setState('ready')
-      setIframeSrc(status.backend_url ?? 'http://127.0.0.1:3900')
-      return
+    if (!launchAttempted.current && !iframeSrc) {
+      launchAttempted.current = true
+      void startBackend()
     }
-    // Installed but not running
-    setState('ready')
-  }, [status, statusQuery.isPending])
+  }, [iframeSrc, startBackend, status, statusQuery.isError, statusQuery.isPending])
 
-  const handleInstall = async (): Promise<string> => {
-    setState('installing')
-    setErrorMsg('')
+  const handleInstallStart = async (): Promise<string> => {
+    setErrorMessage('')
     const response = await installVoiceStudio({})
     return response.task_id
   }
 
-  const handleInstallDone = (task: { status: string; result?: unknown; error?: string }) => {
+  const handleInstallFinish = (task: TaskState) => {
     if (task.status !== 'done') {
-      setState('error')
-      setErrorMsg(task.error ?? 'Cài đặt thất bại')
+      setPageState('error')
+      setErrorMessage(task.error ?? 'Cài đặt VoiceStudio thất bại')
       return
     }
+    launchAttempted.current = false
+    setPageState('checking')
     void queryClient.invalidateQueries({ queryKey: ['voicestudio-status'] })
-    setState('ready')
   }
 
-  const handleLaunch = async () => {
-    setErrorMsg('')
-    try {
-      const response = await launchVoiceStudio()
-      setIframeSrc(response.url)
-      setState('ready')
-    } catch (cause) {
-      setErrorMsg(cause instanceof Error ? cause.message : String(cause))
-    }
+  const handleRetry = () => {
+    launchAttempted.current = false
+    setErrorMessage('')
+    setPageState('checking')
+    void queryClient.invalidateQueries({ queryKey: ['voicestudio-status'] })
   }
 
   const handleStop = async () => {
     try {
       await stopVoiceStudio()
+      launchAttempted.current = true
       setIframeSrc('')
-      setState('ready')
+      setPageState('ready')
+      await queryClient.invalidateQueries({ queryKey: ['voicestudio-status'] })
     } catch (cause) {
-      setErrorMsg(cause instanceof Error ? cause.message : String(cause))
+      setPageState('error')
+      setErrorMessage(cause instanceof Error ? cause.message : String(cause))
     }
   }
 
-  const renderInstalling = () => (
-    <div className="section-card" style={{ textAlign: 'center', padding: 40 }}>
-      <div style={{ fontSize: 18, marginBottom: 16 }}>Đang cài đặt VoiceStudio…</div>
-      <TaskButton label="Đang cài…" variant="accent" onStart={handleInstall} onFinish={handleInstallDone} />
-    </div>
-  )
-
-  const renderNotInstalled = () => (
-    <div className="section-card" style={{ textAlign: 'center', padding: 40 }}>
-      <div style={{ fontSize: 18, marginBottom: 16 }}>
-        VoiceStudio chưa được cài đặt
+  return (
+    <section className="section-card voicestudio-page">
+      <div className="section-header">
+        <div>
+          <h2 className="section-title">VoiceStudio</h2>
+          <p className="section-subtitle">{status?.message ?? 'Đang kiểm tra runtime local...'}</p>
+        </div>
+        <div className="toolbar-row">
+          {iframeSrc && (
+            <button className="btn" onClick={() => void handleStop()}>
+              Dừng
+            </button>
+          )}
+          {pageState === 'ready' && !iframeSrc && (
+            <button
+              className="btn accent"
+              onClick={() => {
+                launchAttempted.current = true
+                void startBackend()
+              }}
+            >
+              Khởi động lại
+            </button>
+          )}
+        </div>
       </div>
-      <p style={{ color: 'var(--color-fg-subtle)', marginBottom: 24 }}>
-        VoiceStudio là ứng dụng riêng (AGPL-3.0) chạy trong iframe.
-        Bấm nút bên dưới để cài runtime local (Python + WebView2).
-      </p>
-      <TaskButton label="Cài runtime VoiceStudio" variant="accent" onStart={handleInstall} onFinish={handleInstallDone} />
-    </div>
-  )
 
-  const renderReady = () => (
-    <div style={{ display: 'flex', flexDirection: 'column', height: 'calc(100vh - 280px)', minHeight: 400 }}>
-      {iframeSrc && (
-        <div style={{ flex: 1, position: 'relative' }}>
-          <iframe
-            src={iframeSrc}
-            style={{ width: '100%', height: '100%', border: 'none', borderRadius: 6 }}
-            allow="clipboard-read; clipboard-write"
-            title="VoiceStudio"
-          />
+      {pageState === 'ready' && iframeSrc ? (
+        <iframe
+          className="voicestudio-frame"
+          src={iframeSrc}
+          allow="clipboard-read; clipboard-write"
+          title="VoiceStudio"
+        />
+      ) : (
+        <div className="empty-state voicestudio-state">
+          {pageState === 'checking' && <p>Đang kiểm tra VoiceStudio...</p>}
+          {pageState === 'launching' && <p>Đang khởi động VoiceStudio...</p>}
+          {pageState === 'ready' && <p>VoiceStudio đã dừng.</p>}
+          {pageState === 'not-installed' && (
+            <>
+              <h3>Chưa có runtime VoiceStudio</h3>
+              <p>
+                Snapshot đã đi kèm Galaxy. Bước cài đặt chỉ chuẩn bị Python và dependency
+                trong thư mục local của ứng dụng.
+              </p>
+              <TaskButton
+                label={status?.update_required ? 'Cập nhật runtime' : 'Cài runtime local'}
+                variant="accent"
+                onStart={handleInstallStart}
+                onFinish={handleInstallFinish}
+              />
+            </>
+          )}
+          {pageState === 'error' && (
+            <>
+              <h3>Không thể mở VoiceStudio</h3>
+              <p className="error-text">{errorMessage}</p>
+              <button className="btn accent" onClick={handleRetry}>
+                Thử lại
+              </button>
+            </>
+          )}
         </div>
       )}
-      <div style={{ display: 'flex', gap: 10, marginTop: 12, justifyContent: 'flex-end' }}>
-        <button className="btn" onClick={handleStop} disabled={!iframeSrc}>
-          Dừng backend
-        </button>
-        <button className="btn accent" onClick={handleLaunch} disabled={!!iframeSrc}>
-          Mở / Kết nối lại
-        </button>
-      </div>
-    </div>
-  )
-
-  const renderError = () => (
-    <div className="section-card" style={{ borderColor: 'rgba(220,118,111,0.4)' }}>
-      <div style={{ color: 'var(--color-danger)', fontSize: 14, marginBottom: 12 }}>
-        Lỗi: {errorMsg}
-      </div>
-      <button className="btn" onClick={() => void queryClient.invalidateQueries({ queryKey: ['voicestudio-status'] })}>
-        Thử lại
-      </button>
-    </div>
-  )
-
-  const renderChecking = () => (
-    <div className="section-card" style={{ textAlign: 'center', padding: 40 }}>
-      <div>Đang kiểm tra VoiceStudio…</div>
-    </div>
-  )
-
-  return (
-    <div>
-      <section className="section-card">
-        <h2 className="section-title">VoiceStudio</h2>
-        <div style={{ color: 'var(--color-fg-subtle)', fontSize: 12, marginBottom: 16 }}>
-          {status?.message ?? 'Đang tải…'}
-        </div>
-        {state === 'checking' && renderChecking()}
-        {state === 'not_installed' && renderNotInstalled()}
-        {state === 'installing' && renderInstalling()}
-        {state === 'ready' && renderReady()}
-        {state === 'error' && renderError()}
-      </section>
-    </div>
+    </section>
   )
 }

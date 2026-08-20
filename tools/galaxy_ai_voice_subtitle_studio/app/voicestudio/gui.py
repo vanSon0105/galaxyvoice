@@ -139,6 +139,7 @@ class VoiceStudioTabMixin:
         self._voicestudio_auto_launch_attempted = False
         self._voicestudio_user_stopped = False
         self._voicestudio_launch_failed = False
+        self._current_voicestudio_status: VoiceStudioRuntimeStatus | None = None
 
     def _build_voicestudio_tab(self, notebook: ttk.Notebook) -> None:
         page = ttk.Frame(notebook, padding=4)
@@ -261,7 +262,9 @@ class VoiceStudioTabMixin:
 
     def _inspect_voicestudio_worker(self) -> None:
         try:
-            self.events.put(("voicestudio_status", inspect_runtime(self.voicestudio_runtime)))
+            status = inspect_runtime(self.voicestudio_runtime)
+            self.events.put(("voicestudio_status", status))
+            self._current_voicestudio_status = status
         except Exception as error:
             self.events.put(("voicestudio_error", error))
 
@@ -271,7 +274,13 @@ class VoiceStudioTabMixin:
     ) -> None:
         if not self._voicestudio_tab_is_active():
             return
-        current = status or inspect_runtime(self.voicestudio_runtime, probe_backend=False)
+        if status is not None:
+            self._current_voicestudio_status = status
+        elif getattr(self, "_current_voicestudio_status", None) is None:
+            self._current_voicestudio_status = inspect_runtime(
+                self.voicestudio_runtime, probe_backend=False
+            )
+        current = self._current_voicestudio_status
         if status is None and not self._voicestudio_launch_failed:
             self._apply_voicestudio_status(current)
         if (
@@ -333,7 +342,9 @@ class VoiceStudioTabMixin:
     ) -> None:
         if self._voicestudio_launching:
             return
-        current = status or inspect_runtime(self.voicestudio_runtime, probe_backend=False)
+        current = status or self._current_voicestudio_status or inspect_runtime(
+            self.voicestudio_runtime, probe_backend=False
+        )
         if not current.installed:
             self._apply_voicestudio_status(current)
             if not automatic:
@@ -342,7 +353,7 @@ class VoiceStudioTabMixin:
                     "Hãy cài runtime local trước. Snapshot đã nằm sẵn trong Galaxy; "
                     "bộ cài chỉ tải các dependency Python cần thiết.",
                 )
-            return
+                return
         self._voicestudio_user_stopped = False
         self._voicestudio_launch_failed = False
         self._voicestudio_launching = True
@@ -452,7 +463,7 @@ class VoiceStudioTabMixin:
             self.voicestudio_webview.reload()
             return
         self.voicestudio_runtime.ensure_directories()
-        profile_lease = profile_lease or acquire_webview_profile(self.voicestudio_runtime)
+        profile_lease = profile_lease or self._take_pending_voicestudio_profile() or acquire_webview_profile(self.voicestudio_runtime)
         self._voicestudio_profile_lease = profile_lease
         if profile_lease.recovered:
             self._append_log(
@@ -575,8 +586,7 @@ class VoiceStudioTabMixin:
                 self._show_voicestudio_bootstrap(
                     title="Không thể mở giao diện VoiceStudio",
                     detail=(
-                        f"{error}\n\nBackend vẫn đang chạy. "
-                        "Hãy thử lại hoặc mở trong trình duyệt."
+                        f"{error}\n\nBackend vẫn chạy; có thể mở trong trình duyệt từ menu Quản lý."
                     ),
                     action="retry",
                 )
@@ -663,6 +673,7 @@ class VoiceStudioTabMixin:
         return False
 
     def _apply_voicestudio_status(self, status: VoiceStudioRuntimeStatus) -> None:
+        self._current_voicestudio_status = status
         if not self._voicestudio_launch_failed:
             self.voicestudio_status.set(status.message)
         self.voicestudio_version.set(f"VoiceStudio {status.version}")
@@ -733,7 +744,7 @@ class VoiceStudioTabMixin:
                 "normal"
                 if status.installed and not busy and self.voicestudio_webview is None
                 else "disabled"
-            )
+            ),
         )
         self.voicestudio_manage_menu.entryconfigure(
             1,

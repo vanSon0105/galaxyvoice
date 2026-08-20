@@ -18,9 +18,7 @@ import uvicorn
 
 from ..common.processes import managed_media_processes
 from .main import create_app, health_ping_age
-from ...voicestudio.runtime import VoiceStudioRuntime
-from ...voicestudio.service import VoiceStudioController
-from ...common.config import load_app_config
+from .routers.voicestudio import shutdown_voicestudio
 
 LOGGER = logging.getLogger("galaxy.web.shell")
 
@@ -117,16 +115,11 @@ class GalaxyWebServer:
             server.force_exit = True
         if thread is not None:
             thread.join(timeout=10)
-        managed_media_processes.terminate_all()
-
-        # Stop VoiceStudio backend if running (orphan cleanup)
         try:
-            cfg = load_app_config()
-            runtime = VoiceStudioRuntime.from_repository(environ=cfg.as_environ())
-            controller = VoiceStudioController(runtime)
-            controller.stop_all()
+            shutdown_voicestudio()
         except Exception:
-            pass
+            LOGGER.exception("Could not stop VoiceStudio during shutdown")
+        managed_media_processes.terminate_all()
 
 
 def _watchdog(server: GalaxyWebServer) -> None:

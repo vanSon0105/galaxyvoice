@@ -6,7 +6,6 @@ hook plus the batch-level stop_event.
 """
 from __future__ import annotations
 
-import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -50,6 +49,8 @@ from ...omnivoice.runtime import (
     omnivoice_device_label,
 )
 from ...omnivoice.service import generate_omnivoice_audio
+from ...omnivoice.task_runner import shared_omnivoice_task_coordinator
+from ...omnivoice.worker_pool import get_shared_worker_client
 from ..event_bus import event_bus
 from ..tasks import TaskRecord, run_task, task_registry
 
@@ -57,8 +58,7 @@ router = APIRouter(prefix="/api/omnivoice")
 
 STATUS_CACHE_TTL_SECONDS = 60.0
 _status_cache: dict[str, Any] = {"at": 0.0, "value": None}
-_client: OmniVoiceWorkerClient | None = None
-_client_lock = threading.Lock()
+_task_coordinator = shared_omnivoice_task_coordinator
 
 
 def _runtime() -> OmniVoiceRuntime:
@@ -71,11 +71,7 @@ def _worker_path() -> Path:
 
 
 def _worker_client() -> OmniVoiceWorkerClient:
-    global _client
-    with _client_lock:
-        if _client is None:
-            _client = OmniVoiceWorkerClient(_runtime(), _worker_path())
-        return _client
+    return get_shared_worker_client(_runtime(), _worker_path())
 
 
 def _config() -> Any:
@@ -274,14 +270,18 @@ def generate(request: GenerateRequest) -> dict[str, Any]:
         raise HTTPException(status_code=422, detail="Hãy nhập nội dung cần tạo giọng.")
     options = _options_from(request, _config())
     record = task_registry.create("omnivoice-generate")
-    record.on_cancel = _worker_client().stop
-    event_bus.emit({"type": "task", "task_id": record.task_id, "status": "running"})
+    record.on_cancel = lambda: _task_coordinator.cancel(record.task_id)
     run_task(
         record,
-        lambda: generate_omnivoice_audio(
-            options,
-            _worker_client(),
-            progress=_progress(record),
+        lambda: _task_coordinator.run(
+            record.task_id,
+            record.stop_event,
+            lambda client: generate_omnivoice_audio(
+                options,
+                client,
+                progress=_progress(record),
+            ),
+            client_factory=_worker_client,
         ),
         _result_dict,
     )
@@ -313,18 +313,22 @@ def batch(request: BatchRequest) -> dict[str, Any]:
         config,
     )
     record = task_registry.create("omnivoice-batch")
-    record.on_cancel = _worker_client().stop
-    event_bus.emit({"type": "task", "task_id": record.task_id, "status": "running"})
+    record.on_cancel = lambda: _task_coordinator.cancel(record.task_id)
     run_task(
         record,
-        lambda: generate_omnivoice_batch(
-            base_options,
-            items,
-            _worker_client(),
-            combine=request.combine,
-            gap_ms=request.gap_ms,
-            progress=_progress(record),
-            stop_event=record.stop_event,
+        lambda: _task_coordinator.run(
+            record.task_id,
+            record.stop_event,
+            lambda client: generate_omnivoice_batch(
+                base_options,
+                items,
+                client,
+                combine=request.combine,
+                gap_ms=request.gap_ms,
+                progress=_progress(record),
+                stop_event=record.stop_event,
+            ),
+            client_factory=_worker_client,
         ),
         _batch_result_dict,
     )

@@ -1,6 +1,6 @@
 # Kế hoạch di cư Galaxy sang kiến trúc web (pywebview + FastAPI + React)
 
-> Cập nhật: 2026-08-17. Pha 0–3 đã hoàn thành và commit; Pha 4–8 còn lại.
+> Cập nhật: 2026-08-21. Pha 0–4 đã hoàn thành và commit; Pha 5–8 còn lại.
 > File này là bản kế hoạch chi tiết cho toàn bộ quá trình di cư.
 
 ## 1. Bối cảnh & quyết định đã chốt
@@ -43,10 +43,11 @@ Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python 
 | 2 | Video Dubbing: generate/extract/transcribe/draft/export + fix ffmpeg timeout/cancel/dọn rác | `fe538e1`, `8e536df`, `ebeb209`, `08ee9fa` |
 | 3a | OmniVoice Studio/Profiles/Batch + fix Stop-lost/stderr queue/profile guard | `99e79dc` |
 | 3b+3c | Workspaces: repository, gallery, transcripts, document editor, dubbing, render + resume | `f64464a` |
+| 4 | VoiceStudio iframe: tự khởi động, install/launch single-flight, shutdown sạch | `f91dd32`, `64714bd` |
 
-## 3. Các pha còn lại
+## 3. Pha 4 đã hoàn thành và các pha còn lại
 
-### Pha 4 — VoiceStudio iframe
+### Pha 4 — VoiceStudio iframe ✅
 
 **Mục tiêu**: tab VoiceStudio trong web = nhúng SPA vendored qua `<iframe src="http://127.0.0.1:3900">`. Cơ chế WebView2-profile của tkinter (disk leak) mất hoàn toàn; backend mồ côi được dọn khi shutdown.
 
@@ -124,8 +125,8 @@ Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python 
 | 6 | project-id mixup giữa modes | P3b | ✅ |
 | 7 | scan resumable chặn UI | P3b | ✅ (endpoint riêng, không chặn UI web) |
 | 8 | WebView2 recovery profile leak | P4 | ✅ (mất theo thiết kế iframe) |
-| 9 | race install/launch thế hệ cũ | P4 | ⏳ |
-| 10 | backend mồ côi khi đóng app | P4 | ⏳ |
+| 9 | race install/launch thế hệ cũ | P4 | ✅ |
+| 10 | backend mồ côi khi đóng app | P4 | ✅ |
 | 11 | terminate_all giết nhầm task khác | P5 | ⏳ |
 | 12 | probe nvidia-smi/venv trên UI thread | P5 | ⏳ |
 | 13 | ProPainter spawn mỗi chunk | P6 | ⏳ |
@@ -146,7 +147,7 @@ Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python 
 | Rủi ro | Giảm thiểu |
 |---|---|
 | pywebview cần main thread | uvicorn daemon thread, `lifespan="off"`, không đụng window từ server code |
-| uvicorn treo khi shutdown trong thread | `should_exit`+`force_exit`+timeout 5s; watchdog: frontend ping health 5s, 60s không ping → tự thoát + dọn tiến trình |
+| uvicorn treo khi shutdown trong thread | `should_exit`, chờ graceful 5s rồi mới `force_exit`; watchdog: frontend ping health 5s, 60s không ping → tự thoát + dọn tiến trình |
 | Process mồ côi | shutdown() duy nhất; đã verify 0 mồ côi ở P0; task-scoped groups ở P5 |
 | Port đụng VoiceStudio 3900 | Galaxy dùng 3902 (env override), retry 3902→3912 |
 | Ranh giới AGPL | Toàn bộ code tự viết; VoiceStudio ở process riêng sau iframe |

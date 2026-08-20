@@ -255,6 +255,7 @@ def prepare_subtitles_from_video(
                     progress=report_translation_progress,
                     checkpoint_path=checkpoint_path,
                     warning=warnings.append,
+                    stop_event=stop_event,
                 )
             else:
                 translated_cues = translate(cues, ai_options)

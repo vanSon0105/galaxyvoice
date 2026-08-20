@@ -237,7 +237,11 @@ def generate(request: GenerateRequest) -> dict[str, Any]:
         text = request.text
         if translation_options is not None:
             report(f"Dịch kịch bản sang {target_language}...")
-            text = translate_script_text(request.text, translation_options)
+            text = translate_script_text(
+                request.text,
+                translation_options,
+                stop_event=record.stop_event,
+            )
             state["translated_text"] = text
         return generate_package(
             GenerationOptions(

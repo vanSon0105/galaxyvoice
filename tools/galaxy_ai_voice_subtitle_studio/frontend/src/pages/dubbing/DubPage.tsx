@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { fetchSettings, fetchSettingsMeta } from '../../api/settings'
@@ -82,7 +82,7 @@ export function DubPage() {
   })
 
   // Seed the form from shared settings once they load.
-  const seededRef = { current: false }
+  const seededRef = useRef(false)
   useEffect(() => {
     if (!settings || seededRef.current) return
     seededRef.current = true

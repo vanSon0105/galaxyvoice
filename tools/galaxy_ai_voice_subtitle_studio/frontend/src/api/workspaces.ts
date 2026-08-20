@@ -134,6 +134,18 @@ export const fetchHistory = (params: { workspace?: string; query?: string; starr
   const suffix = search.toString() ? `?${search.toString()}` : ''
   return apiJson<HistoryItem[]>(`/api/workspaces/history${suffix}`)
 }
+export const addHistory = (body: {
+  workspace: string
+  title: string
+  summary?: string
+  artifact_path?: string
+  metadata?: Record<string, unknown>
+}) =>
+  apiJson<HistoryItem>('/api/workspaces/history', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
 
 // Gallery
 export const fetchGalleryCategories = () => apiJson<string[]>('/api/workspaces/gallery/categories')

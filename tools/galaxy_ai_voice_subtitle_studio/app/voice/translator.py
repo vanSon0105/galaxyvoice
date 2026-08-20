@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import re
+import threading
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -14,6 +15,7 @@ from typing import Callable
 from ..common.cache import read_json, stable_digest, write_json_atomic
 from ..common.diagnostics import get_logger
 from ..common.env_config import first_env
+from ..common.errors import TaskCancelledError
 from .languages import label_from_code
 from .srt import SubtitleCue
 
@@ -286,6 +288,7 @@ def translate_cues(
     progress: TranslationProgressCallback | None = None,
     checkpoint_path: Path | None = None,
     warning: TranslationWarningCallback | None = None,
+    stop_event: threading.Event | None = None,
 ) -> list[SubtitleCue]:
     if not cues:
         return []
@@ -302,6 +305,7 @@ def translate_cues(
         progress=progress,
         checkpoint_path=checkpoint_path,
         warning=warning,
+        stop_event=stop_event,
     )
 
     return [
@@ -317,7 +321,10 @@ def translate_texts(
     progress: TranslationProgressCallback | None = None,
     checkpoint_path: Path | None = None,
     warning: TranslationWarningCallback | None = None,
+    stop_event: threading.Event | None = None,
 ) -> list[str]:
+    if stop_event is not None and stop_event.is_set():
+        raise TaskCancelledError()
     options = resolve_translation_options(options)
     batch_size = max(1, min(50, int(options.batch_size)))
     max_workers = max(1, min(6, int(options.max_workers)))
@@ -365,6 +372,8 @@ def translate_texts(
 
     if max_workers == 1 or len(batches) <= 1:
         for batch in batches:
+            if stop_event is not None and stop_event.is_set():
+                raise TaskCancelledError()
             try:
                 batch_translations = _translate_batch(
                     [text for _index, text in batch], options, client, warning=warning,
@@ -372,6 +381,8 @@ def translate_texts(
             except _PartialTranslationError as error:
                 store_partial(batch, error)
                 raise error.original
+            if stop_event is not None and stop_event.is_set():
+                raise TaskCancelledError()
             store_batch(batch, batch_translations)
     else:
         worker_count = min(max_workers, len(batches))
@@ -394,9 +405,19 @@ def translate_texts(
             submit_next_batch()
 
         first_error: Exception | None = None
+        cancelled = False
         try:
             while futures:
-                done, _not_done = wait(tuple(futures), return_when=FIRST_COMPLETED)
+                if stop_event is not None and stop_event.is_set():
+                    cancelled = True
+                    for future in futures:
+                        future.cancel()
+                    raise TaskCancelledError()
+                done, _not_done = wait(
+                    tuple(futures), timeout=0.2, return_when=FIRST_COMPLETED
+                )
+                if not done:
+                    continue
                 for future in done:
                     batch = futures.pop(future)
                     try:
@@ -420,7 +441,7 @@ def translate_texts(
                     for future in futures:
                         future.cancel()
         finally:
-            executor.shutdown(wait=True, cancel_futures=True)
+            executor.shutdown(wait=not cancelled, cancel_futures=True)
         if first_error is not None:
             raise first_error
 
@@ -433,6 +454,7 @@ def translate_script_text(
     text: str,
     options: AITranslationOptions,
     client: ChatClient | None = None,
+    stop_event: threading.Event | None = None,
 ) -> str:
     options = resolve_translation_options(options)
     if options.target_language == "none" or _same_language(options.source_language, options.target_language):
@@ -444,7 +466,12 @@ def translate_script_text(
     if not translatable:
         return text
 
-    translated = translate_texts(translatable, options, client=client or _chat_completion)
+    translated = translate_texts(
+        translatable,
+        options,
+        client=client or _chat_completion,
+        stop_event=stop_event,
+    )
     translated_iter = iter(translated)
     output_lines = [next(translated_iter) if line.strip() else line for line in lines]
     return "\n".join(output_lines).strip()

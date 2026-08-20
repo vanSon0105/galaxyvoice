@@ -10,7 +10,7 @@ export class ApiError extends Error {
   }
 }
 
-const DEFAULT_RETRIES = 3
+const DEFAULT_SAFE_RETRIES = 3
 const BASE_BACKOFF_MS = 400
 
 function backoffDelay(attempt: number): number {
@@ -26,7 +26,9 @@ export async function apiFetch(
   init: RequestInit = {},
   options: { retries?: number } = {},
 ): Promise<Response> {
-  const retries = options.retries ?? DEFAULT_RETRIES
+  const method = (init.method ?? 'GET').toUpperCase()
+  const safeToRetry = method === 'GET' || method === 'HEAD' || method === 'OPTIONS'
+  const retries = options.retries ?? (safeToRetry ? DEFAULT_SAFE_RETRIES : 0)
   let lastError: unknown
   for (let attempt = 0; attempt <= retries; attempt += 1) {
     try {

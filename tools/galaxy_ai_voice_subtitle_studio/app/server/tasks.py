@@ -33,6 +33,7 @@ class TaskRecord:
     created_at: float = field(default_factory=time.time)
     finished_at: float | None = None
     on_cancel: Callable[[], None] | None = field(default=None, repr=False, compare=False)
+    thread: threading.Thread | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
         self.stop_event = threading.Event()
@@ -54,11 +55,12 @@ class TaskRegistry:
             return self._tasks.get(task_id)
 
     def cancel(self, task_id: str) -> bool:
-        record = self.get(task_id)
-        if record is None or record.status != RUNNING:
-            return False
-        record.stop_event.set()
-        on_cancel = record.on_cancel
+        with self._lock:
+            record = self._tasks.get(task_id)
+            if record is None or record.status != RUNNING:
+                return False
+            record.stop_event.set()
+            on_cancel = record.on_cancel
         if on_cancel is not None:
             try:
                 on_cancel()
@@ -68,6 +70,30 @@ class TaskRegistry:
                 pass
         return True
 
+    def cancel_all(self) -> None:
+        with self._lock:
+            task_ids = [
+                record.task_id for record in self._tasks.values() if record.status == RUNNING
+            ]
+        for task_id in task_ids:
+            self.cancel(task_id)
+
+    def wait_for_running(self, timeout: float) -> list[str]:
+        deadline = time.monotonic() + max(0.0, timeout)
+        with self._lock:
+            records = list(self._tasks.values())
+        for record in records:
+            thread = record.thread
+            if thread is None or not thread.is_alive():
+                continue
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        with self._lock:
+            return [
+                record.task_id
+                for record in self._tasks.values()
+                if record.thread is not None and record.thread.is_alive()
+            ]
+
     def finish(
         self,
         task_id: str,
@@ -75,14 +101,22 @@ class TaskRegistry:
         status: str,
         result: Any = None,
         error: str | None = None,
-    ) -> None:
-        record = self.get(task_id)
-        if record is None:
-            return
-        record.status = status
-        record.result = result
-        record.error = error
-        record.finished_at = time.time()
+    ) -> str | None:
+        with self._lock:
+            record = self._tasks.get(task_id)
+            if record is None:
+                return None
+            if record.status != RUNNING:
+                return record.status
+            if record.stop_event.is_set():
+                status = CANCELLED
+                result = None
+                error = None
+            record.status = status
+            record.result = result
+            record.error = error
+            record.finished_at = time.time()
+            return status
 
     def running_count(self) -> int:
         with self._lock:
@@ -111,28 +145,37 @@ def run_task(
     func: Callable[[], Any],
     result_serializer: Callable[[Any], Any] | None = None,
 ) -> None:
-    """Run a blocking service function on a daemon thread and publish the
+    """Run a blocking service function on a tracked thread and publish the
     terminal status over the event bus. TaskCancelledError maps to the
     'cancelled' terminal state."""
     task_id = record.task_id
+    event_bus.emit({"type": "task", "task_id": task_id, "status": RUNNING})
 
     def run() -> None:
         try:
+            if record.stop_event.is_set():
+                raise TaskCancelledError()
             result = func()
+            if record.stop_event.is_set():
+                raise TaskCancelledError()
+            payload = result_serializer(result) if result_serializer is not None else None
         except TaskCancelledError:
             task_registry.finish(task_id, status=CANCELLED)
             event_bus.emit({"type": "task", "task_id": task_id, "status": CANCELLED})
             return
         except Exception as error:
-            task_registry.finish(task_id, status=FAILED, error=str(error))
-            event_bus.emit(
-                {"type": "task", "task_id": task_id, "status": FAILED, "error": str(error)}
-            )
+            status = task_registry.finish(task_id, status=FAILED, error=str(error)) or FAILED
+            event = {"type": "task", "task_id": task_id, "status": status}
+            if status == FAILED:
+                event["error"] = str(error)
+            event_bus.emit(event)
             return
-        payload = result_serializer(result) if result_serializer is not None else None
-        task_registry.finish(task_id, status=DONE, result=result)
-        event_bus.emit(
-            {"type": "task", "task_id": task_id, "status": DONE, "result": payload}
-        )
+        status = task_registry.finish(task_id, status=DONE, result=result) or DONE
+        event = {"type": "task", "task_id": task_id, "status": status}
+        if status == DONE:
+            event["result"] = payload
+        event_bus.emit(event)
 
-    threading.Thread(target=run, name=f"task-{task_id}", daemon=True).start()
+    thread = threading.Thread(target=run, name=f"task-{task_id}", daemon=True)
+    record.thread = thread
+    thread.start()

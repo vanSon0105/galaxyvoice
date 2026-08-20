@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { fetchSettings } from '../../api/settings'
@@ -31,7 +31,7 @@ export function BatchPage() {
   const [formError, setFormError] = useState('')
   const [result, setResult] = useState<BatchResultPayload | null>(null)
 
-  const seededRef = { current: false }
+  const seededRef = useRef(false)
   useEffect(() => {
     if (!settings || seededRef.current) return
     seededRef.current = true

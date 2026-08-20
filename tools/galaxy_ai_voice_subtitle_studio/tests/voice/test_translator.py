@@ -14,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
 
 from app.voice.srt import SubtitleCue  # noqa: E402
+from app.common.errors import TaskCancelledError  # noqa: E402
 from app.voice.translator import (  # noqa: E402
     AITranslationOptions,
     _extract_translations,
@@ -31,6 +32,37 @@ from app.voice.translator import (  # noqa: E402
 
 
 class TranslatorTests(unittest.TestCase):
+    def test_translate_cues_stops_scheduling_after_cancellation(self) -> None:
+        cues = [
+            SubtitleCue(index=index, start_ms=index, end_ms=index + 1, text=f"Source {index}")
+            for index in range(1, 7)
+        ]
+        stop_event = threading.Event()
+        calls = 0
+
+        def fake_client(_messages, _options):
+            nonlocal calls
+            calls += 1
+            stop_event.set()
+            return json.dumps({"translations": ["Đã dịch"]}, ensure_ascii=False)
+
+        with self.assertRaises(TaskCancelledError):
+            translate_cues(
+                cues,
+                AITranslationOptions(
+                    source_language="en",
+                    target_language="vi",
+                    api_key="test-key",
+                    model="test-model",
+                    batch_size=1,
+                    max_workers=1,
+                ),
+                client=fake_client,
+                stop_event=stop_event,
+            )
+
+        self.assertEqual(calls, 1)
+
     def test_translate_cues_runs_batches_in_parallel_and_preserves_cue_order(self) -> None:
         cues = [
             SubtitleCue(index=index, start_ms=index * 1000, end_ms=(index + 1) * 1000, text=f"Source {index}")

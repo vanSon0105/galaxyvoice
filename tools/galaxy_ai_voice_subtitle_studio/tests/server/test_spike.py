@@ -10,7 +10,7 @@ from fastapi.testclient import TestClient
 
 from app.server.event_bus import EventBus, event_bus
 from app.server.main import create_app, health_ping_age, record_health_ping
-from app.server.tasks import CANCELLED, DONE, TaskRegistry, task_registry
+from app.server.tasks import CANCELLED, DONE, FAILED, TaskRegistry, run_task, task_registry
 
 
 class EventBusTests(unittest.TestCase):
@@ -71,6 +71,42 @@ class TaskRegistryTests(unittest.TestCase):
         registry.finish(record.task_id, status=CANCELLED)
         self.assertEqual(registry.get(record.task_id).status, CANCELLED)
         self.assertEqual(registry.running_count(), 0)
+
+    def test_cancel_all_invokes_hooks_and_waits_for_threads(self) -> None:
+        registry = TaskRegistry()
+        record = registry.create("spike")
+        stopped = threading.Event()
+        record.on_cancel = stopped.set
+        thread = threading.Thread(target=lambda: stopped.wait(1), daemon=True)
+        record.thread = thread
+        thread.start()
+
+        registry.cancel_all()
+
+        self.assertTrue(record.stop_event.is_set())
+        self.assertTrue(stopped.is_set())
+        self.assertEqual(registry.wait_for_running(1), [])
+
+    def test_run_task_reports_serializer_errors_as_failed(self) -> None:
+        record = task_registry.create("serializer-error")
+        run_task(record, lambda: {"ok": True}, lambda _result: 1 / 0)
+        deadline = time.monotonic() + 2
+        while record.status == "running" and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        self.assertEqual(record.status, FAILED)
+        self.assertIn("division by zero", record.error or "")
+
+    def test_cancelled_task_cannot_be_overwritten_by_late_success(self) -> None:
+        record = task_registry.create("late-success")
+        release = threading.Event()
+        run_task(record, lambda: release.wait(1) or {"ok": True})
+
+        self.assertTrue(task_registry.cancel(record.task_id))
+        release.set()
+        self.assertEqual(task_registry.wait_for_running(2), [])
+        self.assertEqual(record.status, CANCELLED)
+        self.assertIsNone(record.result)
 
 
 class ServerApiTests(unittest.TestCase):

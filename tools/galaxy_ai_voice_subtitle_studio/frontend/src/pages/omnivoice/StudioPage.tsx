@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useSearchParams } from 'react-router-dom'
 
@@ -73,7 +73,7 @@ export function StudioPage() {
   const [formError, setFormError] = useState('')
   const [result, setResult] = useState<GenerateResultPayload | null>(null)
 
-  const seededRef = { current: false }
+  const seededRef = useRef(false)
   useEffect(() => {
     if (!settings || seededRef.current) return
     seededRef.current = true

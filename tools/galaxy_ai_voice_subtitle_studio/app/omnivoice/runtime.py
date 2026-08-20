@@ -162,8 +162,16 @@ def omnivoice_device_label(code: str) -> str:
 
 def load_supported_language_ids(runtime: OmniVoiceRuntime) -> tuple[str, ...]:
     workspace_map = Path(__file__).resolve().parents[4] / "omnivoice" / "docs" / "lang_id_name_map.tsv"
+    bundled_map = (
+        Path(__file__).resolve().parents[2]
+        / "vendor"
+        / "voicestudio"
+        / "docs"
+        / "lang_id_name_map.tsv"
+    )
     candidates = (
         runtime.source_dir / "docs" / "lang_id_name_map.tsv",
+        bundled_map,
         workspace_map,
     )
     for path in candidates:

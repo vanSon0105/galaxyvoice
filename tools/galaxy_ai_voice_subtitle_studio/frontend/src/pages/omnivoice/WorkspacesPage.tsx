@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { useQuery } from '@tanstack/react-query'
+import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { fetchSettings } from '../../api/settings'
 import { fetchProfiles, fetchOmniVoiceStatus } from '../../api/omnivoice'
@@ -7,11 +7,21 @@ import { openPath } from '../../api/voice'
 import {
   createDocument,
   documentOp,
+  addHistory,
+  fetchHistory,
+  fetchProjects,
   fetchResumeJobs,
   importSource,
+  saveProject,
   startRender,
 } from '../../api/workspaces'
-import type { DocumentItem, LongformDocument, RenderResultPayload, ResumeJob } from '../../api/workspaces'
+import type {
+  DocumentItem,
+  LongformDocument,
+  RenderResultPayload,
+  ResumeJob,
+  WorkspaceProject,
+} from '../../api/workspaces'
 import { TaskButton } from '../../components/TaskButton'
 import { pickBookFile, pickFolder } from '../../lib/dialogs'
 import type { TaskState } from '../../ws/useTasks'
@@ -34,15 +44,24 @@ const AUDIOBOOK_SAMPLE = `# Chương 1 - Khởi đầu
 
 /** Stories / audiobook longform workspace: source → document editor → render. */
 export function WorkspacesPage() {
+  const queryClient = useQueryClient()
+  const [kind, setKind] = useState<Kind>('stories')
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
   const profilesQuery = useQuery({ queryKey: ['omnivoice-profiles'], queryFn: fetchProfiles })
   const statusQuery = useQuery({ queryKey: ['omnivoice-status'], queryFn: fetchOmniVoiceStatus })
-
-  const [kind, setKind] = useState<Kind>('stories')
+  const projectsQuery = useQuery({
+    queryKey: ['workspace-projects', kind],
+    queryFn: () => fetchProjects(kind),
+  })
+  const historyQuery = useQuery({
+    queryKey: ['workspace-history', kind],
+    queryFn: () => fetchHistory({ workspace: kind }),
+  })
   const [source, setSource] = useState('')
   const [doc, setDoc] = useState<LongformDocument | null>(null)
   const [outputDir, setOutputDir] = useState('')
   const [projectName, setProjectName] = useState('')
+  const [selectedProjectId, setSelectedProjectId] = useState('')
   const [device, setDevice] = useState('auto')
   const [language, setLanguage] = useState('vi')
   const [speed, setSpeed] = useState(1.0)
@@ -149,7 +168,7 @@ export function WorkspacesPage() {
     }
   }
 
-  const handleRenderStart = async (): Promise<string> => {
+  const handleRenderStart = async (resumeProjectDir = ''): Promise<string> => {
     setError('')
     if (!doc) {
       setError('Tạo kế hoạch trước khi render.')
@@ -171,14 +190,93 @@ export function WorkspacesPage() {
       title,
       author,
       cover_path: coverPath,
+      resume_project_dir: resumeProjectDir,
     })
     return response.task_id
   }
 
   const handleRenderDone = async (task: TaskState) => {
     if (task.status !== 'done' || !task.result) return
-    setResult(task.result as unknown as RenderResultPayload)
+    const completed = task.result as unknown as RenderResultPayload
+    setResult(completed)
+    try {
+      await addHistory({
+        workspace: kind,
+        title: projectName || completed.project_dir.split(/[\\/]/).pop() || 'longform',
+        summary: `${completed.span_count} đoạn`,
+        artifact_path: completed.project_dir,
+        metadata: { manifest_path: completed.manifest_path },
+      })
+      void queryClient.invalidateQueries({ queryKey: ['workspace-history', kind] })
+    } catch {
+      // History is optional; the rendered artifact remains valid if persistence fails.
+    }
     void refreshResumeJobs(outputDir)
+  }
+
+  const handleSaveProject = async () => {
+    if (!source.trim() && !doc) {
+      setError('Chưa có nội dung để lưu project.')
+      return
+    }
+    try {
+      const saved = await saveProject({
+        workspace: kind,
+        name: projectName || 'longform',
+        project_id: selectedProjectId,
+        payload: {
+          source: doc?.script || source,
+          output_dir: outputDir,
+          device,
+          language,
+          speed,
+          cast_map: castMap,
+          gap_ms: gapMs,
+          export_mp3: exportMp3,
+          export_m4b: exportM4b,
+          export_stems: exportStems,
+          title,
+          author,
+          cover_path: coverPath,
+        },
+      })
+      setSelectedProjectId(saved.project_id)
+      setProjectName(saved.name)
+      await queryClient.invalidateQueries({ queryKey: ['workspace-projects', kind] })
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
+  const handleLoadProject = async (project: WorkspaceProject) => {
+    const payload = project.payload
+    const loadedSource = String(payload.source ?? '')
+    setSelectedProjectId(project.project_id)
+    setProjectName(project.name)
+    setSource(loadedSource)
+    setOutputDir(String(payload.output_dir ?? outputDir))
+    setDevice(String(payload.device ?? device))
+    setLanguage(String(payload.language ?? language))
+    setSpeed(Number(payload.speed ?? speed))
+    setCastMap(
+      payload.cast_map && typeof payload.cast_map === 'object'
+        ? (payload.cast_map as Record<string, string>)
+        : {},
+    )
+    setGapMs(Number(payload.gap_ms ?? gapMs))
+    setExportMp3(Boolean(payload.export_mp3 ?? exportMp3))
+    setExportM4b(Boolean(payload.export_m4b ?? exportM4b))
+    setExportStems(Boolean(payload.export_stems ?? exportStems))
+    setTitle(String(payload.title ?? ''))
+    setAuthor(String(payload.author ?? ''))
+    setCoverPath(String(payload.cover_path ?? ''))
+    if (loadedSource.trim()) {
+      try {
+        setDoc(await createDocument(kind, loadedSource))
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause))
+      }
+    }
   }
 
   const updateItemLocal = (itemId: string, changes: Record<string, unknown>) => {
@@ -215,17 +313,61 @@ export function WorkspacesPage() {
   return (
     <div>
       <section className="section-card">
+        <h2 className="section-title">Project &amp; lịch sử</h2>
+        <div className="toolbar-row">
+          <select
+            value={selectedProjectId}
+            onChange={(event) => {
+              const project = (projectsQuery.data ?? []).find(
+                (item) => item.project_id === event.target.value,
+              )
+              if (project) void handleLoadProject(project)
+            }}
+          >
+            <option value="">Project mới</option>
+            {(projectsQuery.data ?? []).map((project) => (
+              <option key={project.project_id} value={project.project_id}>
+                {project.name}
+              </option>
+            ))}
+          </select>
+          <button className="btn" onClick={() => void handleSaveProject()}>
+            Lưu project
+          </button>
+          {(historyQuery.data ?? []).slice(0, 4).map((item) => (
+            <button
+              className="btn"
+              key={item.history_id}
+              title={item.summary}
+              onClick={() => item.artifact_path && void openPath(item.artifact_path)}
+            >
+              {item.title}
+            </button>
+          ))}
+        </div>
+      </section>
+      <section className="section-card">
         <h2 className="section-title">Kịch bản nguồn</h2>
         <div className="seg" style={{ marginBottom: 10 }}>
           <button
             className={`seg-item${kind === 'stories' ? ' active' : ''}`}
-            onClick={() => setKind('stories')}
+            onClick={() => {
+              setKind('stories')
+              setSelectedProjectId('')
+              setDoc(null)
+              setResult(null)
+            }}
           >
             Truyện nhiều vai
           </button>
           <button
             className={`seg-item${kind === 'audiobook' ? ' active' : ''}`}
-            onClick={() => setKind('audiobook')}
+            onClick={() => {
+              setKind('audiobook')
+              setSelectedProjectId('')
+              setDoc(null)
+              setResult(null)
+            }}
           >
             Sách nói
           </button>
@@ -545,6 +687,11 @@ export function WorkspacesPage() {
                   <button className="btn" onClick={() => void openPath(job.project_dir)}>
                     Mở
                   </button>
+                  <TaskButton
+                    label="Tiếp tục"
+                    onStart={() => handleRenderStart(job.project_dir)}
+                    onFinish={(task) => void handleRenderDone(task)}
+                  />
                 </div>
               ))}
             </div>
@@ -553,7 +700,7 @@ export function WorkspacesPage() {
             <TaskButton
               label="Render kế hoạch"
               variant="accent"
-              onStart={handleRenderStart}
+              onStart={() => handleRenderStart()}
               onFinish={(task) => void handleRenderDone(task)}
             />
             {result && (

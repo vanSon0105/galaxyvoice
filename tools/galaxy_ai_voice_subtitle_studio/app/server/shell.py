@@ -17,8 +17,10 @@ import urllib.request
 import uvicorn
 
 from ..common.processes import managed_media_processes
+from ..omnivoice.worker_pool import shutdown_shared_worker_client
 from .main import create_app, health_ping_age
 from .routers.voicestudio import shutdown_voicestudio
+from .tasks import task_registry
 
 LOGGER = logging.getLogger("galaxy.web.shell")
 
@@ -106,20 +108,30 @@ class GalaxyWebServer:
         raise RuntimeError("Web server không sẵn sàng sau khi khởi động")
 
     def shutdown(self) -> None:
-        """Stop uvicorn and kill every media process tree. Idempotent."""
+        """Cancel work, stop child processes and then stop uvicorn. Idempotent."""
         server, thread = self._server, self._thread
         self._server = None
         self._thread = None
         if server is not None:
             server.should_exit = True
-            server.force_exit = True
-        if thread is not None:
-            thread.join(timeout=10)
+        task_registry.cancel_all()
         try:
             shutdown_voicestudio()
         except Exception:
             LOGGER.exception("Could not stop VoiceStudio during shutdown")
+        try:
+            shutdown_shared_worker_client()
+        except Exception:
+            LOGGER.exception("Could not stop OmniVoice worker during shutdown")
         managed_media_processes.terminate_all()
+        lingering_tasks = task_registry.wait_for_running(timeout=5)
+        if lingering_tasks:
+            LOGGER.warning("Tasks still running during shutdown: %s", ", ".join(lingering_tasks))
+        if thread is not None:
+            thread.join(timeout=5)
+            if thread.is_alive() and server is not None:
+                server.force_exit = True
+                thread.join(timeout=5)
 
 
 def _watchdog(server: GalaxyWebServer) -> None:

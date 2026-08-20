@@ -21,6 +21,8 @@ from ...omnivoice.client import OmniVoiceWorkerClient
 from ...omnivoice.models import AUTO_MODE, DEFAULT_MODEL_ID, OmniVoiceGenerationOptions
 from ...omnivoice.profiles import list_voice_profiles
 from ...omnivoice.runtime import OmniVoiceRuntime, load_supported_language_ids
+from ...omnivoice.task_runner import shared_omnivoice_task_coordinator
+from ...omnivoice.worker_pool import get_shared_worker_client
 from ...omnivoice.workspaces.common.repository import WorkspaceRepository
 from ...omnivoice.workspaces.dubbing.model import (
     DubbingSegment,
@@ -48,8 +50,7 @@ RESUME_CACHE_TTL_SECONDS = 60.0
 _documents: dict[str, EditableLongformDocument] = {}
 _documents_lock = threading.Lock()
 _resume_cache: dict[str, Any] = {"at": 0.0, "value": None}
-_client: OmniVoiceWorkerClient | None = None
-_client_lock = threading.Lock()
+_task_coordinator = shared_omnivoice_task_coordinator
 
 
 def _runtime() -> OmniVoiceRuntime:
@@ -62,11 +63,7 @@ def _worker_path() -> Path:
 
 
 def _worker_client() -> OmniVoiceWorkerClient:
-    global _client
-    with _client_lock:
-        if _client is None:
-            _client = OmniVoiceWorkerClient(_runtime(), _worker_path())
-        return _client
+    return get_shared_worker_client(_runtime(), _worker_path())
 
 
 def _settings_path(request: Request) -> Path:
@@ -516,29 +513,33 @@ def render(request_body: RenderRequest) -> dict[str, Any]:
     )
     profiles = list_voice_profiles(runtime.profiles_dir)
     record = task_registry.create("workspace-render")
-    record.on_cancel = _worker_client().stop
-    event_bus.emit({"type": "task", "task_id": record.task_id, "status": "running"})
+    record.on_cancel = lambda: _task_coordinator.cancel(record.task_id)
     resume_dir = (
         Path(request_body.resume_project_dir).expanduser() if request_body.resume_project_dir else None
     )
     run_task(
         record,
-        lambda: render_longform_plan(
-            base_options,
-            plan,
-            _worker_client(),
-            profiles=profiles,
-            cast_map=request_body.cast_map or None,
-            gap_ms=request_body.gap_ms,
-            export_mp3=request_body.export_mp3,
-            export_m4b=request_body.export_m4b,
-            export_stems=request_body.export_stems,
-            title=request_body.title,
-            author=request_body.author,
-            cover_path=Path(request_body.cover_path).expanduser() if request_body.cover_path else None,
-            progress=_progress(record),
-            resume_project_dir=resume_dir,
-            stop_event=record.stop_event,
+        lambda: _task_coordinator.run(
+            record.task_id,
+            record.stop_event,
+            lambda client: render_longform_plan(
+                base_options,
+                plan,
+                client,
+                profiles=profiles,
+                cast_map=request_body.cast_map or None,
+                gap_ms=request_body.gap_ms,
+                export_mp3=request_body.export_mp3,
+                export_m4b=request_body.export_m4b,
+                export_stems=request_body.export_stems,
+                title=request_body.title,
+                author=request_body.author,
+                cover_path=Path(request_body.cover_path).expanduser() if request_body.cover_path else None,
+                progress=_progress(record),
+                resume_project_dir=resume_dir,
+                stop_event=record.stop_event,
+            ),
+            client_factory=_worker_client,
         ),
         _render_result_dict,
     )

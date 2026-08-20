@@ -55,6 +55,26 @@ describe('apiFetch', () => {
     expect(response.status).toBe(200)
     expect(fetchMock).toHaveBeenCalledTimes(2)
   })
+
+  it('does not retry mutations by default', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse(503, {}))
+    globalThis.fetch = fetchMock
+
+    const response = await apiFetch('/api/tasks', { method: 'POST' })
+
+    expect(response.status).toBe(503)
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
+
+  it('does not replay a mutation after a network error', async () => {
+    const fetchMock = vi.fn().mockRejectedValue(new TypeError('Failed to fetch'))
+    globalThis.fetch = fetchMock
+
+    await expect(apiFetch('/api/settings', { method: 'PUT' })).rejects.toThrow(
+      'Failed to fetch',
+    )
+    expect(fetchMock).toHaveBeenCalledTimes(1)
+  })
 })
 
 describe('apiJson', () => {

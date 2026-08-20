@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useMutation, useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { fetchSettings, fetchSettingsMeta, updateSettings } from '../api/settings'
 import type { AppSettings, Option, SettingsMeta } from '../api/settings'
@@ -107,18 +107,23 @@ function coerceValue(field: FieldSchema, raw: string | boolean): string | number
 
 export function SettingsPage() {
   const t = useT()
+  const queryClient = useQueryClient()
   const [saveNote, setSaveNote] = useState('')
+  const [draft, setDraft] = useState<AppSettings | null>(null)
   const timerRef = useRef<number | undefined>(undefined)
+  const pendingPatchRef = useRef<Record<string, unknown>>({})
 
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
   const metaQuery = useQuery({ queryKey: ['settings-meta'], queryFn: fetchSettingsMeta })
 
   const saveMutation = useMutation({
     mutationFn: updateSettings,
-    onSuccess: () => {
+    onSuccess: (saved) => {
+      queryClient.setQueryData(['settings'], saved)
       setSaveNote(t('settings.saved'))
     },
-    onError: () => {
+    onError: (_error, attemptedPatch) => {
+      pendingPatchRef.current = { ...attemptedPatch, ...pendingPatchRef.current }
       setSaveNote(t('settings.saveError'))
     },
   })
@@ -129,25 +134,44 @@ export function SettingsPage() {
   )
 
   useEffect(() => {
-    return () => window.clearTimeout(timerRef.current)
-  }, [])
+    return () => {
+      window.clearTimeout(timerRef.current)
+      const patch = pendingPatchRef.current
+      pendingPatchRef.current = {}
+      if (Object.keys(patch).length > 0) {
+        void updateSettings(patch).then((saved) => {
+          queryClient.setQueryData(['settings'], saved)
+        }).catch(() => undefined)
+      }
+    }
+  }, [queryClient])
+
+  useEffect(() => {
+    if (settingsQuery.data && draft === null) {
+      setDraft(settingsQuery.data)
+    }
+  }, [draft, settingsQuery.data])
 
   if (settingsQuery.isPending || metaQuery.isPending) {
     return <div className="placeholder-page">{t('ws.connecting')}</div>
   }
-  if (!settingsQuery.data || !metaQuery.data) {
+  if (!settingsQuery.data || !metaQuery.data || draft === null) {
     return <div className="placeholder-page">{t('settings.loadError')}</div>
   }
 
-  const settings = settingsQuery.data as AppSettings
+  const settings = draft
 
   const handleChange = (field: FieldSchema, raw: string | boolean) => {
+    setDraft((current) => ({ ...(current ?? {}), [field.key]: raw }))
     const value = coerceValue(field, raw)
     if (value === null) return
+    pendingPatchRef.current = { ...pendingPatchRef.current, [field.key]: value }
     window.clearTimeout(timerRef.current)
     setSaveNote('')
     timerRef.current = window.setTimeout(() => {
-      saveMutation.mutate({ [field.key]: value })
+      const patch = pendingPatchRef.current
+      pendingPatchRef.current = {}
+      saveMutation.mutate(patch)
     }, 400)
   }
 

@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import queue
 import shutil
 import subprocess
 import tempfile
 import threading
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -13,6 +15,7 @@ from typing import Callable, Iterable
 
 from ..common.cache import read_json, write_json_atomic
 from ..common.compute import detect_nvidia_hardware
+from ..common.errors import TaskCancelledError
 from ..common.ffmpeg import ffmpeg_missing_message, find_ffmpeg
 from ..common.paths import repository_root, unique_project_dir
 from ..common.processes import managed_media_processes, terminate_process_tree
@@ -255,17 +258,10 @@ def resolve_audio_device(
 ) -> str:
     selected = normalize_audio_device(selected_device)
     normalized_method = normalize_audio_method(method)
-    has_nvidia = detect_nvidia_hardware() if nvidia_available is None else nvidia_available
-    has_directml = os.name == "nt" if directml_available is None else directml_available
 
     if selected == CPU_AUDIO_DEVICE:
         return CPU_AUDIO_DEVICE
-    if selected == CUDA_AUDIO_DEVICE:
-        if not has_nvidia:
-            raise RuntimeError(
-                "NVIDIA CUDA was selected, but no NVIDIA GPU was detected."
-            )
-        return CUDA_AUDIO_DEVICE
+    has_directml = os.name == "nt" if directml_available is None else directml_available
     if selected == DIRECTML_AUDIO_DEVICE:
         if normalized_method == DEMUCS_METHOD:
             raise RuntimeError(
@@ -275,6 +271,13 @@ def resolve_audio_device(
             raise RuntimeError("DirectML is only available on supported Windows GPUs.")
         return DIRECTML_AUDIO_DEVICE
 
+    has_nvidia = detect_nvidia_hardware() if nvidia_available is None else nvidia_available
+    if selected == CUDA_AUDIO_DEVICE:
+        if not has_nvidia:
+            raise RuntimeError(
+                "NVIDIA CUDA was selected, but no NVIDIA GPU was detected."
+            )
+        return CUDA_AUDIO_DEVICE
     if has_nvidia:
         return CUDA_AUDIO_DEVICE
     if has_directml and normalized_method in {MDX_METHOD, VR_METHOD}:
@@ -467,6 +470,7 @@ def separate_audio(
     uvr_root: Path | None = None,
     runtime: AudioSeparatorRuntime | None = None,
     ffmpeg_path: str | None = None,
+    task_id: str | None = None,
 ) -> AudioSeparationResult:
     report = progress or (lambda _message: None)
     cancellation = stop_event or threading.Event()
@@ -530,6 +534,7 @@ def separate_audio(
                     ),
                     report,
                     cancellation,
+                    task_id=task_id,
                 )
                 if not working_input.is_file() or working_input.stat().st_size == 0:
                     raise RuntimeError("FFmpeg không tạo được audio đầu vào cho UVR.")
@@ -554,7 +559,13 @@ def separate_audio(
                 environment["PATH"] = (
                     f"{Path(bundled_ffmpeg).parent}{os.pathsep}{environment.get('PATH', '')}"
                 )
-            _run_streaming_command(command, report, cancellation, env=environment)
+            _run_streaming_command(
+                command,
+                report,
+                cancellation,
+                env=environment,
+                task_id=task_id,
+            )
 
         extension = f".{options.output_format.strip().lower()}"
         output_paths = tuple(
@@ -608,10 +619,11 @@ def _run_streaming_command(
     stop_event: threading.Event,
     *,
     env: dict[str, str] | None = None,
+    task_id: str | None = None,
 ) -> None:
     managed_media_processes.ensure_running()
     if stop_event.is_set():
-        raise RuntimeError("Đã dừng tác vụ tách âm thanh.")
+        raise TaskCancelledError()
     process = subprocess.Popen(
         command,
         stdout=subprocess.PIPE,
@@ -622,19 +634,61 @@ def _run_streaming_command(
         env=env,
         creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
-    managed_media_processes.add(process)
-    output_tail: list[str] = []
+    managed_media_processes.add(process, task_id=task_id)
+    output_queue: queue.Queue[str | None] = queue.Queue(maxsize=200)
+    output_tail: deque[str] = deque(maxlen=12)
+
+    def read_output() -> None:
+        try:
+            if process.stdout is not None:
+                for line in process.stdout:
+                    while True:
+                        try:
+                            output_queue.put_nowait(line)
+                            break
+                        except queue.Full:
+                            try:
+                                output_queue.get_nowait()
+                            except queue.Empty:
+                                pass
+        finally:
+            try:
+                output_queue.put_nowait(None)
+            except queue.Full:
+                try:
+                    output_queue.get_nowait()
+                except queue.Empty:
+                    pass
+                try:
+                    output_queue.put_nowait(None)
+                except queue.Full:
+                    pass
+
+    reader = threading.Thread(
+        target=read_output,
+        name=f"audio-output-{task_id or 'local'}",
+        daemon=True,
+    )
+    reader.start()
     try:
-        if process.stdout is not None:
-            for line in process.stdout:
+        output_closed = False
+        while True:
+            if stop_event.is_set():
+                terminate_process_tree(process)
+                raise TaskCancelledError()
+            try:
+                line = output_queue.get(timeout=0.1)
+            except queue.Empty:
+                line = ""
+            if line is None:
+                output_closed = True
+            elif line:
                 message = line.strip()
                 if message:
                     report(message)
                     output_tail.append(message)
-                    del output_tail[:-12]
-                if stop_event.is_set():
-                    terminate_process_tree(process)
-                    break
+            if output_closed and process.poll() is not None:
+                break
         return_code = process.wait()
     except BaseException:
         terminate_process_tree(process)
@@ -652,9 +706,10 @@ def _run_streaming_command(
                     close_stdout()
             except OSError:
                 pass
+        reader.join(timeout=1)
 
     if stop_event.is_set():
-        raise RuntimeError("Đã dừng tác vụ tách âm thanh.")
+        raise TaskCancelledError()
     if return_code != 0:
         detail = "\n".join(output_tail).strip()
         raise RuntimeError(detail or f"Audio separator failed with exit code {return_code}.")

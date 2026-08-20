@@ -5,13 +5,58 @@ $binDir = Join-Path $projectDir "bin"
 $ffmpegExe = Join-Path $binDir "ffmpeg.exe"
 $ffprobeExe = Join-Path $binDir "ffprobe.exe"
 $ffplayExe = Join-Path $binDir "ffplay.exe"
-$sourceUrls = @(
-    "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip",
-    "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+$sourcePackages = @(
+    @{
+        Url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-gpl.zip"
+        ChecksumUrl = "https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/checksums.sha256"
+        ArchiveName = "ffmpeg-master-latest-win64-gpl.zip"
+    },
+    @{
+        Url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+        ChecksumUrl = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip.sha256"
+        ArchiveName = "ffmpeg-release-essentials.zip"
+    }
 )
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("galaxy-ffmpeg-" + [System.Guid]::NewGuid().ToString("N"))
 $zipPath = Join-Path $tempRoot "ffmpeg.zip"
+$checksumPath = Join-Path $tempRoot "ffmpeg.sha256"
 $extractDir = Join-Path $tempRoot "extract"
+
+function Download-File {
+    param([string]$Url, [string]$Destination)
+    if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
+        & curl.exe -L --fail --retry 3 --connect-timeout 30 -o $Destination $Url
+        if ($LASTEXITCODE -ne 0) {
+            throw "curl failed with exit code $LASTEXITCODE"
+        }
+    }
+    else {
+        Invoke-WebRequest -Uri $Url -OutFile $Destination
+    }
+}
+
+function Assert-ArchiveChecksum {
+    param([string]$ArchivePath, [string]$ManifestPath, [string]$ArchiveName)
+    $escapedName = [Regex]::Escape($ArchiveName)
+    $expected = $null
+    foreach ($line in Get-Content -LiteralPath $ManifestPath) {
+        if ($line -match ("^([A-Fa-f0-9]{64})\s+\*?" + $escapedName + "\s*$")) {
+            $expected = $Matches[1]
+            break
+        }
+        if (-not $expected -and $line -match "^([A-Fa-f0-9]{64})\s*$") {
+            $expected = $Matches[1]
+        }
+    }
+    if (-not $expected) {
+        throw "Checksum manifest does not contain SHA-256 for $ArchiveName."
+    }
+    $actual = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash
+    if ($actual -ne $expected) {
+        throw "FFmpeg archive checksum mismatch. Expected $expected, received $actual."
+    }
+    Write-Host "SHA-256 verified: $actual"
+}
 
 New-Item -ItemType Directory -Force -Path $binDir | Out-Null
 
@@ -30,7 +75,8 @@ try {
     $downloadedFfmpeg = $null
     $downloadedFfprobe = $null
     $downloadedFfplay = $null
-    foreach ($candidateUrl in $sourceUrls) {
+    foreach ($candidate in $sourcePackages) {
+        $candidateUrl = $candidate.Url
         Write-Host "Downloading ffmpeg..."
         Write-Host "  $candidateUrl"
         try {
@@ -40,15 +86,12 @@ try {
             if (Test-Path -LiteralPath $extractDir) {
                 Remove-Item -LiteralPath $extractDir -Recurse -Force
             }
-            if (Get-Command curl.exe -ErrorAction SilentlyContinue) {
-                & curl.exe -L --fail --retry 3 --connect-timeout 30 -o $zipPath $candidateUrl
-                if ($LASTEXITCODE -ne 0) {
-                    throw "curl failed with exit code $LASTEXITCODE"
-                }
+            if (Test-Path -LiteralPath $checksumPath) {
+                Remove-Item -LiteralPath $checksumPath -Force
             }
-            else {
-                Invoke-WebRequest -Uri $candidateUrl -OutFile $zipPath
-            }
+            Download-File -Url $candidateUrl -Destination $zipPath
+            Download-File -Url $candidate.ChecksumUrl -Destination $checksumPath
+            Assert-ArchiveChecksum -ArchivePath $zipPath -ManifestPath $checksumPath -ArchiveName $candidate.ArchiveName
             Write-Host "Extracting archive..."
             Expand-Archive -LiteralPath $zipPath -DestinationPath $extractDir -Force
 

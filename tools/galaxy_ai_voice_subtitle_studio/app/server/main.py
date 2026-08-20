@@ -50,6 +50,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
         }
 
     from .files import router as files_router
+    from .routers import audio_separation as audio_separation_router
     from .routers import omnivoice as omnivoice_router
     from .routers import omnivoice_workspaces as workspaces_router
     from .routers import settings as settings_router
@@ -60,6 +61,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
 
     app.include_router(tasks_router.router)
     app.include_router(settings_router.router)
+    app.include_router(audio_separation_router.router)
     app.include_router(voice_router.router)
     app.include_router(omnivoice_router.router)
     app.include_router(workspaces_router.router)

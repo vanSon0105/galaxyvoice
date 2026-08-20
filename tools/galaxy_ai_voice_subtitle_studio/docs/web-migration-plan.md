@@ -1,6 +1,6 @@
 # Kế hoạch di cư Galaxy sang kiến trúc web (pywebview + FastAPI + React)
 
-> Cập nhật: 2026-08-21. Pha 0–4 đã hoàn thành và commit; Pha 5–8 còn lại.
+> Cập nhật: 2026-08-21. Pha 0–5 đã hoàn thành; Pha 6–8 còn lại.
 > File này là bản kế hoạch chi tiết cho toàn bộ quá trình di cư.
 
 ## 1. Bối cảnh & quyết định đã chốt
@@ -44,6 +44,7 @@ Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python 
 | 3a | OmniVoice Studio/Profiles/Batch + fix Stop-lost/stderr queue/profile guard | `99e79dc` |
 | 3b+3c | Workspaces: repository, gallery, transcripts, document editor, dubbing, render + resume | `f64464a` |
 | 4 | VoiceStudio iframe: tự khởi động, install/launch single-flight, shutdown sạch | `f91dd32`, `64714bd` |
+| 5 | Tách âm thanh UVR: workspace web, preset/runtime cache, cancel theo task | `feat(P5)` |
 
 ## 3. Pha 4 đã hoàn thành và các pha còn lại
 
@@ -61,7 +62,7 @@ Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python 
 - Lưu ý: iframe cross-origin → không inject được `VOICESTUDIO_THEME_SCRIPT`; SPA vendored có dark theme sẵn cùng bộ màu — chấp nhận, ghi README
 - **DoD**: iframe chạy; install có progress; attach backend đang chạy; đóng app → không còn backend 3900 mồ côi; tests voicestudio service vẫn xanh
 
-### Pha 5 — Tách âm thanh
+### Pha 5 — Tách âm thanh ✅
 
 **Mục tiêu**: workspace Tách âm thanh (UVR) + fix 3 lỗi High quan trọng nhất về tiến trình.
 
@@ -127,12 +128,12 @@ Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python 
 | 8 | WebView2 recovery profile leak | P4 | ✅ (mất theo thiết kế iframe) |
 | 9 | race install/launch thế hệ cũ | P4 | ✅ |
 | 10 | backend mồ côi khi đóng app | P4 | ✅ |
-| 11 | terminate_all giết nhầm task khác | P5 | ⏳ |
-| 12 | probe nvidia-smi/venv trên UI thread | P5 | ⏳ |
+| 11 | terminate_all giết nhầm task khác | P5 | ✅ |
+| 12 | probe nvidia-smi/venv trên UI thread | P5 | ✅ |
 | 13 | ProPainter spawn mỗi chunk | P6 | ⏳ |
 | 14 | blur/fill muxer `-c:a copy` | P6 | ⏳ |
 | 15 | audio offset ≥ duration xuất câm | P7 | ⏳ |
-| 16 | installer ffmpeg không checksum; pin faster-whisper | độc lập | ⏳ (làm cùng P5, script không phụ thuộc UI) |
+| 16 | installer ffmpeg không checksum; pin faster-whisper | độc lập | ✅ (hoàn thành cùng P5) |
 
 ## 5. Testing
 

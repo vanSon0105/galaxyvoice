@@ -8,7 +8,7 @@ from typing import Any
 
 class ManagedProcessRegistry:
     def __init__(self) -> None:
-        self._processes: set[subprocess.Popen[Any]] = set()
+        self._processes: dict[subprocess.Popen[Any], str | None] = {}
         self._lock = threading.Lock()
         self._stopping = False
 
@@ -17,17 +17,28 @@ class ManagedProcessRegistry:
             if not self._processes:
                 self._stopping = False
 
-    def add(self, process: subprocess.Popen[Any]) -> None:
+    def add(self, process: subprocess.Popen[Any], *, task_id: str | None = None) -> None:
         with self._lock:
             should_terminate = self._stopping
             if not should_terminate:
-                self._processes.add(process)
+                self._processes[process] = task_id
         if should_terminate:
             terminate_process_tree(process)
 
     def discard(self, process: subprocess.Popen[Any]) -> None:
         with self._lock:
-            self._processes.discard(process)
+            self._processes.pop(process, None)
+
+    def terminate_task(self, task_id: str) -> None:
+        """Terminate only subprocesses owned by one task."""
+        with self._lock:
+            processes = [
+                process
+                for process, owner_task_id in self._processes.items()
+                if owner_task_id == task_id
+            ]
+        for process in processes:
+            terminate_process_tree(process)
 
     def terminate_all(self) -> None:
         with self._lock:
@@ -48,8 +59,9 @@ class ManagedProcessRegistry:
                 {
                     "pid": process.pid,
                     "alive": process.poll() is None,
+                    "task_id": task_id,
                 }
-                for process in self._processes
+                for process, task_id in self._processes.items()
             ]
 
 

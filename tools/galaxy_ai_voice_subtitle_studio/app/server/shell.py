@@ -220,6 +220,16 @@ def run_web_app(
             )
             return result
 
+        def choose_media_file(self) -> tuple[str] | None:
+            return window.create_file_dialog(
+                webview.OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=(
+                    "Media files (*.wav;*.mp3;*.flac;*.m4a;*.ogg;*.aac;*.wma;*.mp4;*.mov;*.mkv;*.avi;*.webm;*.m4v)",
+                    "All files (*.*)",
+                ),
+            )
+
         def choose_book_file(self) -> tuple[str] | None:
             result = window.create_file_dialog(
                 webview.OPEN_DIALOG,

@@ -12,6 +12,7 @@ import { OmniVoiceWorkspace } from './pages/omnivoice/OmniVoiceWorkspace'
 import { ProfilesPage } from './pages/omnivoice/ProfilesPage'
 import { StudioPage } from './pages/omnivoice/StudioPage'
 import { TranscriptsPage } from './pages/omnivoice/TranscriptsPage'
+import { VoiceStudioPage } from './pages/omnivoice/VoiceStudioPage'
 import { WorkspacesPage } from './pages/omnivoice/WorkspacesPage'
 import { PlaceholderPage } from './pages/PlaceholderPage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -51,8 +52,8 @@ export default function App() {
           <Route path="transcripts" element={<TranscriptsPage />} />
           <Route path="workspaces" element={<WorkspacesPage />} />
           <Route path="dubbing" element={<DubbingPage />} />
+          <Route path="voicestudio" element={<VoiceStudioPage />} />
         </Route>
-        <Route path="/voicestudio" element={<PlaceholderPage title="VoiceStudio" phase="Pha 4" />} />
         <Route path="/editor" element={<PlaceholderPage title="Dựng video" phase="Pha 7" />} />
         <Route path="/separation" element={<PlaceholderPage title="Tách âm thanh" phase="Pha 5" />} />
         <Route path="/removal" element={<PlaceholderPage title="Xóa phụ đề" phase="Pha 6" />} />

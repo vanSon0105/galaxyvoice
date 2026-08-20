@@ -55,6 +55,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     from .routers import settings as settings_router
     from .routers import tasks as tasks_router
     from .routers import voice as voice_router
+    from .routers import voicestudio as voicestudio_router
     from .ws import router as ws_router
 
     app.include_router(tasks_router.router)
@@ -62,6 +63,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     app.include_router(voice_router.router)
     app.include_router(omnivoice_router.router)
     app.include_router(workspaces_router.router)
+    app.include_router(voicestudio_router.router)
     app.include_router(files_router)
     app.include_router(ws_router)
 

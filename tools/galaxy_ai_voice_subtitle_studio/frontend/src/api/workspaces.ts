@@ -137,10 +137,24 @@ export const fetchHistory = (params: { workspace?: string; query?: string; starr
 
 // Gallery
 export const fetchGalleryCategories = () => apiJson<string[]>('/api/workspaces/gallery/categories')
-export const fetchGallery = (params: { query?: string; use_case?: string; page?: number } = {}) => {
+export const fetchGallery = (params: {
+  query?: string
+  use_case?: string
+  language?: string
+  gender?: string
+  age?: string
+  pitch?: string
+  style?: string
+  page?: number
+} = {}) => {
   const search = new URLSearchParams({ page: String(params.page ?? 1) })
   if (params.query) search.set('query', params.query)
   if (params.use_case) search.set('use_case', params.use_case)
+  if (params.language) search.set('language', params.language)
+  if (params.gender) search.set('gender', params.gender)
+  if (params.age) search.set('age', params.age)
+  if (params.pitch) search.set('pitch', params.pitch)
+  if (params.style) search.set('style', params.style)
   return apiJson<GalleryPageData>(`/api/workspaces/gallery?${search.toString()}`)
 }
 

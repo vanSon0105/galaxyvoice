@@ -217,14 +217,32 @@ def _use_case(age: str, pitch: str, has_accent: bool, whisper: bool) -> str:
 _ARCHETYPES = _FEATURED_ARCHETYPES + _generated_archetypes()
 
 
-def list_voice_archetypes(query: str = "", use_case: str = "") -> tuple[VoiceArchetype, ...]:
+def list_voice_archetypes(
+    query: str = "",
+    use_case: str = "",
+    language: str = "",
+    gender: str = "",
+    age: str = "",
+    pitch: str = "",
+    style: str = "",
+) -> tuple[VoiceArchetype, ...]:
     needle = query.strip().casefold()
     category = use_case.strip().casefold()
+    lang = language.strip().casefold()
+    gen = gender.strip().casefold()
+    ag = age.strip().casefold()
+    pt = pitch.strip().casefold()
+    st = style.strip().casefold()
     return tuple(
         item
         for item in _ARCHETYPES
         if (not needle or needle in f"{item.name} {item.use_case} {item.instruct}".casefold())
         and (not category or item.use_case.casefold() == category)
+        and (not lang or item.language.casefold() == lang)
+        and (not gen or item.gender.casefold() == gen)
+        and (not ag or item.age.casefold() == ag)
+        and (not pt or item.pitch.casefold() == pt)
+        and (not st or item.style.casefold() == st)
     )
 
 

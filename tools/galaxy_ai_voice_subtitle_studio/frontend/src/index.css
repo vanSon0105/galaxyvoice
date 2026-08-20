@@ -379,6 +379,32 @@ body {
   display: flex;
   flex-direction: column;
   gap: 6px;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease, transform 0.1s ease;
+}
+
+.archetype-card:hover,
+.archetype-card:focus {
+  border-color: var(--color-accent);
+  box-shadow: 0 0 0 2px var(--color-accent-surface);
+  transform: translateY(-1px);
+}
+
+.archetype-card:active {
+  transform: translateY(0);
+}
+
+.archetype-hint {
+  color: var(--color-fg-subtle);
+  font-size: 10.5px;
+  margin-top: 4px;
+  text-align: right;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+}
+
+.archetype-card:hover .archetype-hint,
+.archetype-card:focus .archetype-hint {
+  opacity: 1;
 }
 
 .archetype-name {

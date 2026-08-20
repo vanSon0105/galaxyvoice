@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
+import { useSearchParams } from 'react-router-dom'
 
 import { fetchSettings } from '../../api/settings'
 import type { AppSettings } from '../../api/settings'
@@ -43,6 +44,7 @@ export function StudioPage() {
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
   const statusQuery = useQuery({ queryKey: ['omnivoice-status'], queryFn: fetchOmniVoiceStatus })
   const profilesQuery = useQuery({ queryKey: ['omnivoice-profiles'], queryFn: fetchProfiles })
+  const [searchParams] = useSearchParams()
 
   const settings = settingsQuery.data
   const status: OmniVoiceStatus | undefined = statusQuery.data
@@ -87,6 +89,22 @@ export function StudioPage() {
     setCloneInstruct(str(settings, 'omnivoice_clone_instruct'))
     setProfileId(str(settings, 'omnivoice_profile_id'))
   }, [settings])
+
+  // Apply URL params from gallery selection
+  useEffect(() => {
+    const urlMode = searchParams.get('mode')
+    if (urlMode && (urlMode === 'auto' || urlMode === 'clone' || urlMode === 'design')) {
+      setMode(urlMode)
+    }
+    if (searchParams.get('gender')) setDesignValues(prev => ({ ...prev, gender: searchParams.get('gender')! }))
+    if (searchParams.get('age')) setDesignValues(prev => ({ ...prev, age: searchParams.get('age')! }))
+    if (searchParams.get('pitch')) setDesignValues(prev => ({ ...prev, pitch: searchParams.get('pitch')! }))
+    if (searchParams.get('accent')) setDesignValues(prev => ({ ...prev, accent: searchParams.get('accent')! }))
+    if (searchParams.get('style')) setDesignValues(prev => ({ ...prev, style: searchParams.get('style')! }))
+    if (searchParams.get('language')) setLanguage(searchParams.get('language')!)
+    if (searchParams.get('instruct')) setCustomInstruct(searchParams.get('instruct')!)
+    if (searchParams.get('sample')) setText(searchParams.get('sample')!)
+  }, [searchParams])
 
   const designInstruction = (): string => {
     const chosen = Object.values(designValues).filter(Boolean)

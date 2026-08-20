@@ -235,10 +235,23 @@ def gallery_categories() -> list[str]:
 def gallery(
     query: str = "",
     use_case: str = "",
+    language: str = "",
+    gender: str = "",
+    age: str = "",
+    pitch: str = "",
+    style: str = "",
     page: int = 1,
     page_size: int = GALLERY_PAGE_SIZE,
 ) -> dict[str, Any]:
-    items = list_voice_archetypes(query=query, use_case=use_case)
+    items = list_voice_archetypes(
+        query=query,
+        use_case=use_case,
+        language=language,
+        gender=gender,
+        age=age,
+        pitch=pitch,
+        style=style,
+    )
     total = len(items)
     size = max(1, min(int(page_size), GALLERY_PAGE_SIZE))
     start = (max(1, int(page)) - 1) * size

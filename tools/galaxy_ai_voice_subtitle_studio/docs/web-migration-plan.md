@@ -1,6 +1,6 @@
 # Kế hoạch di cư Galaxy sang kiến trúc web (pywebview + FastAPI + React)
 
-> Cập nhật: 2026-08-21. Pha 0–5 đã hoàn thành; Pha 6–8 còn lại.
+> Cập nhật: 2026-08-21. Pha 0–6 đã hoàn thành; Pha 7–8 còn lại.
 > File này là bản kế hoạch chi tiết cho toàn bộ quá trình di cư.
 
 ## 1. Bối cảnh & quyết định đã chốt
@@ -45,6 +45,7 @@ Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python 
 | 3b+3c | Workspaces: repository, gallery, transcripts, document editor, dubbing, render + resume | `f64464a` |
 | 4 | VoiceStudio iframe: tự khởi động, install/launch single-flight, shutdown sạch | `f91dd32`, `64714bd` |
 | 5 | Tách âm thanh UVR: workspace web, preset/runtime cache, cancel theo task | `feat(P5)` |
+| 6 | Xóa phụ đề: 5 mode, worker ProPainter dài hạn, preview và cancel | `feat(P6)` |
 
 ## 3. Pha 4 đã hoàn thành và các pha còn lại
 
@@ -76,7 +77,7 @@ Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python 
 - Frontend: `SeparationPage.tsx` — method/model/device/format/segment/overlap, presets, sample mode
 - **DoD**: tách được cả 2 method; cancel giữa chừng; chạy song song với 1 task voice → không task nào bị giết nhầm; tests xanh
 
-### Pha 6 — Xóa phụ đề
+### Pha 6 — Xóa phụ đề ✅
 
 **Mục tiêu**: Xóa phụ đề (ProPainter) + fix các lỗi hiệu năng lớn.
 
@@ -130,8 +131,8 @@ Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python 
 | 10 | backend mồ côi khi đóng app | P4 | ✅ |
 | 11 | terminate_all giết nhầm task khác | P5 | ✅ |
 | 12 | probe nvidia-smi/venv trên UI thread | P5 | ✅ |
-| 13 | ProPainter spawn mỗi chunk | P6 | ⏳ |
-| 14 | blur/fill muxer `-c:a copy` | P6 | ⏳ |
+| 13 | ProPainter spawn mỗi chunk | P6 | ✅ |
+| 14 | blur/fill muxer `-c:a copy` | P6 | ✅ |
 | 15 | audio offset ≥ duration xuất câm | P7 | ⏳ |
 | 16 | installer ffmpeg không checksum; pin faster-whisper | độc lập | ✅ (hoàn thành cùng P5) |
 

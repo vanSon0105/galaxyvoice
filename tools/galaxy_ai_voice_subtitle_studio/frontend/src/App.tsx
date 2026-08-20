@@ -16,6 +16,7 @@ import { VoiceStudioPage } from './pages/omnivoice/VoiceStudioPage'
 import { WorkspacesPage } from './pages/omnivoice/WorkspacesPage'
 import { PlaceholderPage } from './pages/PlaceholderPage'
 import { SeparationPage } from './pages/SeparationPage'
+import { RemovalPage } from './pages/RemovalPage'
 import { SettingsPage } from './pages/SettingsPage'
 import { subscribeEvents } from './ws/hub'
 import { useEvents } from './ws/useEvents'
@@ -57,7 +58,7 @@ export default function App() {
         </Route>
         <Route path="/editor" element={<PlaceholderPage title="Dựng video" phase="Pha 7" />} />
         <Route path="/separation" element={<SeparationPage />} />
-        <Route path="/removal" element={<PlaceholderPage title="Xóa phụ đề" phase="Pha 6" />} />
+        <Route path="/removal" element={<RemovalPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to={DEFAULT_ROUTE} replace />} />
       </Routes>

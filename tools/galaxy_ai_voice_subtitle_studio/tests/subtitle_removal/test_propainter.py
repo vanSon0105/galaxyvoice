@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 import subprocess
 import sys
 import tempfile
@@ -17,6 +18,7 @@ from app.subtitle_removal.propainter import (  # noqa: E402
     FAST_AI_PROFILE,
     QUALITY_AI_PROFILE,
     ProPainterRuntime,
+    ProPainterJobWorker,
     ProPainterSession,
     build_chunk_extract_command,
     build_chunk_trim_command,
@@ -39,6 +41,80 @@ from app.subtitle_removal.propainter import (  # noqa: E402
 
 
 class ProPainterTests(unittest.TestCase):
+    def test_job_worker_reuses_one_process_for_multiple_chunks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            runtime = ProPainterRuntime(root, Path("python.exe"), root / "inference_propainter.py")
+            session = ProPainterSession(runtime, CPU_DEVICE, CPU_DEVICE, None, FAST_AI_PROFILE)
+            progress: list[str] = []
+
+            class FakeStdout:
+                def __init__(self) -> None:
+                    self.lines = ['GALAXY_JSON:{"event":"ready"}\n']
+
+                def readline(self) -> str:
+                    return self.lines.pop(0) if self.lines else ""
+
+            class FakeStdin:
+                def __init__(self, owner) -> None:
+                    self.owner = owner
+
+                def write(self, raw: str) -> None:
+                    payload = json.loads(raw)
+                    if payload["command"] == "shutdown":
+                        self.owner.returncode = 0
+                        return
+                    result = Path(payload["output"]) / Path(payload["video"]).stem / "inpaint_out.mp4"
+                    result.parent.mkdir(parents=True, exist_ok=True)
+                    result.write_bytes(b"video")
+                    self.owner.stdout.lines.append(
+                        "GALAXY_JSON:"
+                        + json.dumps(
+                            {
+                                "event": "result",
+                                "id": payload["id"],
+                                "path": str(result),
+                                "models_loaded": self.owner.processed == 0,
+                            }
+                        )
+                        + "\n"
+                    )
+                    self.owner.processed += 1
+
+                def flush(self) -> None:
+                    pass
+
+            class FakeProcess:
+                def __init__(self) -> None:
+                    self.stdout = FakeStdout()
+                    self.stdin = FakeStdin(self)
+                    self.returncode = None
+                    self.processed = 0
+
+                def poll(self):
+                    return self.returncode
+
+                def wait(self, timeout=None):
+                    self.returncode = 0
+                    return 0
+
+            fake_process = FakeProcess()
+            with (
+                patch("app.subtitle_removal.propainter.subprocess.Popen", return_value=fake_process) as popen,
+                patch("app.subtitle_removal.propainter.managed_media_processes.ensure_running"),
+                patch("app.subtitle_removal.propainter.managed_media_processes.add"),
+                patch("app.subtitle_removal.propainter.managed_media_processes.discard"),
+            ):
+                with ProPainterJobWorker(session, progress.append) as worker:
+                    first = worker.process_chunk(root / "one.mp4", root / "mask.png", root / "out1", "cpu", progress.append)
+                    second = worker.process_chunk(root / "two.mp4", root / "mask.png", root / "out2", "cpu", progress.append)
+
+            self.assertTrue(first.is_file())
+            self.assertTrue(second.is_file())
+            self.assertEqual(fake_process.processed, 2)
+            self.assertEqual(popen.call_count, 1)
+            self.assertEqual(sum("models loaded once" in line for line in progress), 1)
+
     def test_runtime_is_discovered_from_the_installed_model_folder(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             repo = Path(temp_dir) / "ProPainter"

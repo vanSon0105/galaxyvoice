@@ -5,6 +5,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -626,7 +627,94 @@ class SubtitleRemovalTests(unittest.TestCase):
         self.assertIn(r"chroma_radius=min(24\,min(cw\,ch)/2-1)", filter_graph)
         self.assertIn("overlay=x=main_w*0.050000:y=main_h*0.740000", filter_graph)
         self.assertIn("libx264", command)
-        self.assertIn("copy", command)
+        self.assertEqual(command[command.index("-c:a") + 1], "aac")
+        self.assertEqual(command[command.index("-b:a") + 1], "192k")
+
+    def test_real_blur_transcodes_pcm_audio_to_mp4_compatible_aac(self) -> None:
+        ffmpeg = find_ffmpeg()
+        ffprobe = find_ffprobe()
+        if not ffmpeg or not ffprobe:
+            self.skipTest("Bundled FFmpeg is unavailable.")
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "pcm-source.mkv"
+            subprocess.run(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "testsrc2=size=160x96:rate=8:duration=0.5",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "sine=frequency=440:sample_rate=44100:duration=0.5",
+                    "-c:v",
+                    "libx264",
+                    "-c:a",
+                    "pcm_s16le",
+                    str(source),
+                ],
+                check=True,
+            )
+
+            result = remove_subtitles_from_video(
+                SubtitleRemovalOptions(
+                    video_path=source,
+                    output_dir=root / "exports",
+                    mode=BLUR_MODE,
+                    region_y=70,
+                    region_height=20,
+                ),
+                ffmpeg_path=ffmpeg,
+            )
+            completed = subprocess.run(
+                [
+                    ffprobe,
+                    "-v",
+                    "error",
+                    "-select_streams",
+                    "a:0",
+                    "-show_entries",
+                    "stream=codec_name",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(result.video_path),
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            self.assertEqual(result.video_path.suffix, ".mp4")
+            self.assertEqual(completed.stdout.strip(), "aac")
+
+    def test_cancelled_runner_cleans_partial_project(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mp4"
+            source.write_bytes(b"video")
+            stop_event = threading.Event()
+
+            def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                Path(command[-1]).write_bytes(b"partial")
+                stop_event.set()
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            with self.assertRaisesRegex(RuntimeError, "cancelled"):
+                remove_subtitles_from_video(
+                    SubtitleRemovalOptions(video_path=source, output_dir=root / "exports"),
+                    ffmpeg_path="ffmpeg",
+                    runner=runner,
+                    stop_event=stop_event,
+                    task_id="removal-test",
+                )
+
+            self.assertEqual(list((root / "exports").iterdir()), [])
 
     def test_fill_command_uses_delogo_for_the_selected_region(self) -> None:
         command = build_fill_subtitles_command(

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -14,7 +15,7 @@ from app.omnivoice.models import OmniVoiceResult
 from app.omnivoice.runtime import OmniVoiceRuntime
 from app.server.main import create_app
 from app.server.routers import omnivoice as omnivoice_router
-from app.server.tasks import DONE, FAILED, task_registry
+from app.server.tasks import CANCELLED, DONE, FAILED, task_registry
 
 
 def _wait_status(task_id: str, timeout: float = 5.0) -> str:
@@ -109,8 +110,10 @@ class OmniVoiceApiTests(unittest.TestCase):
     def test_generate_task_cancel_calls_client_stop(self) -> None:
         from app.omnivoice.service import generate_omnivoice_audio
 
+        release = threading.Event()
+
         def slow_generate(options, client, progress=None):
-            time.sleep(5)
+            release.wait(2)
             return _make_result(self.tmp)
 
         with mock.patch.object(omnivoice_router, "generate_omnivoice_audio", side_effect=slow_generate):
@@ -124,7 +127,8 @@ class OmniVoiceApiTests(unittest.TestCase):
             cancel = self.client.post(f"/api/tasks/{task_id}/cancel")
             self.assertEqual(cancel.status_code, 200)
             self.fake_client.return_value.stop.assert_called_once()
-            record.status = "failed"  # the real thread keeps sleeping; end it
+            release.set()
+            self.assertEqual(_wait_status(task_id), CANCELLED)
 
     def test_batch_parses_and_runs(self) -> None:
         from app.omnivoice.batch import generate_omnivoice_batch

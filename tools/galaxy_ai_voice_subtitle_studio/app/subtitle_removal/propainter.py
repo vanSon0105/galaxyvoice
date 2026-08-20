@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import json
 import os
 import shutil
 import subprocess
+import uuid
 from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable, Mapping
+from threading import Event
+from typing import Callable, Mapping, TextIO
 
 from ..common.compute import AUTO_DEVICE, CPU_DEVICE, CUDA_DEVICE, normalize_processing_device, resolve_torch_device
+from ..common.errors import TaskCancelledError
 from ..common.processes import managed_media_processes
 
 ProgressCallback = Callable[[str], None]
@@ -20,6 +24,7 @@ QUALITY_AI_PROFILE = "quality"
 FAST_AI_PROFILE = "fast"
 AI_PROFILES = (QUALITY_AI_PROFILE, FAST_AI_PROFILE)
 MIN_RAFT_PROCESSING_DIMENSION = 128
+MAX_FORWARDED_WORKER_LOG_LINES = 240
 
 
 @dataclass(frozen=True)
@@ -72,6 +77,195 @@ class VideoChunk:
     source_duration: float
     trim_start: float
     trim_duration: float
+
+
+class ProPainterJobWorker:
+    """One ProPainter process whose model instances are reused for every chunk."""
+
+    def __init__(
+        self,
+        session: ProPainterSession,
+        progress: ProgressCallback,
+        *,
+        stop_event: Event | None = None,
+        task_id: str | None = None,
+    ) -> None:
+        self.session = session
+        self.progress = progress
+        self.stop_event = stop_event
+        self.task_id = task_id
+        self._recent_output: deque[str] = deque(maxlen=40)
+        self._forwarded_log_lines = 0
+        self._log_limit_reported = False
+        worker_path = Path(__file__).with_name("propainter_job_worker.py")
+        command = [
+            str(session.runtime.python_executable),
+            str(worker_path),
+            "--repo",
+            str(session.runtime.repo_dir),
+        ]
+        managed_media_processes.ensure_running()
+        self.process = subprocess.Popen(
+            command,
+            cwd=session.runtime.repo_dir,
+            env=propainter_environment(session.resolved_device),
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            bufsize=1,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        managed_media_processes.add(self.process, task_id=task_id)
+        try:
+            event = self._read_event(expected="ready")
+            if event.get("event") != "ready":
+                raise RuntimeError("ProPainter worker did not become ready.")
+        except BaseException:
+            self.close(force=True)
+            raise
+        self.progress("ProPainter worker is ready; models will be loaded once for this job.")
+
+    def process_chunk(
+        self,
+        video_path: Path,
+        mask_path: Path,
+        output_root: Path,
+        _processing_device: str,
+        _progress: ProgressCallback,
+    ) -> Path:
+        output_root.mkdir(parents=True, exist_ok=True)
+        attempt_memory_gb = self.session.gpu_memory_gb
+        resize_ratio = 1.0
+        retried_oom = False
+        while True:
+            tuning = propainter_tuning(
+                self.session.resolved_device,
+                gpu_memory_gb=attempt_memory_gb,
+                profile=self.session.profile,
+            )
+            precision = "FP16" if tuning.use_fp16 else "FP32"
+            self.progress(
+                f"ProPainter {self.session.profile}: {precision}, subvideo "
+                f"{tuning.subvideo_length}, neighbors {tuning.neighbor_length}."
+            )
+            request_id = uuid.uuid4().hex
+            self._send(
+                {
+                    "id": request_id,
+                    "command": "process",
+                    "video": str(video_path),
+                    "mask": str(mask_path),
+                    "output": str(output_root),
+                    "subvideo_length": tuning.subvideo_length,
+                    "neighbor_length": tuning.neighbor_length,
+                    "ref_stride": tuning.ref_stride,
+                    "fp16": tuning.use_fp16,
+                    "resize_ratio": resize_ratio,
+                }
+            )
+            event = self._read_event(request_id=request_id)
+            if event.get("event") == "result":
+                if event.get("models_loaded"):
+                    self.progress("ProPainter models loaded once; following chunks reuse them.")
+                result = Path(str(event.get("path") or ""))
+                if result.is_file() and result.stat().st_size > 0:
+                    return result
+                raise RuntimeError(f"ProPainter did not create its output video: {result}")
+
+            detail = str(event.get("traceback") or event.get("error") or "ProPainter worker failed.")
+            can_retry = (
+                self.session.resolved_device == CUDA_DEVICE
+                and not retried_oom
+                and _is_cuda_out_of_memory(detail)
+            )
+            if not can_retry:
+                raise RuntimeError(detail)
+            self.progress("CUDA ran out of memory. Retrying with the smallest safe context...")
+            attempt_memory_gb = 0.0
+            resize_ratio = 0.75
+            retried_oom = True
+            self.session.gpu_memory_gb = 0.0
+            shutil.rmtree(output_root / video_path.stem, ignore_errors=True)
+
+    def _send(self, payload: dict[str, object]) -> None:
+        self._check_cancelled()
+        if self.process.poll() is not None or self.process.stdin is None:
+            raise RuntimeError(self._failure_detail("ProPainter worker stopped unexpectedly."))
+        try:
+            self.process.stdin.write(json.dumps(payload, ensure_ascii=True) + "\n")
+            self.process.stdin.flush()
+        except (BrokenPipeError, OSError) as error:
+            self._check_cancelled()
+            raise RuntimeError(self._failure_detail(str(error))) from error
+
+    def _read_event(
+        self,
+        *,
+        expected: str | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, object]:
+        stream: TextIO | None = self.process.stdout
+        if stream is None:
+            raise RuntimeError("ProPainter worker has no output stream.")
+        while True:
+            line = stream.readline()
+            if not line:
+                self._check_cancelled()
+                raise RuntimeError(self._failure_detail("ProPainter worker stopped unexpectedly."))
+            message = line.strip()
+            if not message:
+                continue
+            if not message.startswith("GALAXY_JSON:"):
+                self._recent_output.append(message)
+                if self._forwarded_log_lines < MAX_FORWARDED_WORKER_LOG_LINES:
+                    self.progress(message)
+                    self._forwarded_log_lines += 1
+                elif not self._log_limit_reported:
+                    self.progress("ProPainter log limit reached; processing continues in the background.")
+                    self._log_limit_reported = True
+                continue
+            try:
+                event = json.loads(message.removeprefix("GALAXY_JSON:"))
+            except json.JSONDecodeError:
+                self._recent_output.append(message)
+                continue
+            if expected is not None and event.get("event") != expected:
+                continue
+            if request_id is not None and event.get("id") != request_id:
+                continue
+            return event
+
+    def _check_cancelled(self) -> None:
+        if self.stop_event is not None and self.stop_event.is_set():
+            raise TaskCancelledError()
+
+    def _failure_detail(self, fallback: str) -> str:
+        return "\n".join(self._recent_output) or fallback
+
+    def close(self, *, force: bool = False) -> None:
+        process = getattr(self, "process", None)
+        if process is None:
+            return
+        try:
+            if not force and process.poll() is None and process.stdin is not None:
+                process.stdin.write(json.dumps({"command": "shutdown", "id": "shutdown"}) + "\n")
+                process.stdin.flush()
+                process.wait(timeout=5)
+        except (BrokenPipeError, OSError, subprocess.TimeoutExpired):
+            force = True
+        finally:
+            if force or process.poll() is None:
+                _terminate_process(process)
+            managed_media_processes.discard(process)
+
+    def __enter__(self) -> ProPainterJobWorker:
+        return self
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
 
 
 def default_propainter_dir() -> Path:
@@ -356,6 +550,9 @@ def generate_dynamic_subtitle_masks(
     output_dir: Path,
     plan: InpaintingCropPlan,
     progress: ProgressCallback,
+    *,
+    stop_event: Event | None = None,
+    task_id: str | None = None,
 ) -> Path:
     managed_media_processes.ensure_running()
     command = build_dynamic_subtitle_mask_command(runtime, video_path, output_dir, plan)
@@ -364,6 +561,8 @@ def generate_dynamic_subtitle_masks(
         cwd=runtime.repo_dir,
         env=None,
         progress=progress,
+        stop_event=stop_event,
+        task_id=task_id,
     )
 
     if return_code != 0:
@@ -668,6 +867,8 @@ def run_propainter(
     *,
     profile: str = QUALITY_AI_PROFILE,
     session: ProPainterSession | None = None,
+    stop_event: Event | None = None,
+    task_id: str | None = None,
 ) -> Path:
     managed_media_processes.ensure_running()
     prepared = session or prepare_propainter_session(
@@ -719,6 +920,8 @@ def run_propainter(
             runtime,
             resolved_device,
             progress,
+            stop_event=stop_event,
+            task_id=task_id,
         )
         if return_code == 0:
             break
@@ -752,12 +955,17 @@ def _run_propainter_process(
     runtime: ProPainterRuntime,
     resolved_device: str,
     progress: ProgressCallback,
+    *,
+    stop_event: Event | None = None,
+    task_id: str | None = None,
 ) -> tuple[int, deque[str]]:
     return _run_managed_process(
         command,
         cwd=runtime.repo_dir,
         env=propainter_environment(resolved_device),
         progress=progress,
+        stop_event=stop_event,
+        task_id=task_id,
     )
 
 
@@ -767,6 +975,8 @@ def _run_managed_process(
     cwd: Path,
     env: Mapping[str, str] | None,
     progress: ProgressCallback,
+    stop_event: Event | None = None,
+    task_id: str | None = None,
 ) -> tuple[int, deque[str]]:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     process = subprocess.Popen(
@@ -780,16 +990,20 @@ def _run_managed_process(
         errors="replace",
         creationflags=creationflags,
     )
-    managed_media_processes.add(process)
-    recent_output: deque[str] = deque(maxlen=20)
+    managed_media_processes.add(process, task_id=task_id)
+    recent_output: deque[str] = deque(maxlen=40)
     try:
         if process.stdout is not None:
             for line in process.stdout:
+                if stop_event is not None and stop_event.is_set():
+                    raise TaskCancelledError()
                 message = line.strip()
                 if message:
                     recent_output.append(message)
                     progress(message)
         return_code = process.wait()
+        if stop_event is not None and stop_event.is_set():
+            raise TaskCancelledError()
     except BaseException:
         _terminate_process(process)
         raise
@@ -820,6 +1034,11 @@ def _is_cuda_out_of_memory(detail: str) -> bool:
             "cuda out of memory",
             "outofmemoryerror",
             "cublas_status_alloc_failed",
+            "cudnn_status_alloc_failed",
+            "cuda error: out of memory",
+            "cudaerror_memoryallocation",
+            "failed to allocate memory on device",
+            "not enough memory resources are available",
         )
     )
 

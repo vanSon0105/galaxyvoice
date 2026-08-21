@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 from fastapi.testclient import TestClient
@@ -83,6 +84,19 @@ class SettingsApiTests(unittest.TestCase):
             {provider["code"] for provider in body["translation_providers"]},
         )
         self.assertIn(("auto", "Auto detect"), [(item["code"], item["label"]) for item in body["source_languages"]])
+
+    def test_settings_meta_reports_environment_key_without_exposing_it(self) -> None:
+        with mock.patch.dict(
+            "os.environ",
+            {"DEEPSEEK_API_KEY": "deepseek-secret-value"},
+            clear=False,
+        ):
+            response = self.client.get("/api/settings/meta")
+
+        self.assertEqual(response.status_code, 200)
+        providers = {item["code"]: item for item in response.json()["translation_providers"]}
+        self.assertTrue(providers["deepseek"]["api_key_configured"])
+        self.assertNotIn("deepseek-secret-value", response.text)
 
     def test_system_processes_returns_snapshot(self) -> None:
         response = self.client.get("/api/system/processes")

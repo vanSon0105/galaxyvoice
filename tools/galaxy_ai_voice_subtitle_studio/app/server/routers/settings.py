@@ -43,6 +43,7 @@ from ...video_editor.service import (
 from ...voice.languages import LANGUAGE_CHOICES, TARGET_LANGUAGE_CHOICES
 from ...voice.transcription import WHISPER_MODELS
 from ...voice.translator import (
+    default_translation_api_key,
     default_translation_base_url,
     default_translation_model,
     default_translation_provider,
@@ -101,6 +102,7 @@ def get_settings_meta() -> dict[str, Any]:
             "default_model": default_translation_model(code),
             "default_base_url": default_translation_base_url(code),
             "models": list(translation_provider_models(code)),
+            "api_key_configured": bool(default_translation_api_key(code)),
         }
         for code in provider_codes
     ]

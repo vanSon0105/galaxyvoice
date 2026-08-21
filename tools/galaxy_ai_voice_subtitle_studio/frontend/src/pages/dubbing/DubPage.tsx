@@ -605,9 +605,15 @@ export function DubPage() {
                 type="password"
                 id="dub-ai-api-key"
                 autoComplete="off"
+                placeholder={
+                  providerMeta?.api_key_configured ? '•••••••• (từ environment)' : ''
+                }
                 value={apiKey}
                 onChange={(event) => setApiKey(event.target.value)}
               />
+              {providerMeta?.api_key_configured && !apiKey && (
+                <span className="field-hint">Đang dùng API key từ biến môi trường.</span>
+              )}
             </div>
           </div>
           <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>

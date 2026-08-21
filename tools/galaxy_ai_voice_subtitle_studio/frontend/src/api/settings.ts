@@ -13,6 +13,7 @@ export interface ProviderMeta extends Option {
   default_model: string
   default_base_url: string
   models: string[]
+  api_key_configured: boolean
 }
 
 export interface SettingsMeta {

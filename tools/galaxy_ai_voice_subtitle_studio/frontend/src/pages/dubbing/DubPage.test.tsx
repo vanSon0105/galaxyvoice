@@ -19,4 +19,9 @@ describe('Dubbing translation controls', () => {
 
     expect(css).toContain(".field input[type='password']")
   })
+
+  it('shows a masked placeholder when the provider key comes from the environment', () => {
+    expect(dubPageSource).toContain("providerMeta?.api_key_configured")
+    expect(dubPageSource).toContain("'•••••••• (từ environment)'")
+  })
 })

@@ -14,7 +14,7 @@
 
 Edge TTS dùng dịch vụ giọng đọc online của Microsoft Edge nhưng không cần API key. Windows SAPI vẫn hoạt động hoàn toàn offline. Phần dịch phụ đề chỉ gọi cloud khi người dùng chọn dịch bằng OpenAI hoặc DeepSeek.
 
-## Chạy GUI
+## Chạy ứng dụng desktop
 
 Double-click:
 
@@ -22,15 +22,21 @@ Double-click:
 Galaxy Studio.bat
 ```
 
-Launcher sẽ tự cài `edge-tts` ở lần mở đầu tiên nếu máy chưa có.
+Launcher sẽ tự cài runtime web (`FastAPI`, `uvicorn`, `pywebview`) và `edge-tts`
+ở lần mở đầu tiên nếu máy chưa có.
 
 Hoặc chạy bằng terminal:
 
 ```powershell
 cd tools\galaxy_ai_voice_subtitle_studio
+pip install -r .\requirements-web.txt
 pip install -r .\requirements-voice.txt
 python run.py
 ```
+
+`python run.py` mở giao diện React trong cửa sổ pywebview. Cờ `--web` cũ vẫn
+được chấp nhận để các shortcut và script hiện có không bị hỏng. Chế độ phát
+triển có thể chạy server không cửa sổ bằng `python run.py --serve-only`.
 
 ## Giọng đọc
 
@@ -295,19 +301,30 @@ Code được nhóm theo tab để thay đổi một workflow không phải đ�
 
 ```text
 app/
-|-- common/                  # config, cache, FFmpeg, logging, process và path
-|-- voice/                   # TTS, transcription, dịch AI, SRT và UI tab Voice
+|-- common/                  # config, palette, cache, FFmpeg, log, process và path
+|-- server/                  # FastAPI, task registry, WebSocket và pywebview shell
+|-- voice/                   # TTS, transcription, dịch AI và SRT
 |-- omnivoice/               # runtime worker, profile và các workspace OmniVoice
 |   `-- workspaces/          # dubbing, stories, audiobook, gallery và transcripts
 |-- voicestudio/             # launcher, runtime probe và vòng đời VoiceStudio đầy đủ
-|-- video_editor/            # project, preview, export và timeline tab Dựng video
-|-- audio_separation/        # backend UVR/audio-separator và UI tab Tách âm thanh
-|-- subtitle_removal/        # blur, ProPainter và UI tab Xóa phụ đề
-|-- gui.py                   # composition root, vòng đời app và event chung
+|-- video_editor/            # model và dịch vụ xuất timeline Dựng video
+|-- audio_separation/        # backend UVR/audio-separator
+|-- subtitle_removal/        # blur, ProPainter và dịch vụ xóa phụ đề
 `-- cli.py                   # entry point dòng lệnh
+
+frontend/                    # React + TypeScript; dist/ được commit để chạy desktop
 ```
 
-Mỗi package tab có `gui.py` cho phần giao diện và module backend riêng. `app/gui.py` chỉ ghép các mixin tab, quản lý config chung, trạng thái tác vụ và đóng ứng dụng. Test backend mirror cấu trúc này dưới `tests/`; `tests/test_gui_layout.py` là bộ integration test cho ứng dụng đã ghép.
+Giao diện tkinter cũ đã được gỡ ở pha 8. Các router trong `app/server/routers/`
+chỉ chuyển đổi request/response; nghiệp vụ vẫn nằm trong từng package domain để
+CLI và giao diện web dùng chung một implementation.
+
+### Ranh giới VoiceStudio
+
+Snapshot `vendor/voicestudio/` dùng giấy phép AGPL-3.0-only và được giữ nguyên
+cùng `LICENSE`/`LICENSE-NOTICE.md`. Galaxy chạy snapshot này như một dịch vụ
+loopback riêng rồi nhúng URL frontend; mã Galaxy không copy hay patch source ứng
+dụng đó. Xem thêm `vendor/THIRD_PARTY_NOTICES.md`.
 
 ## Test
 

@@ -23,19 +23,13 @@ def main(argv: list[str] | None = None) -> int:
         return run_web_app(port=args.web_port, serve_only=True)
 
     if args.gui or _should_open_gui(args):
-        if args.web:
-            from .server.shell import run_web_app
+        from .server.shell import run_web_app
 
-            return run_web_app(
-                port=args.web_port,
-                dev_url=args.web_dev_url or None,
-                debug=bool(args.web_dev_url),
-            )
-
-        from .gui import run_app
-
-        run_app()
-        return 0
+        return run_web_app(
+            port=args.web_port,
+            dev_url=args.web_dev_url or None,
+            debug=bool(args.web_dev_url),
+        )
 
     tts = create_tts_engine(args.tts_engine)
     if args.list_voices:
@@ -115,11 +109,15 @@ def main(argv: list[str] | None = None) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Galaxy AI Voice & Subtitle Studio")
-    parser.add_argument("--gui", action="store_true", help="Open the desktop UI.")
+    parser.add_argument(
+        "--gui",
+        action="store_true",
+        help="Open the desktop web UI (legacy alias).",
+    )
     parser.add_argument(
         "--web",
         action="store_true",
-        help="Open the web (pywebview) desktop UI instead of tkinter.",
+        help="Open the desktop web UI (kept for backward compatibility).",
     )
     parser.add_argument(
         "--serve-only",

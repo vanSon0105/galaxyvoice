@@ -39,7 +39,7 @@ from ..tasks import CANCELLED, DONE, FAILED, TaskRecord, run_task, task_registry
 
 router = APIRouter(prefix="/api/voice")
 
-# Session-scoped draft store: mirrors the tkinter app, which keeps ONE
+# Session-scoped draft store keeps one
 # subtitle draft at a time; a new successful transcription replaces the old.
 _drafts: dict[str, VideoSubtitleDraft] = {}
 _draft_edits: dict[str, dict[str, str]] = {}
@@ -58,7 +58,7 @@ class GenerateRequest(BaseModel):
     max_chars: int = 160
     export_mp3: bool = True
     keep_segments: bool = True
-    # Optional in-flow script translation (mirrors the tkinter flow: the
+    # Optional in-flow script translation: the
     # script is translated to the target language before synthesis).
     source_language: str = "auto"
     target_language: str = "none"

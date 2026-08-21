@@ -169,7 +169,7 @@ def run_web_app(
             server.shutdown()
         return 0
 
-    import webview  # lazy: CLI/Tk users do not need pywebview installed
+    import webview  # lazy: command-line tasks do not need pywebview installed
 
     try:
         webview.settings["ALLOW_DOWNLOADS"] = True

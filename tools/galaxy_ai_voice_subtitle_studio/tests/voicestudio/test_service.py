@@ -14,7 +14,6 @@ def ready_status(runtime: VoiceStudioRuntime, *, online: bool = False) -> VoiceS
     return VoiceStudioRuntimeStatus(
         snapshot_present=True,
         runtime_installed=True,
-        webview_installed=True,
         backend_online=online,
         update_required=False,
         version="0.4.2",
@@ -96,14 +95,13 @@ class VoiceStudioControllerTests(unittest.TestCase):
             unavailable = VoiceStudioRuntimeStatus(
                 snapshot_present=True,
                 runtime_installed=False,
-                webview_installed=False,
                 backend_online=False,
                 update_required=False,
                 version="0.4.2",
                 license_id="AGPL-3.0-only",
                 python_path=runtime.python_path,
                 source_dir=runtime.source_dir,
-                missing_components=("Python runtime", "WebView bridge"),
+                missing_components=("Python runtime",),
                 message="missing",
             )
             controller = VoiceStudioController(runtime)
@@ -119,8 +117,6 @@ class VoiceStudioControllerTests(unittest.TestCase):
             runtime.installer_path.write_text("", encoding="utf-8")
             runtime.snapshot_dir.mkdir(parents=True)
             runtime.snapshot_metadata_path.write_text("{}", encoding="utf-8")
-            runtime.webview_wheel.parent.mkdir(parents=True)
-            runtime.webview_wheel.write_bytes(b"wheel")
             controller = VoiceStudioController(runtime)
             process = Mock()
             process.poll.return_value = None

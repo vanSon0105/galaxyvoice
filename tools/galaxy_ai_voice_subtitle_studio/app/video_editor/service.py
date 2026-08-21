@@ -45,7 +45,7 @@ MIX_AUDIO = "mix"
 REPLACE_AUDIO = "replace"
 EDITOR_AUDIO_MODES = (MIX_AUDIO, REPLACE_AUDIO)
 
-# UI label tables (shared by the tkinter tab and the web settings API).
+# UI label tables exposed through the web settings API.
 RESOLUTION_LABELS = {
     ORIGINAL_RESOLUTION: "Theo video gốc",
     RESOLUTION_720P: "HD 720p",

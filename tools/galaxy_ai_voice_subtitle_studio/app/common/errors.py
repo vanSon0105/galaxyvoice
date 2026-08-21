@@ -5,7 +5,7 @@ class TaskCancelledError(RuntimeError):
     """Raised by services when a stop_event is set mid-task.
 
     The web task wrapper maps this to a 'cancelled' terminal status; the
-    tkinter UI treats it like any other RuntimeError.
+    UI layers treat it like any other RuntimeError.
     """
 
     def __init__(self, message: str = "Task was cancelled.") -> None:

@@ -18,7 +18,6 @@ def ready_status(runtime: VoiceStudioRuntime) -> VoiceStudioRuntimeStatus:
     return VoiceStudioRuntimeStatus(
         snapshot_present=True,
         runtime_installed=True,
-        webview_installed=True,
         backend_online=False,
         update_required=False,
         version="0.4.2",

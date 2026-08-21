@@ -1,6 +1,6 @@
 # Kế hoạch di cư Galaxy sang kiến trúc web (pywebview + FastAPI + React)
 
-> Cập nhật: 2026-08-21. Pha 0–7 đã hoàn thành; Pha 8 chờ người dùng sign-off.
+> Cập nhật: 2026-08-21. Pha 0–8 đã hoàn thành; tkinter đã được gỡ.
 > File này là bản kế hoạch chi tiết cho toàn bộ quá trình di cư.
 
 ## 1. Bối cảnh & quyết định đã chốt
@@ -18,7 +18,7 @@ Quyết định kiến trúc (đã duyệt):
 | Frontend | **React + TypeScript + Vite + Tailwind v4** — code tự viết, học theo design language (không copy AGPL của omnivoicestudio) |
 | Realtime | **1 WebSocket** `/ws/events` (sự kiện + progress + task status), cancel qua HTTP |
 | Task | `TaskRegistry` server-side: task_id, status, `stop_event`, `on_cancel` hook |
-| Config | Chung `config.json` (AppConfig v6) — hai UI dùng cùng dataclass, không lệch nhau |
+| Config | `config.json` (AppConfig v6) dùng chung cho web shell và CLI |
 | Nguyên tắc | **Migration contract**: router chỉ là lớp trình bày mỏng; mọi fix nằm ở service dùng chung; service API đóng băng, chỉ thêm field |
 
 Cấu trúc:
@@ -28,11 +28,10 @@ app/server/               # FastAPI backend
   main.py  shell.py  event_bus.py  tasks.py  ws.py  files.py
   routers/{tasks,settings,voice,omnivoice,omnivoice_workspaces,audio_separation,subtitle_removal,video_editor}.py
 frontend/                 # React + TS + Vite + Tailwind (dist/ được commit)
-app/<domain>/*            # Service thuần — tái sử dụng nguyên vẹn cho cả 2 UI
-app/gui.py + app/*/gui.py # tkinter — sẽ xóa ở Pha 8
+app/<domain>/*            # Service thuần — dùng chung cho web shell và CLI
 ```
 
-Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python run.py --web` (web) · `--serve-only` · `--web-dev-url` (dev + debug).
+Lệnh chạy: `python run.py` (web mặc định) · `python run.py --web` (alias tương thích) · `--serve-only` · `--web-dev-url` (dev + debug).
 
 ## 2. Tiến độ đã hoàn thành
 
@@ -47,6 +46,7 @@ Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python 
 | 5 | Tách âm thanh UVR: workspace web, preset/runtime cache, cancel theo task | `feat(P5)` |
 | 6 | Xóa phụ đề: 5 mode, worker ProPainter dài hạn, preview và cancel | `feat(P6)` |
 | 7 | Dựng video: media bin, timeline SVG, sửa cue, mix/replace audio và export | `feat(P7)` |
+| 8 | Gỡ tkinter, web mặc định, bỏ tkwry và đồng bộ palette/token | `feat(P8)` |
 
 ## 3. Pha 4 đã hoàn thành và các pha còn lại
 
@@ -105,13 +105,13 @@ Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python 
   - Playback bằng `<video>` element — bỏ cả hệ ffplay frame-rendering của tkinter
 - **DoD**: seek, kéo clip, sửa cue, preview, export mix/replace với mọi encoder/resolution; không fail im lặng; vitest geometry xanh
 
-### Pha 8 — Gỡ tkinter (sau sign-off của người dùng)
+### Pha 8 — Gỡ tkinter ✅
 
 1. Xóa toàn bộ file GUI tkinter (danh sách đầy đủ ở §5)
 2. `app/common/theme.py` → `app/common/palette.py` (AppPalette thuần, không tkinter) + test assert hex khớp `frontend/src/styles/tokens.css`
-3. `--web` thành mặc định; `--tk` giữ tạm đến khi sign-off xong
+3. Web thành mặc định; `--web` giữ làm alias tương thích; không còn `--tk`
 4. Xóa phần tkwry/WebViewProfileLease khỏi `app/voicestudio/runtime.py`
-5. `Galaxy Studio.bat`: cài `requirements-web.txt` lần đầu → `run.py --web`
+5. `Galaxy Studio.bat`: cài `requirements-web.txt` lần đầu → `run.py`
 6. Test: xóa/điều chỉnh đúng 4 file tkinter (`test_gui_layout.py`, `omnivoice/test_gui.py`, `common/test_theme.py` → palette-token, `video_editor/test_timeline.py` → vitest geometry)
 7. README + AGENTS.md + ghi chú ranh giới AGPL
 8. **DoD**: 0 import tkinter trong `app/`; `python run.py` mở web; CLI nguyên; test xanh; git sạch; review độc lập cuối cùng
@@ -139,11 +139,11 @@ Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python 
 
 ## 5. Testing
 
-- **Service layer**: `py -3.13 -m pytest tests/` — phải xanh cuối MỌI pha (trừ 4 file tkinter xử lý ở Pha 8)
+- **Service layer**: `py -3.13 -m pytest tests/` — phải xanh cuối mọi pha
 - **API mới**: `tests/server/` per router, TestClient + monkeypatch service (không TTS/ffmpeg/whisper thật)
 - **Frontend**: `cd frontend && npm test` (vitest) + `npm run build` (dist commit)
 - **Smoke thật**: `python run.py --serve-only` + curl, hoặc mở cửa sổ 10s tự đóng (verify CLEAN_EXIT + 0 process mồ côi)
-- **Parity**: mỗi workspace — tkinter là oracle so sánh, người dùng sign-off trước khi xóa tab tương ứng
+- **Parity**: các workspace web đã được người dùng sign-off trước khi giao diện cũ bị xóa
 
 ## 6. Rủi ro & giảm thiểu (tóm tắt)
 
@@ -154,9 +154,9 @@ Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python 
 | Process mồ côi | shutdown() duy nhất; đã verify 0 mồ côi ở P0; task-scoped groups ở P5 |
 | Port đụng VoiceStudio 3900 | Galaxy dùng 3902 (env override), retry 3902→3912 |
 | Ranh giới AGPL | Toàn bộ code tự viết; VoiceStudio ở process riêng sau iframe |
-| Hai UI lệch nhau | Migration contract; chung file data (config.json, omnivoice_workspaces.json, audio_presets.json) |
+| Web và CLI lệch nghiệp vụ | Router mỏng; cùng service và file data (`config.json`, `omnivoice_workspaces.json`, `audio_presets.json`) |
 
-## 7. Danh sách file GUI tkinter sẽ xóa (Pha 8)
+## 7. Danh sách file GUI tkinter đã xóa (Pha 8)
 
 ```
 app/gui.py
@@ -180,8 +180,9 @@ app/voicestudio/gui.py
 ## 8. Lệnh thường dùng
 
 ```powershell
-# App web (mặc định từ Pha 8; hiện tại: --web)
-python run.py --web
+# App web (mặc định từ Pha 8)
+python run.py
+python run.py --web                  # alias tương thích
 python run.py --serve-only            # server không cửa sổ (Vite dev proxy)
 python run.py --web --web-dev-url http://localhost:5173
 

@@ -68,8 +68,6 @@ $venvRoot = Join-Path $RuntimeRoot ".venv"
 $runtimePython = Join-Path $venvRoot "Scripts\python.exe"
 $installerVenv = Join-Path $RuntimeRoot ".installer"
 $installerPython = Join-Path $installerVenv "Scripts\python.exe"
-$webviewSite = Join-Path $RuntimeRoot "webview\site-packages"
-$webviewWheel = Join-Path $toolRoot "vendor\wheels\tkwry-0.1.4-cp310-abi3-win_amd64.whl"
 $metadataPath = Join-Path $RuntimeRoot "runtime.json"
 
 function Invoke-Checked {
@@ -149,20 +147,12 @@ New-Item -ItemType Directory -Path $runtimeSource -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $RuntimeRoot "data") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $RuntimeRoot "cache") -Force | Out-Null
 New-Item -ItemType Directory -Path (Join-Path $RuntimeRoot "logs") -Force | Out-Null
-New-Item -ItemType Directory -Path $webviewSite -Force | Out-Null
 Remove-Item -LiteralPath $metadataPath -Force -ErrorAction SilentlyContinue
 
 Write-Host "Copying the immutable VoiceStudio snapshot..." -ForegroundColor Cyan
 & robocopy $SnapshotRoot $runtimeSource /E /XD node_modules __pycache__ .venv target /XF *.pyc *.pyo | Out-Null
 if ($LASTEXITCODE -gt 7) {
     throw "Copying the VoiceStudio snapshot failed with exit code $LASTEXITCODE."
-}
-
-if (-not (Test-Path -LiteralPath $webviewWheel -PathType Leaf)) {
-    throw "The bundled WebView wheel was not found: $webviewWheel"
-}
-Invoke-Checked "Installing the embedded WebView bridge" {
-    & $hostPython -m pip install --disable-pip-version-check --no-index --no-deps --upgrade --target $webviewSite $webviewWheel
 }
 
 if (-not (Test-Path -LiteralPath $installerPython -PathType Leaf)) {

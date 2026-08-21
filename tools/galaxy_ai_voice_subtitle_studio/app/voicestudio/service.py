@@ -136,9 +136,6 @@ class VoiceStudioController:
             raise RuntimeError(f"Không tìm thấy bộ cài local: {self.runtime.installer_path}")
         if not self.runtime.snapshot_metadata_path.is_file():
             raise RuntimeError(f"Không tìm thấy snapshot VoiceStudio: {self.runtime.snapshot_dir}")
-        if not self.runtime.webview_wheel.is_file():
-            raise RuntimeError(f"Không tìm thấy WebView wheel: {self.runtime.webview_wheel}")
-
         process = subprocess.Popen(
             [
                 "powershell.exe",

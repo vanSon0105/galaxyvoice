@@ -39,7 +39,7 @@ COMMON_LANGUAGES = (
 )
 
 # Voice-design attribute tables (label -> English value joined into the
-# design instruction). Shared by the tkinter tab and the web studio page.
+# design instruction). Shared by the web studio workspaces.
 GENDER_CHOICES = {"Không chọn": "", "Nam": "male", "Nữ": "female"}
 AGE_CHOICES = {
     "Không chọn": "",

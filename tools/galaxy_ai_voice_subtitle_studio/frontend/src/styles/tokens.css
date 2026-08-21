@@ -1,4 +1,4 @@
-/* Design tokens — values mirror AppPalette (app/common/theme.py) and the
+/* Design tokens — values mirror AppPalette (app/common/palette.py) and the
    VoiceStudio theme family. Single source of truth for the web shell. */
 :root {
   --color-bg: #111315;

@@ -2,7 +2,7 @@
 source imports, longform documents (stories/audiobook) and rendering.
 
 The longform document lives in a server-side session and every edit op is
-applied through the SAME EditableLongformDocument class the tkinter tab
+applied through the same EditableLongformDocument class the workspace service
 uses, so the two UIs can never diverge on editing semantics.
 """
 from __future__ import annotations

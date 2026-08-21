@@ -9,7 +9,11 @@ from unittest import mock
 
 from fastapi.testclient import TestClient
 
-from app.audio_separation.service import AudioSeparationResult, UVRModel
+from app.audio_separation.service import (
+    AudioSeparationResult,
+    DownloadableAudioModel,
+    UVRModel,
+)
 from app.common.errors import TaskCancelledError
 from app.server.main import create_app
 from app.server.routers import audio_separation as audio_router
@@ -46,7 +50,10 @@ class AudioSeparationApiTests(unittest.TestCase):
             models = self.client.get("/api/audio/models")
 
         self.assertEqual(meta.status_code, 200)
-        self.assertEqual({item["code"] for item in meta.json()["methods"]}, {"mdx", "vr", "demucs"})
+        self.assertEqual(
+            {item["code"] for item in meta.json()["methods"]},
+            {"mdx", "mdxc", "vr", "demucs"},
+        )
         self.assertIn("mdx", meta.json()["method_controls"])
         self.assertEqual(models.json()[0]["filename"], "Kim_Vocal_2.onnx")
 
@@ -56,6 +63,51 @@ class AudioSeparationApiTests(unittest.TestCase):
             self.client.get("/api/audio/models")
             self.client.get("/api/audio/models", params={"refresh": True})
         self.assertEqual(discover.call_count, 2)
+
+    def test_model_catalog_exposes_install_state(self) -> None:
+        catalog = (
+            DownloadableAudioModel(
+                filename="Kim_Vocal_2.onnx",
+                name="Kim Vocal 2",
+                model_type="MDX",
+                method="mdx",
+                stems=("vocals", "instrumental"),
+            ),
+        )
+        installed = (UVRModel("mdx", "Kim Vocal 2", "Kim_Vocal_2.onnx", self.root),)
+        with (
+            mock.patch.object(audio_router, "list_downloadable_audio_models", return_value=catalog),
+            mock.patch.object(audio_router, "discover_uvr_models", return_value=installed),
+        ):
+            response = self.client.get("/api/audio/models/catalog")
+
+        self.assertEqual(response.status_code, 200)
+        self.assertTrue(response.json()[0]["installed"])
+
+    def test_model_download_runs_as_a_task(self) -> None:
+        catalog_model = DownloadableAudioModel(
+            filename="melband_roformer.ckpt",
+            name="MelBand RoFormer",
+            model_type="MDXC",
+            method="mdxc",
+            stems=("vocals", "instrumental"),
+        )
+        with (
+            mock.patch.object(
+                audio_router,
+                "list_downloadable_audio_models",
+                return_value=(catalog_model,),
+            ),
+            mock.patch.object(audio_router, "download_audio_model", return_value=self.root / "model"),
+        ):
+            response = self.client.post(
+                "/api/audio/models/download",
+                json={"filename": catalog_model.filename},
+            )
+            task_id = response.json()["task_id"]
+            self.assertEqual(_wait_status(task_id), DONE)
+
+        self.assertEqual(task_registry.get(task_id).result.name, "model")
 
     def test_custom_presets_can_be_saved_and_deleted(self) -> None:
         response = self.client.post(

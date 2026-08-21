@@ -34,6 +34,7 @@ export interface AudioMeta {
   method_controls: Record<string, MethodControls>
   builtin_presets: Record<string, AudioPreset>
   uvr_root: string
+  managed_models_root: string
   runtime_path: string
   installer_available: boolean
 }
@@ -42,6 +43,15 @@ export interface AudioModel {
   method: string
   label: string
   filename: string
+}
+
+export interface DownloadableAudioModel {
+  filename: string
+  name: string
+  model_type: string
+  method: string
+  stems: string[]
+  installed: boolean
 }
 
 export interface AudioPresets {
@@ -86,6 +96,20 @@ export function fetchAudioMeta(): Promise<AudioMeta> {
 
 export function fetchAudioModels(refresh = false): Promise<AudioModel[]> {
   return apiJson<AudioModel[]>(`/api/audio/models${refresh ? '?refresh=true' : ''}`)
+}
+
+export function fetchAudioModelCatalog(refresh = false): Promise<DownloadableAudioModel[]> {
+  return apiJson<DownloadableAudioModel[]>(
+    `/api/audio/models/catalog${refresh ? '?refresh=true' : ''}`,
+  )
+}
+
+export function startAudioModelDownload(filename: string): Promise<{ task_id: string }> {
+  return apiJson('/api/audio/models/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ filename }),
+  })
 }
 
 export function fetchAudioPresets(): Promise<AudioPresets> {

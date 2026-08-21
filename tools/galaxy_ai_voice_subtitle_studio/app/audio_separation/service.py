@@ -21,11 +21,13 @@ from ..common.paths import repository_root, unique_project_dir
 from ..common.processes import managed_media_processes, terminate_process_tree
 
 MDX_METHOD = "mdx"
+MDXC_METHOD = "mdxc"
 VR_METHOD = "vr"
 DEMUCS_METHOD = "demucs"
-AUDIO_PROCESS_METHODS = (MDX_METHOD, VR_METHOD, DEMUCS_METHOD)
+AUDIO_PROCESS_METHODS = (MDX_METHOD, MDXC_METHOD, VR_METHOD, DEMUCS_METHOD)
 AUDIO_PROCESS_METHOD_LABELS = {
     MDX_METHOD: "MDX-Net",
+    MDXC_METHOD: "MDXC / RoFormer",
     VR_METHOD: "VR Architecture",
     DEMUCS_METHOD: "Demucs",
 }
@@ -103,6 +105,15 @@ class UVRModel:
 
 
 @dataclass(frozen=True)
+class DownloadableAudioModel:
+    filename: str
+    name: str
+    model_type: str
+    method: str
+    stems: tuple[str, ...]
+
+
+@dataclass(frozen=True)
 class AudioSeparatorRuntime:
     python_path: Path
 
@@ -171,25 +182,92 @@ def default_audio_separator_runtime() -> AudioSeparatorRuntime:
     )
 
 
-def discover_uvr_models(uvr_root: Path | None = None) -> tuple[UVRModel, ...]:
-    root = Path(uvr_root or default_uvr_root()).expanduser()
-    definitions: tuple[tuple[str, Path, str], ...] = (
-        (MDX_METHOD, root / "models" / "MDX_Net_Models", "*.onnx"),
-        (VR_METHOD, root / "models" / "VR_Models", "*.pth"),
-    )
-    models: list[UVRModel] = []
-    for method, directory, pattern in definitions:
-        if directory.is_dir():
-            models.extend(_models_from_paths(method, directory.glob(pattern)))
+def default_managed_audio_models_root() -> Path:
+    configured = os.environ.get("GALAXY_AUDIO_MODELS_ROOT", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
+    return base / "GalaxyAIStudio" / "models" / "AudioSeparator" / "model_store"
 
-    demucs_root = root / "models" / "Demucs_Models"
-    if demucs_root.is_dir():
-        models.extend(_models_from_paths(DEMUCS_METHOD, demucs_root.rglob("*.yaml")))
+
+def discover_uvr_models(
+    uvr_root: Path | None = None,
+    managed_root: Path | None = None,
+) -> tuple[UVRModel, ...]:
+    roots = [Path(uvr_root or default_uvr_root()).expanduser()]
+    if managed_root is not None:
+        roots.append(Path(managed_root).expanduser())
+    elif uvr_root is None:
+        roots.append(default_managed_audio_models_root())
+
+    models: list[UVRModel] = []
+    seen: set[tuple[str, str]] = set()
+    for root in roots:
+        definitions: tuple[tuple[str, Path, str], ...] = (
+            (MDX_METHOD, root / "models" / "MDX_Net_Models", "*.onnx"),
+            (MDXC_METHOD, root / "models" / "MDX_Net_Models", "*.ckpt"),
+            (VR_METHOD, root / "models" / "VR_Models", "*.pth"),
+        )
+        discovered: list[UVRModel] = []
+        for method, directory, pattern in definitions:
+            if directory.is_dir():
+                discovered.extend(_models_from_paths(method, directory.glob(pattern)))
+
+        demucs_root = root / "models" / "Demucs_Models"
+        if demucs_root.is_dir():
+            discovered.extend(_models_from_paths(DEMUCS_METHOD, demucs_root.rglob("*.yaml")))
+
+        for model in discovered:
+            key = (model.method, model.filename.casefold())
+            if key not in seen:
+                seen.add(key)
+                models.append(model)
 
     method_order = {method: index for index, method in enumerate(AUDIO_PROCESS_METHODS)}
     return tuple(
         sorted(models, key=lambda model: (method_order[model.method], model.label.casefold()))
     )
+
+
+def audio_method_for_model_type(model_type: str) -> str:
+    normalized = model_type.strip().upper()
+    return {
+        "MDX": MDX_METHOD,
+        "MDXC": MDXC_METHOD,
+        "VR": VR_METHOD,
+        "DEMUCS": DEMUCS_METHOD,
+    }.get(normalized, MDXC_METHOD)
+
+
+def audio_model_download_dir(model_type: str, root: Path | None = None) -> Path:
+    base = Path(root or default_managed_audio_models_root()).expanduser()
+    method = audio_method_for_model_type(model_type)
+    if method == VR_METHOD:
+        return base / "models" / "VR_Models"
+    if method == DEMUCS_METHOD:
+        return base / "models" / "Demucs_Models" / "v3_v4_repo"
+    return base / "models" / "MDX_Net_Models"
+
+
+def serialize_downloadable_audio_models(
+    catalog: Iterable[DownloadableAudioModel],
+    installed_models: Iterable[UVRModel],
+) -> list[dict[str, object]]:
+    installed = {
+        (model.method, model.filename.casefold()) for model in installed_models
+    }
+    return [
+        {
+            "filename": model.filename,
+            "name": model.name,
+            "model_type": model.model_type,
+            "method": model.method,
+            "stems": list(model.stems),
+            "installed": (model.method, model.filename.casefold()) in installed,
+        }
+        for model in catalog
+    ]
 
 
 def _models_from_paths(method: str, paths: Iterable[Path]) -> list[UVRModel]:
@@ -217,6 +295,135 @@ def _model_label(filename: str) -> str:
     if filename in known_labels:
         return known_labels[filename]
     return Path(filename).stem.replace("_", " ").replace("-", " ")
+
+
+def _audio_separator_environment() -> dict[str, str]:
+    environment = os.environ.copy()
+    ffmpeg = find_ffmpeg()
+    if ffmpeg:
+        environment["PATH"] = (
+            f"{Path(ffmpeg).parent}{os.pathsep}{environment.get('PATH', '')}"
+        )
+    return environment
+
+
+def list_downloadable_audio_models(
+    runtime: AudioSeparatorRuntime | None = None,
+    managed_root: Path | None = None,
+) -> tuple[DownloadableAudioModel, ...]:
+    selected_runtime = runtime or default_audio_separator_runtime()
+    if not selected_runtime.python_path.is_file():
+        raise RuntimeError(
+            f"Runtime chưa được cài: {selected_runtime.python_path}\n"
+            "Cài engine tách âm thanh trước khi mở kho model."
+        )
+
+    catalog_dir = Path(managed_root or default_managed_audio_models_root()) / ".catalog"
+    catalog_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="galaxy_audio_catalog_") as temp_dir:
+        output_path = Path(temp_dir) / "catalog.json"
+        script = (
+            "import json,sys;"
+            "from pathlib import Path;"
+            "from audio_separator.separator import Separator;"
+            "separator=Separator(log_level=40,model_file_dir=sys.argv[1]);"
+            "catalog=separator.get_simplified_model_list();"
+            "Path(sys.argv[2]).write_text(json.dumps(catalog,ensure_ascii=True),encoding='utf-8')"
+        )
+        try:
+            completed = subprocess.run(
+                [
+                    str(selected_runtime.python_path),
+                    "-c",
+                    script,
+                    str(catalog_dir),
+                    str(output_path),
+                ],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+                timeout=120,
+                env=_audio_separator_environment(),
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        except (OSError, subprocess.TimeoutExpired) as error:
+            raise RuntimeError(f"Không đọc được kho model audio-separator: {error}") from error
+        if completed.returncode != 0 or not output_path.is_file():
+            detail = completed.stderr.strip() or completed.stdout.strip()
+            raise RuntimeError(detail or "audio-separator không trả về danh sách model.")
+        try:
+            payload = json.loads(output_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as error:
+            raise RuntimeError(f"Danh sách model không hợp lệ: {error}") from error
+
+    if not isinstance(payload, dict):
+        raise RuntimeError("Danh sách model audio-separator không đúng định dạng.")
+    models: list[DownloadableAudioModel] = []
+    for filename, details in payload.items():
+        if not isinstance(filename, str) or not isinstance(details, dict):
+            continue
+        model_type = str(details.get("Type") or "").strip()
+        raw_stems = details.get("Stems")
+        stems = tuple(str(stem) for stem in raw_stems) if isinstance(raw_stems, list) else ()
+        models.append(
+            DownloadableAudioModel(
+                filename=filename,
+                name=str(details.get("Name") or _model_label(filename)),
+                model_type=model_type,
+                method=audio_method_for_model_type(model_type),
+                stems=stems,
+            )
+        )
+    return tuple(sorted(models, key=lambda model: (model.method, model.name.casefold())))
+
+
+def download_audio_model(
+    model: DownloadableAudioModel,
+    *,
+    runtime: AudioSeparatorRuntime | None = None,
+    managed_root: Path | None = None,
+    progress: ProgressCallback | None = None,
+    stop_event: threading.Event | None = None,
+    task_id: str | None = None,
+) -> Path:
+    if Path(model.filename).name != model.filename:
+        raise ValueError("Tên model không hợp lệ.")
+    selected_runtime = runtime or default_audio_separator_runtime()
+    if not selected_runtime.python_path.is_file():
+        raise RuntimeError(f"Runtime chưa được cài: {selected_runtime.python_path}")
+
+    destination = audio_model_download_dir(model.model_type, managed_root)
+    destination.mkdir(parents=True, exist_ok=True)
+    report = progress or (lambda _message: None)
+    cancellation = stop_event or threading.Event()
+    report(f"Đang tải {model.name}...")
+    script = (
+        "import sys;"
+        "from audio_separator.separator import Separator;"
+        "separator=Separator(log_level=20,model_file_dir=sys.argv[1]);"
+        "separator.download_model_and_data(sys.argv[2]);"
+        "print('Model download complete')"
+    )
+    _run_streaming_command(
+        [
+            str(selected_runtime.python_path),
+            "-c",
+            script,
+            str(destination),
+            model.filename,
+        ],
+        report,
+        cancellation,
+        env=_audio_separator_environment(),
+        task_id=task_id,
+    )
+    matches = tuple(destination.rglob(model.filename))
+    if not matches:
+        raise RuntimeError("Đã tải xong nhưng không tìm thấy file model trong kho Galaxy.")
+    report(f"Đã cài model {model.name}.")
+    return matches[0]
 
 
 def normalize_audio_method(value: str) -> str:
@@ -263,9 +470,10 @@ def resolve_audio_device(
         return CPU_AUDIO_DEVICE
     has_directml = os.name == "nt" if directml_available is None else directml_available
     if selected == DIRECTML_AUDIO_DEVICE:
-        if normalized_method == DEMUCS_METHOD:
+        if normalized_method in {MDXC_METHOD, DEMUCS_METHOD}:
             raise RuntimeError(
-                "Demucs does not support DirectML reliably. Choose Auto, CPU, or NVIDIA CUDA."
+                f"{AUDIO_PROCESS_METHOD_LABELS[normalized_method]} không hỗ trợ DirectML ổn định. "
+                "Chọn Tự động, CPU hoặc NVIDIA CUDA."
             )
         if not has_directml:
             raise RuntimeError("DirectML is only available on supported Windows GPUs.")
@@ -404,6 +612,11 @@ def build_audio_separator_command(
             command.extend(["--demucs_segment_size", str(int(segment_size))])
         if overlap and overlap.lower() != "default":
             command.extend(["--demucs_overlap", _normalized_float(overlap, 0.0, 0.99)])
+    elif method == MDXC_METHOD:
+        if segment_size and segment_size.lower() != "default":
+            command.extend(["--mdxc_segment_size", str(int(segment_size))])
+        if overlap and overlap.lower() != "default":
+            command.extend(["--mdxc_overlap", str(int(overlap))])
 
     command.append(str(input_path))
     return command
@@ -551,14 +764,9 @@ def separate_audio(
                 working_input,
                 resolved_device,
             )
-            environment = os.environ.copy()
+            environment = _audio_separator_environment()
             if resolved_device == CPU_AUDIO_DEVICE:
                 environment["CUDA_VISIBLE_DEVICES"] = ""
-            bundled_ffmpeg = find_ffmpeg()
-            if bundled_ffmpeg:
-                environment["PATH"] = (
-                    f"{Path(bundled_ffmpeg).parent}{os.pathsep}{environment.get('PATH', '')}"
-                )
             _run_streaming_command(
                 command,
                 report,

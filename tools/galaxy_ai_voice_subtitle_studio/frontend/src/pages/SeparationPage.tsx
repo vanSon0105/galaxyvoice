@@ -4,14 +4,16 @@ import { useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   deleteAudioPreset,
   fetchAudioMeta,
+  fetchAudioModelCatalog,
   fetchAudioModels,
   fetchAudioPresets,
   fetchAudioRuntime,
   installAudioRuntime,
   saveAudioPreset,
+  startAudioModelDownload,
   startAudioSeparation,
 } from '../api/audio'
-import type { AudioPreset, SeparationResult } from '../api/audio'
+import type { AudioPreset, DownloadableAudioModel, SeparationResult } from '../api/audio'
 import { fetchSettings, updateSettings } from '../api/settings'
 import type { AppSettings } from '../api/settings'
 import { openPath } from '../api/voice'
@@ -51,9 +53,19 @@ export function SeparationPage() {
   const [presetName, setPresetName] = useState('')
   const [result, setResult] = useState<SeparationResult | null>(null)
   const [message, setMessage] = useState('')
+  const [modelLibraryOpen, setModelLibraryOpen] = useState(false)
+  const [modelSearch, setModelSearch] = useState('')
+  const [catalogMethod, setCatalogMethod] = useState('all')
+  const [selectedCatalogFilename, setSelectedCatalogFilename] = useState('')
 
   const settings = settingsQuery.data
   const meta = metaQuery.data
+  const catalogQuery = useQuery({
+    queryKey: ['audio-model-catalog'],
+    queryFn: () => fetchAudioModelCatalog(),
+    enabled: modelLibraryOpen,
+    staleTime: 10 * 60 * 1000,
+  })
   const seeded = useRef(false)
   useEffect(() => {
     if (!settings || seeded.current) return
@@ -79,6 +91,20 @@ export function SeparationPage() {
     [modelsQuery.data, method],
   )
   const controls = meta?.method_controls[method]
+  const filteredCatalog = useMemo(() => {
+    const needle = modelSearch.trim().toLocaleLowerCase()
+    return (catalogQuery.data ?? []).filter((model) => {
+      if (catalogMethod !== 'all' && model.method !== catalogMethod) return false
+      if (!needle) return true
+      return `${model.name} ${model.filename} ${model.stems.join(' ')}`
+        .toLocaleLowerCase()
+        .includes(needle)
+    })
+  }, [catalogMethod, catalogQuery.data, modelSearch])
+  const selectedCatalogModel = useMemo(
+    () => (catalogQuery.data ?? []).find((model) => model.filename === selectedCatalogFilename),
+    [catalogQuery.data, selectedCatalogFilename],
+  )
   const allPresets = useMemo(
     () => ({ ...(presetsQuery.data?.builtin ?? {}), ...(presetsQuery.data?.custom ?? {}) }),
     [presetsQuery.data],
@@ -96,6 +122,16 @@ export function SeparationPage() {
     if (!controls.segment_values.includes(segmentSize)) setSegmentSize(controls.segment_default)
     if (!controls.overlap_values.includes(overlap)) setOverlap(controls.overlap_default)
   }, [controls, overlap, segmentSize])
+
+  useEffect(() => {
+    if (filteredCatalog.length === 0) {
+      setSelectedCatalogFilename('')
+      return
+    }
+    if (!filteredCatalog.some((model) => model.filename === selectedCatalogFilename)) {
+      setSelectedCatalogFilename(filteredCatalog[0].filename)
+    }
+  }, [filteredCatalog, selectedCatalogFilename])
 
   const selectedRuntimeDevice = gpuConversion ? device : 'cpu'
   const runtimeQuery = useQuery({
@@ -234,6 +270,44 @@ export function SeparationPage() {
     }
   }
 
+  const selectInstalledModel = (model: DownloadableAudioModel) => {
+    setMethod(model.method)
+    setModelFilename(model.filename)
+    setMessage(`Đã chọn model “${model.name}”.`)
+  }
+
+  const startModelDownload = async (): Promise<string> => {
+    if (!selectedCatalogModel) throw new Error('Chọn một model để tải.')
+    const response = await startAudioModelDownload(selectedCatalogModel.filename)
+    return response.task_id
+  }
+
+  const onModelDownloaded = (task: TaskState) => {
+    if (task.status === 'done') {
+      const downloadedFilename = String(
+        (task.result as { filename?: string } | undefined)?.filename ?? '',
+      )
+      const downloadedModel = (catalogQuery.data ?? []).find(
+        (model) => model.filename === downloadedFilename,
+      )
+      if (downloadedModel) {
+        setMethod(downloadedModel.method)
+        setModelFilename(downloadedModel.filename)
+        setMessage(`Đã tải và chọn model “${downloadedModel.name}”.`)
+      } else {
+        setMessage('Đã tải model. Danh sách model đang được làm mới.')
+      }
+      void Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['audio-models'] }),
+        queryClient.invalidateQueries({ queryKey: ['audio-model-catalog'] }),
+      ])
+    } else if (task.status === 'failed') {
+      setMessage(task.error ?? 'Tải model thất bại.')
+    } else if (task.status === 'cancelled') {
+      setMessage('Đã dừng tải model.')
+    }
+  }
+
   return (
     <div className="separation-page">
       <header className="workspace-heading">
@@ -302,6 +376,9 @@ export function SeparationPage() {
               >
                 Làm mới model
               </button>
+              <button className="btn" onClick={() => setModelLibraryOpen((open) => !open)}>
+                {modelLibraryOpen ? 'Đóng kho model' : 'Kho model'}
+              </button>
             </div>
             <div className="field-grid">
               <div className="field">
@@ -353,6 +430,106 @@ export function SeparationPage() {
               </div>
             </div>
           </section>
+
+          {modelLibraryOpen && (
+            <section className="section-card model-library">
+              <div className="section-header compact">
+                <div>
+                  <h2 className="section-title">Kho model</h2>
+                  <p className="section-subtitle">
+                    Model công khai do audio-separator hỗ trợ; chỉ tải khi bạn chọn.
+                  </p>
+                </div>
+                <button
+                  className="btn"
+                  disabled={catalogQuery.isFetching}
+                  onClick={() => void fetchAudioModelCatalog(true)
+                    .then((models) => {
+                      queryClient.setQueryData(['audio-model-catalog'], models)
+                      setMessage(`Đã cập nhật catalog với ${models.length} model.`)
+                    })
+                    .catch((error: unknown) => setMessage(
+                      error instanceof Error ? error.message : String(error),
+                    ))}
+                >
+                  Cập nhật catalog
+                </button>
+              </div>
+              <div className="model-library-toolbar">
+                <input
+                  aria-label="Tìm model"
+                  placeholder="Tìm theo tên, file hoặc stem..."
+                  value={modelSearch}
+                  onChange={(event) => setModelSearch(event.target.value)}
+                />
+                <select
+                  aria-label="Lọc phương pháp model"
+                  value={catalogMethod}
+                  onChange={(event) => setCatalogMethod(event.target.value)}
+                >
+                  <option value="all">Tất cả phương pháp</option>
+                  {(meta?.methods ?? []).map((item) => (
+                    <option key={item.code} value={item.code}>{item.label}</option>
+                  ))}
+                </select>
+              </div>
+              {catalogQuery.isLoading && <p className="model-library-state">Đang đọc catalog model...</p>}
+              {catalogQuery.isError && (
+                <p className="model-library-state error-text">
+                  {catalogQuery.error instanceof Error ? catalogQuery.error.message : String(catalogQuery.error)}
+                </p>
+              )}
+              {!catalogQuery.isLoading && !catalogQuery.isError && (
+                <div className="model-catalog-list" role="listbox" aria-label="Danh sách model có thể tải">
+                  {filteredCatalog.map((model) => (
+                    <button
+                      key={model.filename}
+                      type="button"
+                      role="option"
+                      aria-selected={selectedCatalogFilename === model.filename}
+                      className={`model-catalog-row${selectedCatalogFilename === model.filename ? ' selected' : ''}`}
+                      onClick={() => setSelectedCatalogFilename(model.filename)}
+                    >
+                      <span className="model-catalog-main">
+                        <strong>{model.name}</strong>
+                        <small>{model.stems.join(' · ') || model.filename}</small>
+                      </span>
+                      <span className="model-catalog-meta">
+                        <span>{model.model_type}</span>
+                        <span className={model.installed ? 'installed' : ''}>
+                          {model.installed ? 'Đã cài' : 'Chưa cài'}
+                        </span>
+                      </span>
+                    </button>
+                  ))}
+                  {filteredCatalog.length === 0 && (
+                    <p className="model-library-state">Không có model khớp bộ lọc.</p>
+                  )}
+                </div>
+              )}
+              <div className="model-library-actions">
+                {selectedCatalogModel?.installed ? (
+                  <button
+                    className="btn accent"
+                    onClick={() => selectInstalledModel(selectedCatalogModel)}
+                  >
+                    Dùng model này
+                  </button>
+                ) : (
+                  <TaskButton
+                    label="Tải model đã chọn"
+                    variant="accent"
+                    onStart={startModelDownload}
+                    onFinish={onModelDownloaded}
+                    disabled={!selectedCatalogModel || !runtimeQuery.data?.ready}
+                  />
+                )}
+                <span className="field-hint">
+                  {selectedCatalogModel?.filename ?? 'Chọn model trong danh sách.'}
+                </span>
+              </div>
+            </section>
+          )}
         </div>
 
         <aside>
@@ -376,6 +553,7 @@ export function SeparationPage() {
             <dl className="runtime-details">
               <dt>Thiết bị</dt><dd>{runtimeQuery.data?.resolved_device ?? selectedRuntimeDevice}</dd>
               <dt>Model UVR</dt><dd>{meta?.uvr_root ?? 'Đang tải...'}</dd>
+              <dt>Kho Galaxy</dt><dd>{meta?.managed_models_root ?? 'Đang tải...'}</dd>
               <dt>Python</dt><dd>{meta?.runtime_path ?? 'Đang tải...'}</dd>
             </dl>
             <div className="toolbar-row">

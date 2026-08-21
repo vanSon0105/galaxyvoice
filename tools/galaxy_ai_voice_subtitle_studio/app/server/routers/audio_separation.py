@@ -23,13 +23,17 @@ from ...audio_separation.service import (
     AudioSeparationOptions,
     audio_separator_runtime_ready,
     default_audio_separator_runtime,
+    default_managed_audio_models_root,
     default_uvr_root,
+    download_audio_model,
     discover_uvr_models,
+    list_downloadable_audio_models,
     load_audio_presets,
     normalize_audio_device,
     normalize_audio_method,
     resolve_audio_device,
     save_audio_presets,
+    serialize_downloadable_audio_models,
 )
 from ...common.config import default_config_path
 from ...common.paths import studio_root
@@ -42,6 +46,7 @@ router = APIRouter(prefix="/api/audio", tags=["audio-separation"])
 _CACHE_TTL_SECONDS = 60.0
 _cache_lock = threading.Lock()
 _models_cache: tuple[float, tuple[Any, ...]] | None = None
+_catalog_cache: tuple[float, tuple[Any, ...]] | None = None
 _runtime_cache: dict[tuple[str, str], tuple[float, dict[str, Any]]] = {}
 _runtime_probes: set[tuple[str, str]] = set()
 
@@ -53,6 +58,14 @@ _METHOD_CONTROLS = {
         "overlap_label": "Overlap",
         "overlap_values": ["Default", "0.10", "0.25", "0.50", "0.75"],
         "overlap_default": "Default",
+    },
+    "mdxc": {
+        "segment_label": "Segment size",
+        "segment_values": ["Default", "32", "64", "128", "256", "512"],
+        "segment_default": "256",
+        "overlap_label": "Overlap",
+        "overlap_values": ["Default", "2", "4", "8", "16"],
+        "overlap_default": "8",
     },
     "vr": {
         "segment_label": "Window size",
@@ -92,6 +105,10 @@ class SeparateRequest(BaseModel):
     vocals_only: bool = False
     instrumental_only: bool = False
     sample_mode: bool = False
+
+
+class DownloadModelRequest(BaseModel):
+    filename: str
 
 
 def _settings_path(request: Request) -> Path:
@@ -168,6 +185,24 @@ def _cached_models(*, force: bool = False) -> tuple[Any, ...]:
     return models
 
 
+def _cached_catalog(*, force: bool = False) -> tuple[Any, ...]:
+    global _catalog_cache
+    now = time.monotonic()
+    with _cache_lock:
+        if not force and _catalog_cache is not None and now - _catalog_cache[0] < 600:
+            return _catalog_cache[1]
+    models = list_downloadable_audio_models()
+    with _cache_lock:
+        _catalog_cache = (now, models)
+    return models
+
+
+def _invalidate_models_cache() -> None:
+    global _models_cache
+    with _cache_lock:
+        _models_cache = None
+
+
 def _run_runtime_probe(key: tuple[str, str]) -> None:
     device, method = key
     try:
@@ -242,6 +277,7 @@ def get_meta() -> dict[str, Any]:
         "method_controls": _METHOD_CONTROLS,
         "builtin_presets": _builtin_presets(),
         "uvr_root": str(uvr_root),
+        "managed_models_root": str(default_managed_audio_models_root()),
         "runtime_path": str(runtime.python_path),
         "installer_available": installer.is_file(),
     }
@@ -257,6 +293,47 @@ def get_models(refresh: bool = False) -> list[dict[str, Any]]:
         }
         for model in _cached_models(force=refresh)
     ]
+
+
+@router.get("/models/catalog")
+def get_model_catalog(refresh: bool = False) -> list[dict[str, object]]:
+    try:
+        catalog = _cached_catalog(force=refresh)
+        return serialize_downloadable_audio_models(catalog, discover_uvr_models())
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+
+
+@router.post("/models/download")
+def start_model_download(body: DownloadModelRequest) -> dict[str, str]:
+    filename = body.filename.strip()
+    if not filename or Path(filename).name != filename:
+        raise HTTPException(status_code=422, detail="Tên model không hợp lệ.")
+    try:
+        model = next(
+            (candidate for candidate in _cached_catalog() if candidate.filename == filename),
+            None,
+        )
+    except RuntimeError as error:
+        raise HTTPException(status_code=503, detail=str(error)) from error
+    if model is None:
+        raise HTTPException(status_code=404, detail="Model không còn trong catalog audio-separator.")
+
+    record = task_registry.create("audio-model-download")
+    record.on_cancel = lambda: managed_media_processes.terminate_task(record.task_id)
+
+    def run_download() -> Path:
+        path = download_audio_model(
+            model,
+            progress=_progress(record),
+            stop_event=record.stop_event,
+            task_id=record.task_id,
+        )
+        _invalidate_models_cache()
+        return path
+
+    run_task(record, run_download, lambda path: {"path": str(path), "filename": filename})
+    return {"task_id": record.task_id}
 
 
 @router.get("/runtime")
@@ -389,8 +466,9 @@ def start_separation(body: SeparateRequest) -> dict[str, str]:
 
 def reset_audio_api_caches() -> None:
     """Clear process-local caches for tests and explicit refresh workflows."""
-    global _models_cache
+    global _catalog_cache, _models_cache
     with _cache_lock:
         _models_cache = None
+        _catalog_cache = None
         _runtime_cache.clear()
         _runtime_probes.clear()

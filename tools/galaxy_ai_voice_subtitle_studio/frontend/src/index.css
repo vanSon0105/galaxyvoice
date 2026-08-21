@@ -602,6 +602,126 @@ body {
   height: 32px;
 }
 
+.model-library-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(180px, 240px);
+  gap: 8px;
+  margin: 12px 0 8px;
+}
+
+.model-library-toolbar input,
+.model-library-toolbar select {
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  background: var(--color-input);
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  color: var(--color-fg);
+  font: inherit;
+  padding: 6px 9px;
+  outline: none;
+}
+
+.model-library-toolbar input:focus,
+.model-library-toolbar select:focus {
+  border-color: var(--color-accent);
+}
+
+.model-catalog-list {
+  height: 300px;
+  overflow-y: auto;
+  border: 1px solid var(--border-soft);
+  background: var(--color-preview);
+}
+
+.model-catalog-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  width: 100%;
+  min-height: 58px;
+  gap: 14px;
+  border: 0;
+  border-bottom: 1px solid var(--border-soft);
+  background: transparent;
+  color: var(--color-fg);
+  padding: 9px 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.model-catalog-row:hover,
+.model-catalog-row.selected {
+  background: var(--color-hover);
+}
+
+.model-catalog-row.selected {
+  box-shadow: inset 3px 0 0 var(--color-accent);
+}
+
+.model-catalog-main,
+.model-catalog-meta {
+  display: flex;
+}
+
+.model-catalog-main {
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.model-catalog-main strong,
+.model-catalog-main small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-catalog-main strong {
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.model-catalog-main small {
+  color: var(--color-fg-subtle);
+  font-size: 10.5px;
+}
+
+.model-catalog-meta {
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 4px;
+  color: var(--color-fg-subtle);
+  font-size: 10.5px;
+}
+
+.model-catalog-meta .installed {
+  color: var(--color-success);
+}
+
+.model-library-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 38px;
+  margin-top: 8px;
+}
+
+.model-library-actions .field-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.model-library-state {
+  margin: 0;
+  padding: 18px;
+  color: var(--color-fg-subtle);
+  text-align: center;
+}
+
 @media (max-width: 960px) {
   .separation-grid {
     grid-template-columns: minmax(0, 1fr);
@@ -610,6 +730,10 @@ body {
   .workspace-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .model-library-toolbar {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 

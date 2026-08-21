@@ -17,18 +17,24 @@ from app.audio_separation.service import (  # noqa: E402
     CUDA_AUDIO_DEVICE,
     DEMUCS_METHOD,
     DIRECTML_AUDIO_DEVICE,
+    MDXC_METHOD,
     MDX_METHOD,
     VR_METHOD,
     AudioSeparationOptions,
     AudioSeparatorRuntime,
+    DownloadableAudioModel,
+    UVRModel,
+    audio_model_download_dir,
     audio_separator_runtime_ready,
     build_audio_separator_command,
     build_prepare_audio_command,
+    download_audio_model,
     discover_uvr_models,
     load_audio_presets,
     resolve_audio_device,
     save_audio_presets,
     separate_audio,
+    serialize_downloadable_audio_models,
     _run_streaming_command,
 )
 
@@ -59,6 +65,94 @@ class AudioSeparationTests(unittest.TestCase):
             ],
         )
         self.assertEqual(models[0].label, "Kim Vocal 2")
+
+    def test_discovers_mdxc_models_from_the_local_model_layout(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            mdxc = root / "models" / "MDX_Net_Models"
+            mdxc.mkdir(parents=True)
+            (mdxc / "melband_roformer.ckpt").write_bytes(b"model")
+
+            models = discover_uvr_models(root)
+
+        self.assertEqual(len(models), 1)
+        self.assertEqual(models[0].method, MDXC_METHOD)
+
+    def test_catalog_marks_downloaded_models_and_maps_engine_types(self) -> None:
+        catalog = (
+            DownloadableAudioModel(
+                filename="Kim_Vocal_2.onnx",
+                name="Kim Vocal 2",
+                model_type="MDX",
+                method=MDX_METHOD,
+                stems=("vocals", "instrumental"),
+            ),
+            DownloadableAudioModel(
+                filename="melband_roformer.ckpt",
+                name="MelBand RoFormer",
+                model_type="MDXC",
+                method=MDXC_METHOD,
+                stems=("vocals", "instrumental"),
+            ),
+        )
+        installed = (
+            UVRModel(MDX_METHOD, "Kim Vocal 2", "Kim_Vocal_2.onnx", Path("models")),
+        )
+
+        payload = serialize_downloadable_audio_models(catalog, installed)
+
+        self.assertTrue(payload[0]["installed"])
+        self.assertFalse(payload[1]["installed"])
+        self.assertEqual(payload[1]["method"], MDXC_METHOD)
+
+    def test_model_download_directories_are_isolated_by_engine(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            self.assertEqual(
+                audio_model_download_dir("VR", root),
+                root / "models" / "VR_Models",
+            )
+            self.assertEqual(
+                audio_model_download_dir("MDXC", root),
+                root / "models" / "MDX_Net_Models",
+            )
+            self.assertEqual(
+                audio_model_download_dir("Demucs", root),
+                root / "models" / "Demucs_Models" / "v3_v4_repo",
+            )
+
+    def test_download_model_uses_the_isolated_runtime_and_verifies_output(self) -> None:
+        model = DownloadableAudioModel(
+            filename="Kim_Vocal_2.onnx",
+            name="Kim Vocal 2",
+            model_type="MDX",
+            method=MDX_METHOD,
+            stems=("vocals", "instrumental"),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            python_path = root / "runtime" / "python.exe"
+            python_path.parent.mkdir()
+            python_path.write_bytes(b"runtime")
+            runtime = AudioSeparatorRuntime(python_path)
+
+            def fake_run(command, _report, _stop_event, **_kwargs):
+                destination = Path(command[-2])
+                destination.mkdir(parents=True, exist_ok=True)
+                (destination / command[-1]).write_bytes(b"model")
+
+            with patch(
+                "app.audio_separation.service._run_streaming_command",
+                side_effect=fake_run,
+            ) as run:
+                downloaded = download_audio_model(
+                    model,
+                    runtime=runtime,
+                    managed_root=root / "managed",
+                )
+
+        self.assertEqual(downloaded.name, model.filename)
+        self.assertEqual(run.call_args.args[0][0], str(python_path))
 
     def test_auto_device_prefers_cuda_then_directml(self) -> None:
         self.assertEqual(
@@ -200,6 +294,29 @@ class AudioSeparationTests(unittest.TestCase):
             demucs_command[demucs_command.index("--demucs_segment_size") + 1], "30"
         )
         self.assertEqual(demucs_command[demucs_command.index("--demucs_overlap") + 1], "0.25")
+
+    def test_builds_mdxc_specific_arguments(self) -> None:
+        runtime = AudioSeparatorRuntime(Path("python"))
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            model_path = root / "melband_roformer.ckpt"
+            model_path.write_bytes(b"model")
+            model = discover_uvr_models_from_paths_for_test(MDXC_METHOD, model_path)
+            options = AudioSeparationOptions(
+                input_path=root / "song.wav",
+                output_dir=root / "output",
+                method=MDXC_METHOD,
+                model_filename=model.filename,
+                segment_size="256",
+                overlap="8",
+            )
+
+            command = build_audio_separator_command(
+                runtime, options, model, root / "output", options.input_path, CPU_AUDIO_DEVICE
+            )
+
+        self.assertEqual(command[command.index("--mdxc_segment_size") + 1], "256")
+        self.assertEqual(command[command.index("--mdxc_overlap") + 1], "8")
 
     def test_video_is_prepared_as_stereo_44k_audio(self) -> None:
         command = build_prepare_audio_command(

@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -17,6 +18,7 @@ from app.voice.srt import SubtitleCue  # noqa: E402
 from app.common.errors import TaskCancelledError  # noqa: E402
 from app.voice.translator import (  # noqa: E402
     AITranslationOptions,
+    _chat_completion,
     _extract_translations,
     _salvage_json_translations,
     default_translation_api_key,
@@ -95,6 +97,134 @@ class TranslatorTests(unittest.TestCase):
 
         self.assertEqual([cue.text for cue in translated], [f"\u0110\u00e3 d\u1ecbch Source {index}" for index in range(1, 5)])
         self.assertEqual([cue.index for cue in translated], [1, 2, 3, 4])
+
+    def test_nvidia_translation_serializes_batches_even_when_more_workers_are_requested(self) -> None:
+        cues = [
+            SubtitleCue(index=index, start_ms=index, end_ms=index + 1, text=f"Source {index}")
+            for index in range(1, 5)
+        ]
+        active = 0
+        maximum_active = 0
+        active_lock = threading.Lock()
+
+        def fake_client(messages, _options):
+            nonlocal active, maximum_active
+            payload = json.loads(messages[1]["content"].rsplit("\n\n", 1)[-1])
+            with active_lock:
+                active += 1
+                maximum_active = max(maximum_active, active)
+            time.sleep(0.02)
+            with active_lock:
+                active -= 1
+            return json.dumps(
+                {"translations": [f"Đã dịch {payload[0]['text']}"]},
+                ensure_ascii=False,
+            )
+
+        translated = translate_cues(
+            cues,
+            AITranslationOptions(
+                source_language="en",
+                target_language="vi",
+                provider="nvidia",
+                api_key="nvapi-test-key",
+                model="nvidia/nemotron-3-super-120b-a12b",
+                batch_size=1,
+                max_workers=6,
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(maximum_active, 1)
+        self.assertEqual(len(translated), 4)
+
+    def test_riva_translation_uses_language_pair_and_preserves_batch_shape(self) -> None:
+        cues = [
+            SubtitleCue(index=1, start_ms=0, end_ms=1000, text="等一下"),
+            SubtitleCue(index=2, start_ms=1000, end_ms=2000, text="开始吧"),
+        ]
+
+        def fake_client(messages, _options):
+            self.assertEqual(messages[0], {"role": "system", "content": "zh-cn-vi"})
+            self.assertEqual(json.loads(messages[1]["content"]), ["等一下", "开始吧"])
+            return json.dumps(["Chờ một chút.", "Bắt đầu thôi."], ensure_ascii=False)
+
+        translated = translate_cues(
+            cues,
+            AITranslationOptions(
+                source_language="auto",
+                target_language="vi",
+                provider="nvidia",
+                api_key="nvapi-test-key",
+                model="nvidia/riva-translate-4b-instruct-v2",
+                batch_size=2,
+                max_workers=6,
+            ),
+            client=fake_client,
+        )
+
+        self.assertEqual(
+            [cue.text for cue in translated],
+            ["Chờ một chút.", "Bắt đầu thôi."],
+        )
+
+    def test_nvidia_chat_completion_waits_for_rate_limit_slot(self) -> None:
+        response = MagicMock()
+        response.read.return_value = json.dumps(
+            {"choices": [{"message": {"content": "ok"}}]}
+        ).encode("utf-8")
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        options = AITranslationOptions(
+            source_language="en",
+            target_language="vi",
+            provider="nvidia",
+            api_key="nvapi-test-key",
+            model="nvidia/nemotron-3-super-120b-a12b",
+            base_url="https://integrate.api.nvidia.com/v1",
+        )
+
+        with patch("app.voice.translator._wait_for_nvidia_request") as wait_for_slot, patch(
+            "urllib.request.urlopen", return_value=response
+        ):
+            result = _chat_completion([{"role": "user", "content": "hello"}], options)
+
+        self.assertEqual(result, "ok")
+        wait_for_slot.assert_called_once_with()
+
+    def test_nvidia_chat_completion_retries_rate_limit_response(self) -> None:
+        response = MagicMock()
+        response.read.return_value = json.dumps(
+            {"choices": [{"message": {"content": "ok"}}]}
+        ).encode("utf-8")
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+        rate_limited = urllib.error.HTTPError(
+            "https://integrate.api.nvidia.com/v1/chat/completions",
+            429,
+            "Too Many Requests",
+            {"Retry-After": "0"},
+            None,
+        )
+        options = AITranslationOptions(
+            source_language="en",
+            target_language="vi",
+            provider="nvidia",
+            api_key="nvapi-test-key",
+            model="nvidia/nemotron-3-super-120b-a12b",
+            base_url="https://integrate.api.nvidia.com/v1",
+        )
+
+        with patch("app.voice.translator._wait_for_nvidia_request") as wait_for_slot, patch(
+            "app.voice.translator.time.sleep"
+        ) as sleep, patch(
+            "urllib.request.urlopen", side_effect=[rate_limited, response]
+        ):
+            result = _chat_completion([{"role": "user", "content": "hello"}], options)
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(wait_for_slot.call_count, 2)
+        sleep.assert_called_once_with(0.0)
 
     def test_translate_cues_splits_a_batch_when_ai_returns_too_few_lines(self) -> None:
         cues = [
@@ -1225,6 +1355,27 @@ class TranslatorTests(unittest.TestCase):
                 self.assertEqual(default_translation_model("deepseek"), "deepseek-v4-flash")
                 self.assertEqual(default_translation_base_url("deepseek"), "https://api.deepseek.com")
 
+    def test_nvidia_provider_uses_nim_defaults_and_galaxy_key(self) -> None:
+        with patch.dict(
+            os.environ,
+            {"GALAXY_NVIDIA_API_KEY": "nvapi-test-key"},
+            clear=True,
+        ):
+            with patch("app.common.env_config._read_windows_environment", return_value=""):
+                self.assertEqual(default_translation_api_key("nvidia"), "nvapi-test-key")
+                self.assertEqual(
+                    default_translation_model("nvidia"),
+                    "nvidia/riva-translate-4b-instruct-v2",
+                )
+                self.assertEqual(
+                    default_translation_base_url("nvidia"),
+                    "https://integrate.api.nvidia.com/v1",
+                )
+
+    def test_nvidia_label_and_alias_normalize_to_nvidia(self) -> None:
+        self.assertEqual(translation_provider_code("NVIDIA NIM"), "nvidia")
+        self.assertEqual(translation_provider_code("nim"), "nvidia")
+
     def test_provider_label_roundtrip_accepts_chatgpt_label(self) -> None:
         label = translation_provider_label("openai")
         self.assertEqual(label, "ChatGPT / OpenAI")
@@ -1249,6 +1400,39 @@ class TranslatorTests(unittest.TestCase):
         request = urlopen.call_args.args[0]
         self.assertEqual(request.full_url, "https://api.groq.com/openai/v1/models")
         self.assertEqual(request.headers["Authorization"], "Bearer env-secret")
+
+    def test_nvidia_model_discovery_filters_non_translation_models_and_prioritizes_riva(self) -> None:
+        response = MagicMock()
+        response.read.return_value = json.dumps(
+            {
+                "data": [
+                    {"id": "nvidia/nemotron-3-super-120b-a12b"},
+                    {"id": "nvidia/llama-nemotron-embed-1b-v2"},
+                    {"id": "baai/bge-m3"},
+                    {"id": "deepseek-ai/deepseek-coder-6.7b-instruct"},
+                    {"id": "nvidia/nemotron-nano-12b-v2-vl"},
+                    {"id": "meta/llama-3.3-70b-instruct"},
+                    {"id": "nvidia/riva-translate-4b-instruct-v1.1"},
+                    {"id": "nvidia/riva-translate-4b-instruct-v2"},
+                    {"id": "nvidia/llama-3.1-nemoguard-8b-content-safety"},
+                ]
+            }
+        ).encode("utf-8")
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+
+        with patch("urllib.request.urlopen", return_value=response):
+            models = fetch_translation_models("nvidia", api_key="nvapi-test-key")
+
+        self.assertEqual(
+            models,
+            (
+                "nvidia/riva-translate-4b-instruct-v2",
+                "nvidia/riva-translate-4b-instruct-v1.1",
+                "meta/llama-3.3-70b-instruct",
+                "nvidia/nemotron-3-super-120b-a12b",
+            ),
+        )
 
 
     def test_extract_translations_salvages_missing_colon(self) -> None:

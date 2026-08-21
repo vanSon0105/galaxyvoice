@@ -80,8 +80,18 @@ class SettingsApiTests(unittest.TestCase):
         self.assertTrue(body["whisper_models"])
         self.assertTrue(body["translation_providers"])
         self.assertEqual(
-            {"openai", "deepseek", "gemini", "groq", "openrouter", "mistral", "xai", "ollama"},
+            {"openai", "deepseek", "gemini", "groq", "openrouter", "mistral", "xai", "nvidia", "ollama"},
             {provider["code"] for provider in body["translation_providers"]},
+        )
+        providers = {provider["code"]: provider for provider in body["translation_providers"]}
+        self.assertEqual(providers["nvidia"]["label"], "NVIDIA NIM")
+        self.assertEqual(
+            providers["nvidia"]["default_model"],
+            "nvidia/riva-translate-4b-instruct-v2",
+        )
+        self.assertEqual(
+            providers["nvidia"]["api_key_environment_name"],
+            "GALAXY_NVIDIA_API_KEY",
         )
         self.assertTrue(
             all(

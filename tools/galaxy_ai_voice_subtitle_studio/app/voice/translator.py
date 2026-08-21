@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 import unicodedata
 import urllib.error
 import urllib.parse
@@ -26,6 +27,7 @@ GROQ_TRANSLATION_PROVIDER = "groq"
 OPENROUTER_TRANSLATION_PROVIDER = "openrouter"
 MISTRAL_TRANSLATION_PROVIDER = "mistral"
 XAI_TRANSLATION_PROVIDER = "xai"
+NVIDIA_TRANSLATION_PROVIDER = "nvidia"
 OLLAMA_TRANSLATION_PROVIDER = "ollama"
 DEFAULT_TRANSLATION_PROVIDER = OPENAI_TRANSLATION_PROVIDER
 DEFAULT_TRANSLATION_BASE_URL = "https://api.openai.com/v1"
@@ -34,8 +36,58 @@ DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
 DEEPSEEK_MODELS = ("deepseek-v4-flash", "deepseek-v4-pro")
 OPENAI_MODELS = ("gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1", "gpt-5-mini")
+DEFAULT_NVIDIA_BASE_URL = "https://integrate.api.nvidia.com/v1"
+DEFAULT_NVIDIA_MODEL = "nvidia/riva-translate-4b-instruct-v2"
+NVIDIA_TRANSLATION_MODELS = (
+    DEFAULT_NVIDIA_MODEL,
+    "nvidia/riva-translate-4b-instruct-v1.1",
+    "nvidia/nemotron-3.5-lightning-30b-a3b",
+    "nvidia/nemotron-3-super-120b-a12b",
+    "meta/llama-3.3-70b-instruct",
+)
 LOGGER = get_logger("translator")
 _MAX_MODEL_RESPONSE_BYTES = 2 * 1024 * 1024
+_NVIDIA_REQUEST_INTERVAL_SECONDS = 60.0 / 38.0
+_nvidia_request_lock = threading.Lock()
+_nvidia_next_request_at = 0.0
+_NVIDIA_NON_TRANSLATION_MODEL_MARKERS = (
+    "-embed",
+    "/embed",
+    "/bge-",
+    "embedcode",
+    "coder",
+    "codegemma",
+    "starcoder",
+    "codellama",
+    "codestral",
+    "-code-",
+    "retriever",
+    "nvclip",
+    "detector",
+    "content-safety",
+    "safety-guard",
+    "nemoguard",
+    "llama-guard",
+    "gliner",
+    "-parse",
+    "/parse",
+    "-reward",
+    "vision",
+    "-vl-",
+    "-vl",
+    "-vlm-",
+    "/fuyu",
+    "/deplot",
+    "/kosmos",
+    "/neva",
+    "/vila",
+    "/cosmos",
+    "diffusion",
+    "ising-calibration",
+    "muse-glimmer",
+    "palmyra-fin",
+    "palmyra-med",
+)
 
 
 @dataclass(frozen=True)
@@ -125,6 +177,16 @@ TRANSLATION_PROVIDERS: dict[str, TranslationProvider] = {
         model_env_names=("GALAXY_XAI_MODEL", "XAI_MODEL"),
         base_url_env_names=("GALAXY_XAI_BASE_URL", "XAI_BASE_URL"),
         models=("grok-4.5", "grok-4.1-fast"),
+    ),
+    NVIDIA_TRANSLATION_PROVIDER: TranslationProvider(
+        code=NVIDIA_TRANSLATION_PROVIDER,
+        label="NVIDIA NIM",
+        default_model=DEFAULT_NVIDIA_MODEL,
+        default_base_url=DEFAULT_NVIDIA_BASE_URL,
+        api_key_env_names=("GALAXY_NVIDIA_API_KEY", "NVIDIA_API_KEY"),
+        model_env_names=("GALAXY_NVIDIA_MODEL", "NVIDIA_MODEL"),
+        base_url_env_names=("GALAXY_NVIDIA_BASE_URL", "NVIDIA_BASE_URL"),
+        models=NVIDIA_TRANSLATION_MODELS,
     ),
     OLLAMA_TRANSLATION_PROVIDER: TranslationProvider(
         code=OLLAMA_TRANSLATION_PROVIDER,
@@ -326,6 +388,8 @@ def normalize_translation_provider(value: str | None) -> str:
         return MISTRAL_TRANSLATION_PROVIDER
     if normalized in {"xai", "x.ai"} or "grok" in normalized:
         return XAI_TRANSLATION_PROVIDER
+    if "nvidia" in normalized or normalized == "nim":
+        return NVIDIA_TRANSLATION_PROVIDER
     if "ollama" in normalized:
         return OLLAMA_TRANSLATION_PROVIDER
     if "openai" in normalized or "chatgpt" in normalized or normalized == "chat":
@@ -409,9 +473,33 @@ def fetch_translation_models(
         for entry in entries
         if isinstance(entry, dict) and entry.get("id")
     }
+    models = _filter_translation_models(defaults.code, models)
     if not models:
         raise RuntimeError(f"{defaults.label} did not return any models.")
+    if defaults.code == NVIDIA_TRANSLATION_PROVIDER:
+        return tuple(sorted(models, key=_nvidia_model_sort_key))
     return tuple(sorted(models, key=str.casefold))
+
+
+def _filter_translation_models(provider: str, models: set[str]) -> set[str]:
+    if provider != NVIDIA_TRANSLATION_PROVIDER:
+        return models
+    return {
+        model
+        for model in models
+        if not any(marker in model.casefold() for marker in _NVIDIA_NON_TRANSLATION_MODEL_MARKERS)
+    }
+
+
+def _nvidia_model_sort_key(model: str) -> tuple[int, str]:
+    normalized = model.casefold()
+    if normalized == DEFAULT_NVIDIA_MODEL:
+        priority = 0
+    elif normalized.startswith("nvidia/riva-translate-"):
+        priority = 1
+    else:
+        priority = 2
+    return priority, normalized
 
 
 def validate_translation_options(options: AITranslationOptions) -> None:
@@ -476,6 +564,8 @@ def translate_texts(
     options = resolve_translation_options(options)
     batch_size = max(1, min(50, int(options.batch_size)))
     max_workers = max(1, min(6, int(options.max_workers)))
+    if options.provider == NVIDIA_TRANSLATION_PROVIDER:
+        max_workers = 1
     checkpoint_id = _translation_checkpoint_id(texts, options)
     completed = _load_translation_checkpoint(checkpoint_path, checkpoint_id, texts, options)
     translated: list[str | None] = [completed.get(index) for index in range(len(texts))]
@@ -724,6 +814,9 @@ def _translate_batch(
     client: ChatClient,
     warning: TranslationWarningCallback | None = None,
 ) -> list[str]:
+    if _is_nvidia_riva_translation(options):
+        return _translate_riva_batch(texts, options, client, warning=warning)
+
     source = label_from_code(options.source_language, default=options.source_language or "Auto detect")
     target = label_from_code(options.target_language, default=options.target_language)
     payload = [{"index": index, "text": text} for index, text in enumerate(texts, start=1)]
@@ -820,6 +913,106 @@ def _translate_batch(
         len(texts),
     )
     raise RuntimeError(message)
+
+
+def _translate_riva_batch(
+    texts: list[str],
+    options: AITranslationOptions,
+    client: ChatClient,
+    warning: TranslationWarningCallback | None = None,
+) -> list[str]:
+    source_code = _riva_language_code(options.source_language, texts)
+    target_code = _riva_language_code(options.target_language, texts)
+    wrong_language = ""
+    for _attempt in range(_TRANSLATION_ATTEMPTS):
+        raw = client(
+            [
+                {"role": "system", "content": f"{source_code}-{target_code}"},
+                {"role": "user", "content": json.dumps(texts, ensure_ascii=False)},
+            ],
+            options,
+        )
+        translations = _extract_riva_translations(raw, len(texts))
+        if len(translations) != len(texts):
+            if len(texts) > 1:
+                midpoint = len(texts) // 2
+                return _translate_split_batch(texts, midpoint, options, client, warning=warning)
+            raise RuntimeError(
+                f"NVIDIA Riva returned {len(translations)} lines for a batch that expected one line."
+            )
+
+        detected_languages = [
+            _wrong_output_language(
+                [translation],
+                options.target_language,
+                source_texts=[texts[index]],
+            )
+            for index, translation in enumerate(translations)
+        ]
+        wrong_language = next(
+            (language for language in detected_languages if language is not None),
+            "",
+        )
+        if not wrong_language:
+            return translations
+
+    if len(texts) > 1:
+        midpoint = len(texts) // 2
+        return _translate_split_batch(texts, midpoint, options, client, warning=warning)
+    message = (
+        f"NVIDIA Riva vẫn trả về {wrong_language or 'ngôn ngữ khác'} thay vì "
+        f"{label_from_code(options.target_language, default=options.target_language)}."
+    )
+    if warning is not None:
+        warning(message)
+    raise RuntimeError(message)
+
+
+def _extract_riva_translations(raw: str, expected_count: int) -> list[str]:
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`").strip()
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].strip()
+    try:
+        payload = json.loads(cleaned)
+    except json.JSONDecodeError:
+        if expected_count == 1 and cleaned:
+            return [cleaned.strip('"')]
+        lines = [line.strip() for line in cleaned.splitlines() if line.strip()]
+        return lines if len(lines) == expected_count else []
+    if isinstance(payload, dict):
+        payload = payload.get("translations")
+    if not isinstance(payload, list):
+        return []
+    return [str(item).strip() for item in payload]
+
+
+def _riva_language_code(language: str, texts: list[str]) -> str:
+    normalized = language.strip().lower()
+    if normalized == "auto":
+        detected = _detect_non_latin_script("\n".join(texts))
+        normalized = {
+            "Chinese": "zh",
+            "Japanese": "ja",
+            "Korean": "ko",
+            "Russian": "ru",
+            "Thai": "th",
+        }.get(detected or "", "en")
+    return {
+        "zh": "zh-cn",
+        "zh-cn": "zh-cn",
+        "zh-tw": "zh-tw",
+        "es": "es-es",
+        "pt": "pt-pt",
+    }.get(normalized, normalized)
+
+
+def _is_nvidia_riva_translation(options: AITranslationOptions) -> bool:
+    return (
+        normalize_translation_provider(options.provider) == NVIDIA_TRANSLATION_PROVIDER
+        and options.model.strip().casefold().startswith("nvidia/riva-translate-")
+    )
 
 
 def _translate_split_batch(
@@ -1177,30 +1370,57 @@ def _chat_completion(messages: list[dict[str, str]], options: AITranslationOptio
     if normalize_translation_provider(options.provider) == DEEPSEEK_TRANSLATION_PROVIDER:
         body["thinking"] = {"type": "disabled"}
 
-    request = urllib.request.Request(
-        url,
-        data=json.dumps(body).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            **({"Authorization": f"Bearer {options.api_key}"} if options.api_key else {}),
-        },
-        method="POST",
-    )
-
-    try:
-        with urllib.request.urlopen(request, timeout=120) as response:
-            response_body = response.read().decode("utf-8")
-    except urllib.error.HTTPError as error:
-        details = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"AI translation API failed: {error.code} {details}") from error
-    except urllib.error.URLError as error:
-        raise RuntimeError(f"AI translation API failed: {error.reason}") from error
+    provider = normalize_translation_provider(options.provider)
+    request_attempts = 3 if provider == NVIDIA_TRANSLATION_PROVIDER else 1
+    response_body = ""
+    for attempt in range(request_attempts):
+        if provider == NVIDIA_TRANSLATION_PROVIDER:
+            _wait_for_nvidia_request()
+        request = urllib.request.Request(
+            url,
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                **({"Authorization": f"Bearer {options.api_key}"} if options.api_key else {}),
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=120) as response:
+                response_body = response.read().decode("utf-8")
+            break
+        except urllib.error.HTTPError as error:
+            if error.code == 429 and attempt < request_attempts - 1:
+                time.sleep(_retry_after_seconds(error, attempt))
+                continue
+            details = error.read().decode("utf-8", errors="replace")
+            raise RuntimeError(f"AI translation API failed: {error.code} {details}") from error
+        except urllib.error.URLError as error:
+            raise RuntimeError(f"AI translation API failed: {error.reason}") from error
 
     data = json.loads(response_body)
     try:
         return str(data["choices"][0]["message"]["content"])
     except (KeyError, IndexError, TypeError) as error:
         raise RuntimeError("AI translation API returned an unexpected response.") from error
+
+
+def _wait_for_nvidia_request() -> None:
+    global _nvidia_next_request_at
+    with _nvidia_request_lock:
+        now = time.monotonic()
+        delay = max(0.0, _nvidia_next_request_at - now)
+        if delay:
+            time.sleep(delay)
+        _nvidia_next_request_at = time.monotonic() + _NVIDIA_REQUEST_INTERVAL_SECONDS
+
+
+def _retry_after_seconds(error: urllib.error.HTTPError, attempt: int) -> float:
+    retry_after = error.headers.get("Retry-After") if error.headers is not None else None
+    try:
+        return max(0.0, float(retry_after))
+    except (TypeError, ValueError):
+        return min(8.0, float(2 ** (attempt + 1)))
 
 
 def _requires_api_key(base_url: str) -> bool:

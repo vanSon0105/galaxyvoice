@@ -108,6 +108,17 @@ export interface ExtractResultPayload {
   warnings: string[]
 }
 
+export interface TranslationModelsRequest {
+  provider: string
+  api_key?: string
+  base_url?: string
+}
+
+export interface TranslationModelsResponse {
+  provider: string
+  models: string[]
+}
+
 function startTask(path: string, body: unknown): Promise<{ task_id: string }> {
   return apiJson<{ task_id: string }>(path, {
     method: 'POST',
@@ -122,6 +133,16 @@ export function fetchEngines(): Promise<EngineInfo[]> {
 
 export function fetchVoices(engine: string): Promise<VoiceInfo[]> {
   return apiJson<VoiceInfo[]>(`/api/voice/voices?engine=${encodeURIComponent(engine)}`)
+}
+
+export function fetchTranslationModels(
+  body: TranslationModelsRequest,
+): Promise<TranslationModelsResponse> {
+  return apiJson<TranslationModelsResponse>('/api/voice/translation-models', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  })
 }
 
 export const startGenerate = (body: GenerateRequest) => startTask('/api/voice/generate', body)

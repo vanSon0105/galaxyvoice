@@ -8,7 +8,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -23,6 +23,7 @@ from app.voice.translator import (  # noqa: E402
     default_translation_base_url,
     default_translation_model,
     default_translation_provider,
+    fetch_translation_models,
     translate_cues,
     translate_script_text,
     translation_provider_code,
@@ -1228,6 +1229,26 @@ class TranslatorTests(unittest.TestCase):
         label = translation_provider_label("openai")
         self.assertEqual(label, "ChatGPT / OpenAI")
         self.assertEqual(translation_provider_code(label), "openai")
+
+    def test_model_discovery_reads_openai_compatible_model_list(self) -> None:
+        response = MagicMock()
+        response.read.return_value = json.dumps(
+            {"data": [{"id": "z-model"}, {"id": "a-model"}, {"missing": "id"}]}
+        ).encode("utf-8")
+        response.__enter__.return_value = response
+        response.__exit__.return_value = False
+
+        with patch("urllib.request.urlopen", return_value=response) as urlopen, patch.dict(
+            os.environ,
+            {"GROQ_API_KEY": "env-secret"},
+            clear=False,
+        ):
+            models = fetch_translation_models("groq")
+
+        self.assertEqual(models, ("a-model", "z-model"))
+        request = urlopen.call_args.args[0]
+        self.assertEqual(request.full_url, "https://api.groq.com/openai/v1/models")
+        self.assertEqual(request.headers["Authorization"], "Bearer env-secret")
 
 
     def test_extract_translations_salvages_missing_colon(self) -> None:

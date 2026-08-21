@@ -196,6 +196,7 @@ body {
 
 .field input[type='text'],
 .field input[type='number'],
+.field input[type='password'],
 .field select {
   background: var(--color-input);
   border: 1px solid var(--border-soft);
@@ -214,6 +215,22 @@ body {
 
 .field input::placeholder {
   color: var(--color-fg-subtle);
+}
+
+.select-action {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.select-action select {
+  flex: 1;
+  min-width: 0;
+}
+
+.select-action .btn {
+  flex: 0 0 auto;
+  white-space: nowrap;
 }
 
 .field-check {

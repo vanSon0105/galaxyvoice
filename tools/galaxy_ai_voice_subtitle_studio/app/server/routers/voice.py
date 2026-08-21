@@ -29,6 +29,7 @@ from ...voice.translator import (
     default_translation_api_key,
     default_translation_base_url,
     default_translation_model,
+    fetch_translation_models,
     normalize_translation_provider,
     translate_script_text,
     validate_translation_options,
@@ -100,6 +101,12 @@ class DraftEditRequest(BaseModel):
 class DraftExportRequest(BaseModel):
     output_dir: str = ""
     project_name: str = ""
+
+
+class TranslationModelsRequest(BaseModel):
+    provider: str
+    api_key: str = ""
+    base_url: str = ""
 
 
 def _config() -> Any:
@@ -199,6 +206,20 @@ def voices(engine: str = "") -> list[dict[str, Any]]:
         }
         for voice in tts.list_voices()
     ]
+
+
+@router.post("/translation-models")
+def translation_models(request: TranslationModelsRequest) -> dict[str, Any]:
+    provider = normalize_translation_provider(request.provider)
+    try:
+        models = fetch_translation_models(
+            provider,
+            api_key=request.api_key,
+            base_url=request.base_url,
+        )
+    except RuntimeError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return {"provider": provider, "models": list(models)}
 
 
 def _same_language(source: str, target: str) -> bool:

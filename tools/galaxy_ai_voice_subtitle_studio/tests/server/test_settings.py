@@ -78,6 +78,10 @@ class SettingsApiTests(unittest.TestCase):
         self.assertIn("edge", [engine["code"] for engine in body["tts_engines"]])
         self.assertTrue(body["whisper_models"])
         self.assertTrue(body["translation_providers"])
+        self.assertEqual(
+            {"openai", "deepseek", "gemini", "groq", "openrouter", "mistral", "xai", "ollama"},
+            {provider["code"] for provider in body["translation_providers"]},
+        )
         self.assertIn(("auto", "Auto detect"), [(item["code"], item["label"]) for item in body["source_languages"]])
 
     def test_system_processes_returns_snapshot(self) -> None:

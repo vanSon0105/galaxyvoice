@@ -21,14 +21,21 @@ from .srt import SubtitleCue
 
 OPENAI_TRANSLATION_PROVIDER = "openai"
 DEEPSEEK_TRANSLATION_PROVIDER = "deepseek"
+GEMINI_TRANSLATION_PROVIDER = "gemini"
+GROQ_TRANSLATION_PROVIDER = "groq"
+OPENROUTER_TRANSLATION_PROVIDER = "openrouter"
+MISTRAL_TRANSLATION_PROVIDER = "mistral"
+XAI_TRANSLATION_PROVIDER = "xai"
+OLLAMA_TRANSLATION_PROVIDER = "ollama"
 DEFAULT_TRANSLATION_PROVIDER = OPENAI_TRANSLATION_PROVIDER
 DEFAULT_TRANSLATION_BASE_URL = "https://api.openai.com/v1"
 DEFAULT_TRANSLATION_MODEL = "gpt-4o-mini"
 DEFAULT_DEEPSEEK_BASE_URL = "https://api.deepseek.com"
 DEFAULT_DEEPSEEK_MODEL = "deepseek-v4-flash"
 DEEPSEEK_MODELS = ("deepseek-v4-flash", "deepseek-v4-pro")
-OPENAI_MODELS = ("gpt-4o-mini", "gpt-4o", "gpt-4.1")
+OPENAI_MODELS = ("gpt-4o-mini", "gpt-4.1-mini", "gpt-4.1", "gpt-5-mini")
 LOGGER = get_logger("translator")
+_MAX_MODEL_RESPONSE_BYTES = 2 * 1024 * 1024
 
 
 @dataclass(frozen=True)
@@ -68,6 +75,66 @@ TRANSLATION_PROVIDERS: dict[str, TranslationProvider] = {
         model_env_names=("GALAXY_DEEPSEEK_MODEL", "DEEPSEEK_MODEL"),
         base_url_env_names=("GALAXY_DEEPSEEK_BASE_URL", "DEEPSEEK_BASE_URL"),
         models=DEEPSEEK_MODELS,
+    ),
+    GEMINI_TRANSLATION_PROVIDER: TranslationProvider(
+        code=GEMINI_TRANSLATION_PROVIDER,
+        label="Google Gemini",
+        default_model="gemini-2.5-flash",
+        default_base_url="https://generativelanguage.googleapis.com/v1beta/openai",
+        api_key_env_names=("GALAXY_GEMINI_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY"),
+        model_env_names=("GALAXY_GEMINI_MODEL", "GEMINI_MODEL"),
+        base_url_env_names=("GALAXY_GEMINI_BASE_URL", "GEMINI_BASE_URL"),
+        models=("gemini-2.5-flash", "gemini-2.5-flash-lite", "gemini-2.5-pro"),
+    ),
+    GROQ_TRANSLATION_PROVIDER: TranslationProvider(
+        code=GROQ_TRANSLATION_PROVIDER,
+        label="Groq",
+        default_model="llama-3.1-8b-instant",
+        default_base_url="https://api.groq.com/openai/v1",
+        api_key_env_names=("GALAXY_GROQ_API_KEY", "GROQ_API_KEY"),
+        model_env_names=("GALAXY_GROQ_MODEL", "GROQ_MODEL"),
+        base_url_env_names=("GALAXY_GROQ_BASE_URL", "GROQ_BASE_URL"),
+        models=("llama-3.1-8b-instant", "openai/gpt-oss-120b"),
+    ),
+    OPENROUTER_TRANSLATION_PROVIDER: TranslationProvider(
+        code=OPENROUTER_TRANSLATION_PROVIDER,
+        label="OpenRouter",
+        default_model="openai/gpt-4o-mini",
+        default_base_url="https://openrouter.ai/api/v1",
+        api_key_env_names=("GALAXY_OPENROUTER_API_KEY", "OPENROUTER_API_KEY"),
+        model_env_names=("GALAXY_OPENROUTER_MODEL", "OPENROUTER_MODEL"),
+        base_url_env_names=("GALAXY_OPENROUTER_BASE_URL", "OPENROUTER_BASE_URL"),
+        models=("openai/gpt-4o-mini", "google/gemini-2.5-flash", "deepseek/deepseek-v4-flash"),
+    ),
+    MISTRAL_TRANSLATION_PROVIDER: TranslationProvider(
+        code=MISTRAL_TRANSLATION_PROVIDER,
+        label="Mistral AI",
+        default_model="mistral-small-latest",
+        default_base_url="https://api.mistral.ai/v1",
+        api_key_env_names=("GALAXY_MISTRAL_API_KEY", "MISTRAL_API_KEY"),
+        model_env_names=("GALAXY_MISTRAL_MODEL", "MISTRAL_MODEL"),
+        base_url_env_names=("GALAXY_MISTRAL_BASE_URL", "MISTRAL_BASE_URL"),
+        models=("mistral-small-latest", "mistral-medium-latest", "mistral-large-latest"),
+    ),
+    XAI_TRANSLATION_PROVIDER: TranslationProvider(
+        code=XAI_TRANSLATION_PROVIDER,
+        label="xAI",
+        default_model="grok-4.5",
+        default_base_url="https://api.x.ai/v1",
+        api_key_env_names=("GALAXY_XAI_API_KEY", "XAI_API_KEY"),
+        model_env_names=("GALAXY_XAI_MODEL", "XAI_MODEL"),
+        base_url_env_names=("GALAXY_XAI_BASE_URL", "XAI_BASE_URL"),
+        models=("grok-4.5", "grok-4.1-fast"),
+    ),
+    OLLAMA_TRANSLATION_PROVIDER: TranslationProvider(
+        code=OLLAMA_TRANSLATION_PROVIDER,
+        label="Ollama (local)",
+        default_model="llama3.2",
+        default_base_url="http://127.0.0.1:11434/v1",
+        api_key_env_names=("GALAXY_OLLAMA_API_KEY", "OLLAMA_API_KEY"),
+        model_env_names=("GALAXY_OLLAMA_MODEL", "OLLAMA_MODEL"),
+        base_url_env_names=("GALAXY_OLLAMA_BASE_URL", "OLLAMA_BASE_URL"),
+        models=("llama3.2",),
     ),
 }
 
@@ -239,6 +306,18 @@ def normalize_translation_provider(value: str | None) -> str:
 
     if "deepseek" in normalized:
         return DEEPSEEK_TRANSLATION_PROVIDER
+    if "gemini" in normalized or "google" in normalized:
+        return GEMINI_TRANSLATION_PROVIDER
+    if "groq" in normalized:
+        return GROQ_TRANSLATION_PROVIDER
+    if "openrouter" in normalized:
+        return OPENROUTER_TRANSLATION_PROVIDER
+    if "mistral" in normalized:
+        return MISTRAL_TRANSLATION_PROVIDER
+    if normalized in {"xai", "x.ai"} or "grok" in normalized:
+        return XAI_TRANSLATION_PROVIDER
+    if "ollama" in normalized:
+        return OLLAMA_TRANSLATION_PROVIDER
     if "openai" in normalized or "chatgpt" in normalized or normalized == "chat":
         return OPENAI_TRANSLATION_PROVIDER
 
@@ -264,6 +343,65 @@ def default_translation_base_url(provider: str | None = None) -> str:
 def default_translation_api_key(provider: str | None = None) -> str:
     defaults = _provider_defaults(provider or default_translation_provider())
     return first_env(*defaults.api_key_env_names)
+
+
+def fetch_translation_models(
+    provider: str,
+    *,
+    api_key: str = "",
+    base_url: str = "",
+) -> tuple[str, ...]:
+    """Return every model visible to the selected OpenAI-compatible provider."""
+    defaults = _provider_defaults(provider)
+    resolved_base_url = (base_url or default_translation_base_url(defaults.code)).strip()
+    resolved_api_key = api_key or default_translation_api_key(defaults.code)
+    parsed_base_url = urllib.parse.urlparse(resolved_base_url)
+    if (
+        resolved_api_key
+        and not _is_local_base_url(resolved_base_url)
+        and parsed_base_url.scheme.lower() != "https"
+    ):
+        raise RuntimeError("AI base URL must use HTTPS when an API key is provided.")
+
+    request = urllib.request.Request(
+        resolved_base_url.rstrip("/") + "/models",
+        headers={
+            "Accept": "application/json",
+            **({"Authorization": f"Bearer {resolved_api_key}"} if resolved_api_key else {}),
+        },
+        method="GET",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            response_body = response.read(_MAX_MODEL_RESPONSE_BYTES + 1)
+    except urllib.error.HTTPError as error:
+        details = error.read().decode("utf-8", errors="replace")
+        raise RuntimeError(
+            f"Could not load {defaults.label} models: {error.code} {details}"
+        ) from error
+    except urllib.error.URLError as error:
+        raise RuntimeError(f"Could not load {defaults.label} models: {error.reason}") from error
+
+    if len(response_body) > _MAX_MODEL_RESPONSE_BYTES:
+        raise RuntimeError(f"Could not load {defaults.label} models: response is too large.")
+    try:
+        payload = json.loads(response_body.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise RuntimeError(
+            f"Could not load {defaults.label} models: invalid JSON response."
+        ) from error
+
+    entries = payload.get("data", payload) if isinstance(payload, dict) else payload
+    if not isinstance(entries, list):
+        raise RuntimeError(f"Could not load {defaults.label} models: unexpected response.")
+    models = {
+        str(entry.get("id", "")).removeprefix("models/").strip()
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("id")
+    }
+    if not models:
+        raise RuntimeError(f"{defaults.label} did not return any models.")
+    return tuple(sorted(models, key=str.casefold))
 
 
 def validate_translation_options(options: AITranslationOptions) -> None:

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { fetchSettings, fetchSettingsMeta } from '../../api/settings'
@@ -6,6 +6,7 @@ import type { AppSettings, SettingsMeta } from '../../api/settings'
 import {
   fetchDraft,
   fetchEngines,
+  fetchTranslationModels,
   fetchVoices,
   openPath,
   startExtractAudio,
@@ -67,6 +68,9 @@ export function DubPage() {
   const [aiModel, setAiModel] = useState('')
   const [aiBaseUrl, setAiBaseUrl] = useState('')
   const [apiKey, setApiKey] = useState('')
+  const [discoveredModels, setDiscoveredModels] = useState<string[] | null>(null)
+  const [modelsLoading, setModelsLoading] = useState(false)
+  const [modelsMessage, setModelsMessage] = useState('')
   const [device, setDevice] = useState('auto')
   const [outputDir, setOutputDir] = useState('')
 
@@ -84,7 +88,7 @@ export function DubPage() {
   // Seed the form from shared settings once they load.
   const seededRef = useRef(false)
   useEffect(() => {
-    if (!settings || seededRef.current) return
+    if (!settings || !meta || seededRef.current) return
     seededRef.current = true
     setEngine(str(settings, 'tts_engine', 'edge'))
     setVoiceName(str(settings, 'voice_name'))
@@ -97,14 +101,21 @@ export function DubPage() {
     setSourceLang(str(settings, 'video_source_language', 'auto'))
     setTargetLang(str(settings, 'video_target_language', 'vi'))
     setWhisperModel(str(settings, 'whisper_model', 'base'))
-    setProvider(str(settings, 'ai_provider', meta?.default_translation_provider ?? ''))
-    setAiModel(str(settings, 'ai_model'))
-    setAiBaseUrl(str(settings, 'ai_base_url'))
+    const initialProvider = str(settings, 'ai_provider').trim() || meta.default_translation_provider
+    const initialProviderMeta = meta.translation_providers.find((item) => item.code === initialProvider)
+    setProvider(initialProvider)
+    setAiModel(str(settings, 'ai_model').trim() || initialProviderMeta?.default_model || '')
+    setAiBaseUrl(str(settings, 'ai_base_url').trim() || initialProviderMeta?.default_base_url || '')
     setDevice(str(settings, 'voice_processing_device', 'auto'))
     setOutputDir(str(settings, 'output_dir'))
   }, [settings, meta])
 
   const engines: EngineInfo[] = enginesQuery.data ?? []
+  const providerMeta = meta?.translation_providers.find((item) => item.code === provider)
+  const modelOptions = useMemo(() => {
+    const available = discoveredModels ?? providerMeta?.models ?? []
+    return Array.from(new Set([aiModel, ...available].filter(Boolean)))
+  }, [aiModel, discoveredModels, providerMeta])
 
   // Pick a voice matching a language (culture prefix), like the tkinter tab.
   const selectVoiceForLanguage = (languageCode: string): boolean => {
@@ -191,11 +202,35 @@ export function DubPage() {
 
   const handleProviderChange = (code: string) => {
     setProvider(code)
-    // Auto-fill provider defaults; the API key is intentionally kept as typed.
+    setApiKey('')
+    setDiscoveredModels(null)
+    setModelsMessage('')
+    // Provider keys are isolated so one vendor never receives another vendor's key.
     const providerMeta = meta?.translation_providers.find((item) => item.code === code)
     if (providerMeta) {
       setAiModel(providerMeta.default_model)
       setAiBaseUrl(providerMeta.default_base_url)
+    }
+  }
+
+  const refreshTranslationModels = async () => {
+    setModelsLoading(true)
+    setModelsMessage('')
+    try {
+      const result = await fetchTranslationModels({
+        provider,
+        api_key: apiKey,
+        base_url: aiBaseUrl,
+      })
+      setDiscoveredModels(result.models)
+      if (!result.models.includes(aiModel)) {
+        setAiModel(result.models[0] ?? '')
+      }
+      setModelsMessage(`Đã tải ${result.models.length} model.`)
+    } catch (error) {
+      setModelsMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setModelsLoading(false)
     }
   }
 
@@ -535,19 +570,26 @@ export function DubPage() {
             </div>
             <div className="field">
               <label>Model AI dịch</label>
-              <input
-                type="text"
-                list="dub-ai-model-options"
-                value={aiModel}
-                onChange={(event) => setAiModel(event.target.value)}
-              />
-              <datalist id="dub-ai-model-options">
-                {(
-                  meta?.translation_providers.find((item) => item.code === provider)?.models ?? []
-                ).map((model) => (
-                  <option key={model} value={model} />
-                ))}
-              </datalist>
+              <div className="select-action">
+                <select
+                  id="dub-ai-model"
+                  value={aiModel}
+                  onChange={(event) => setAiModel(event.target.value)}
+                >
+                  {modelOptions.map((model) => (
+                    <option key={model} value={model}>{model}</option>
+                  ))}
+                </select>
+                <button
+                  className="btn"
+                  type="button"
+                  disabled={modelsLoading || !provider}
+                  onClick={() => void refreshTranslationModels()}
+                >
+                  {modelsLoading ? 'Đang tải...' : 'Làm mới'}
+                </button>
+              </div>
+              {modelsMessage && <span className="field-hint">{modelsMessage}</span>}
             </div>
             <div className="field">
               <label>Base URL</label>
@@ -561,6 +603,8 @@ export function DubPage() {
               <label>API key (không lưu)</label>
               <input
                 type="password"
+                id="dub-ai-api-key"
+                autoComplete="off"
                 value={apiKey}
                 onChange={(event) => setApiKey(event.target.value)}
               />

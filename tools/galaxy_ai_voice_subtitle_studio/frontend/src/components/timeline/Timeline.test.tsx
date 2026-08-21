@@ -2,6 +2,7 @@ import { fireEvent, render } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import { Timeline } from './Timeline'
+import { TRACK_LABEL_WIDTH } from './geometry'
 
 describe('Timeline playhead', () => {
   it('seeks continuously while the red playhead is dragged', () => {
@@ -27,9 +28,9 @@ describe('Timeline playhead', () => {
       width: 1_200, height: 166, toJSON: () => ({}),
     })
 
-    fireEvent.pointerDown(svg, { button: 0, pointerId: 1, clientX: 188 })
-    fireEvent.pointerMove(svg, { pointerId: 1, clientX: 588 })
-    fireEvent.pointerUp(svg, { pointerId: 1, clientX: 588 })
+    fireEvent.pointerDown(svg, { button: 0, pointerId: 1, clientX: TRACK_LABEL_WIDTH + 100 })
+    fireEvent.pointerMove(svg, { pointerId: 1, clientX: TRACK_LABEL_WIDTH + 500 })
+    fireEvent.pointerUp(svg, { pointerId: 1, clientX: TRACK_LABEL_WIDTH + 500 })
 
     expect(onSeek).toHaveBeenLastCalledWith(5_000)
     expect(onSeek).toHaveBeenCalledTimes(2)

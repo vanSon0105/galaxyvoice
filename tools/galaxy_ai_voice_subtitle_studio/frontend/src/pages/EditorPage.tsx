@@ -11,6 +11,15 @@ import { fetchSettings, fetchSettingsMeta, updateSettings } from '../api/setting
 import { openPath } from '../api/voice'
 import { Timeline } from '../components/timeline/Timeline'
 import { clamp, formatClock, parseClock } from '../components/timeline/geometry'
+import type { VideoSegment } from '../components/timeline/segments'
+import {
+  projectDuration,
+  rippleDeleteCues,
+  segmentDuration,
+  segmentTimelineStart,
+  splitVideoSegment,
+  timelineToSource,
+} from '../components/timeline/segments'
 import { hasNativeDialogs, pickAudioFile, pickFolder, pickSrtFile, pickVideoFile } from '../lib/dialogs'
 import { useTasks } from '../ws/useTasks'
 
@@ -58,11 +67,16 @@ export function EditorPage() {
   const { tasks, cancelTask } = useTasks()
   const videoRef = useRef<HTMLVideoElement>(null)
   const audioRef = useRef<HTMLAudioElement>(null)
+  const segmentsRef = useRef<VideoSegment[]>([])
+  const activeSegmentRef = useRef(0)
+  const playheadRef = useRef(0)
   const seeded = useRef(false)
 
   const [assets, setAssets] = useState<EditorAsset[]>([])
   const [video, setVideo] = useState<EditorMedia | null>(null)
   const [audio, setAudio] = useState<EditorMedia | null>(null)
+  const [videoSegments, setVideoSegments] = useState<VideoSegment[]>([])
+  const [selectedSegment, setSelectedSegment] = useState<number | null>(null)
   const [cues, setCues] = useState<EditorCue[]>([])
   const [selectedCue, setSelectedCue] = useState<number | null>(null)
   const [playheadMs, setPlayheadMs] = useState(0)
@@ -82,17 +96,27 @@ export function EditorPage() {
   const [manualPath, setManualPath] = useState('')
   const [message, setMessage] = useState('')
   const [previewError, setPreviewError] = useState(false)
+  const [subtitleVisible, setSubtitleVisible] = useState(true)
+  const [subtitleLocked, setSubtitleLocked] = useState(false)
+  const [videoVisible, setVideoVisible] = useState(true)
+  const [videoLocked, setVideoLocked] = useState(false)
+  const [audioMuted, setAudioMuted] = useState(false)
+  const [audioLocked, setAudioLocked] = useState(false)
   const [taskId, setTaskId] = useState<string | null>(null)
   const [result, setResult] = useState<EditorExportResult | null>(null)
 
   const task = taskId ? tasks.find((item) => item.taskId === taskId) : undefined
   const running = task?.status === 'running'
-  const durationMs = Math.round((video?.duration_seconds ?? 0) * 1000)
+  const sourceDurationMs = Math.round((video?.duration_seconds ?? 0) * 1000)
+  const durationMs = projectDuration(videoSegments)
   const activeCue = selectedCue === null ? null : cues[selectedCue] ?? null
   const subtitleAtPlayhead = useMemo(
-    () => cues.find((cue) => cue.start_ms <= playheadMs && cue.end_ms >= playheadMs)?.text ?? '',
-    [cues, playheadMs],
+    () => subtitleVisible ? cues.find((cue) => cue.start_ms <= playheadMs && cue.end_ms >= playheadMs)?.text ?? '' : '',
+    [cues, playheadMs, subtitleVisible],
   )
+
+  useEffect(() => { segmentsRef.current = videoSegments }, [videoSegments])
+  useEffect(() => { playheadRef.current = playheadMs }, [playheadMs])
 
   useEffect(() => {
     const settings = settingsQuery.data
@@ -127,7 +151,13 @@ export function EditorPage() {
     const external = audioRef.current
     if (!player || !external || !audio) return
     const sync = () => {
-      const target = player.currentTime - audioOffsetMs / 1000
+      const segments = segmentsRef.current
+      const index = clamp(activeSegmentRef.current, 0, Math.max(0, segments.length - 1))
+      const segment = segments[index]
+      const timelineMs = segment
+        ? segmentTimelineStart(segments, index) + clamp(Math.round(player.currentTime * 1000) - segment.source_start_ms, 0, segmentDuration(segment))
+        : playheadRef.current
+      const target = timelineMs / 1000 - audioOffsetMs / 1000
       if (target < 0 || target > audio.duration_seconds) {
         external.pause()
         return
@@ -193,6 +223,12 @@ export function EditorPage() {
     if (!asset) return
     if (asset.kind === 'video') {
       setVideo(asset)
+      const sourceEnd = Math.round(asset.duration_seconds * 1000)
+      const initialSegment = { id: `video:${asset.source_id}`, source_start_ms: 0, source_end_ms: sourceEnd }
+      setVideoSegments([initialSegment])
+      segmentsRef.current = [initialSegment]
+      setSelectedSegment(0)
+      activeSegmentRef.current = 0
       setPreviewError(false)
       setPlayheadMs(0)
       setCues((current) => current.filter((cue) => cue.start_ms < asset.duration_seconds * 1000).map((cue) => ({ ...cue, end_ms: Math.min(cue.end_ms, Math.round(asset.duration_seconds * 1000)) })))
@@ -215,9 +251,77 @@ export function EditorPage() {
   }
 
   const seek = (milliseconds: number) => {
-    const next = clamp(milliseconds, 0, durationMs)
+    const currentSegments = segmentsRef.current
+    const next = clamp(milliseconds, 0, projectDuration(currentSegments))
     setPlayheadMs(next)
-    if (videoRef.current) videoRef.current.currentTime = next / 1000
+    playheadRef.current = next
+    const position = timelineToSource(currentSegments, next)
+    if (position && videoRef.current) {
+      activeSegmentRef.current = position.index
+      videoRef.current.currentTime = position.sourceMs / 1000
+    }
+  }
+
+  const syncPlayheadFromVideo = (player: HTMLVideoElement) => {
+    const segments = segmentsRef.current
+    if (!segments.length) return
+    const index = clamp(activeSegmentRef.current, 0, segments.length - 1)
+    const segment = segments[index]
+    const sourceMs = Math.round(player.currentTime * 1000)
+    const timelineStart = segmentTimelineStart(segments, index)
+    if (sourceMs >= segment.source_end_ms - 15) {
+      const next = segments[index + 1]
+      if (next) {
+        activeSegmentRef.current = index + 1
+        player.currentTime = next.source_start_ms / 1000
+        const nextTimeline = timelineStart + segmentDuration(segment)
+        playheadRef.current = nextTimeline
+        setPlayheadMs(nextTimeline)
+      } else {
+        player.pause()
+        playheadRef.current = durationMs
+        setPlayheadMs(durationMs)
+      }
+      return
+    }
+    const nextTimeline = timelineStart + clamp(sourceMs - segment.source_start_ms, 0, segmentDuration(segment))
+    playheadRef.current = nextTimeline
+    setPlayheadMs(nextTimeline)
+  }
+
+  const splitAtPlayhead = () => {
+    if (videoLocked) { setMessage('Mở khóa track video trước khi tách.'); return }
+    const result = splitVideoSegment(videoSegments, playheadMs)
+    if (!result) { setMessage('Đưa playhead vào giữa clip, cách mép ít nhất 0,1 giây.'); return }
+    setVideoSegments(result.segments)
+    segmentsRef.current = result.segments
+    setSelectedSegment(result.selectedIndex)
+    activeSegmentRef.current = result.selectedIndex
+    setMessage('Đã tách clip tại playhead.')
+  }
+
+  const deleteSelectedSegment = () => {
+    if (videoLocked) { setMessage('Mở khóa track video trước khi xóa.'); return }
+    if (selectedSegment === null || videoSegments.length <= 1) { setMessage('Chọn một đoạn đã tách để xóa.'); return }
+    const removedStart = segmentTimelineStart(videoSegments, selectedSegment)
+    const removedDuration = segmentDuration(videoSegments[selectedSegment])
+    const nextSegments = videoSegments.filter((_segment, index) => index !== selectedSegment)
+    const nextDuration = projectDuration(nextSegments)
+    setVideoSegments(nextSegments)
+    segmentsRef.current = nextSegments
+    setSelectedSegment(Math.min(selectedSegment, nextSegments.length - 1))
+    activeSegmentRef.current = Math.min(selectedSegment, nextSegments.length - 1)
+    setCues((current) => reindex(rippleDeleteCues(current, removedStart, removedDuration)))
+    seek(Math.min(removedStart, nextDuration))
+    setMessage('Đã xóa đoạn và dồn các đoạn phía sau sang trái.')
+  }
+
+  const changeVideoSegment = (index: number, segment: VideoSegment) => {
+    const next = videoSegments.map((item, itemIndex) => itemIndex === index ? segment : item)
+    setVideoSegments(next)
+    segmentsRef.current = next
+    const nextDuration = projectDuration(next)
+    seek(Math.min(playheadMs, nextDuration))
   }
 
   const updateCue = (index: number, cue: EditorCue) => {
@@ -256,8 +360,13 @@ export function EditorPage() {
         video_path: video.path,
         output_dir: outputDir,
         project_name: projectName,
-        audio_path: audio?.path,
-        cues,
+        audio_path: audioMuted ? undefined : audio?.path,
+        cues: subtitleVisible ? cues : [],
+        segments: videoSegments.length === 1
+          && videoSegments[0].source_start_ms === 0
+          && videoSegments[0].source_end_ms === sourceDurationMs
+          ? []
+          : videoSegments.map(({ source_start_ms, source_end_ms }) => ({ source_start_ms, source_end_ms })),
         audio_offset_ms: audioOffsetMs,
         audio_mode: audioMode,
         source_volume: sourceVolume,
@@ -319,9 +428,10 @@ export function EditorPage() {
                   ref={videoRef}
                   src={video.url}
                   controls
+                  style={{ visibility: videoVisible ? 'visible' : 'hidden' }}
                   preload="metadata"
-                  onTimeUpdate={(event) => setPlayheadMs(Math.round(event.currentTarget.currentTime * 1000))}
-                  onSeeked={(event) => setPlayheadMs(Math.round(event.currentTarget.currentTime * 1000))}
+                  onTimeUpdate={(event) => syncPlayheadFromVideo(event.currentTarget)}
+                  onSeeked={(event) => syncPlayheadFromVideo(event.currentTarget)}
                   onCanPlay={() => setPreviewError(false)}
                   onError={() => setPreviewError(true)}
                 />
@@ -353,12 +463,19 @@ export function EditorPage() {
       <section className="section-card editor-timeline-panel">
         <div className="editor-timeline-toolbar">
           <div><strong>Timeline</strong><span>{formatClock(playheadMs, true)} / {formatClock(durationMs, true)}</span></div>
+          <div className="editor-cut-tools">
+            <button className="btn" disabled={!video || videoLocked} onClick={splitAtPlayhead}>Tách tại playhead</button>
+            <button className="btn danger" disabled={selectedSegment === null || videoSegments.length <= 1 || videoLocked} onClick={deleteSelectedSegment}>Xóa đoạn</button>
+          </div>
           <label>Thu phóng <input type="range" min="0.1" max="120" step="0.1" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /><output>{zoom.toFixed(1)} px/s</output></label>
           {audio && <button className="btn" onClick={removeTimelineAudio}>Xóa audio</button>}
         </div>
         <Timeline
           durationMs={Math.max(1, durationMs)}
           videoName={video?.name}
+          videoSegments={videoSegments}
+          sourceDurationMs={sourceDurationMs}
+          selectedSegment={selectedSegment}
           audioName={audio?.name}
           audioDurationMs={Math.round((audio?.duration_seconds ?? 0) * 1000)}
           audioOffsetMs={audioOffsetMs}
@@ -368,9 +485,23 @@ export function EditorPage() {
           zoom={zoom}
           onSeek={seek}
           onSelectCue={setSelectedCue}
+          onSelectSegment={setSelectedSegment}
+          onChangeVideoSegment={changeVideoSegment}
           onChangeCue={updateCue}
           onAudioOffset={setAudioOffsetMs}
           onDropAsset={activateAsset}
+          subtitleVisible={subtitleVisible}
+          subtitleLocked={subtitleLocked}
+          videoVisible={videoVisible}
+          videoLocked={videoLocked}
+          audioMuted={audioMuted}
+          audioLocked={audioLocked}
+          onToggleSubtitleVisible={() => setSubtitleVisible((value) => !value)}
+          onToggleSubtitleLocked={() => setSubtitleLocked((value) => !value)}
+          onToggleVideoVisible={() => setVideoVisible((value) => !value)}
+          onToggleVideoLocked={() => setVideoLocked((value) => !value)}
+          onToggleAudioMuted={() => setAudioMuted((value) => !value)}
+          onToggleAudioLocked={() => setAudioLocked((value) => !value)}
         />
       </section>
 

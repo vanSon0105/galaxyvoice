@@ -87,6 +87,16 @@ class EditorMediaInfo:
 
 
 @dataclass(frozen=True)
+class EditorVideoSegment:
+    source_start_ms: int
+    source_end_ms: int
+
+    @property
+    def duration_ms(self) -> int:
+        return self.source_end_ms - self.source_start_ms
+
+
+@dataclass(frozen=True)
 class EditorExportOptions:
     video_path: Path
     output_dir: Path
@@ -103,6 +113,7 @@ class EditorExportOptions:
     quality: int = 20
     subtitle_font_size: int = 22
     subtitle_margin: int = 36
+    video_segments: tuple[EditorVideoSegment, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -383,6 +394,9 @@ def build_editor_export_command(
         raise ValueError(f"Unsupported frame rate: {options.fps}")
     if options.audio_mode not in EDITOR_AUDIO_MODES:
         raise ValueError(f"Unsupported audio mode: {options.audio_mode}")
+    segments = _normalized_video_segments(options.video_segments, media)
+    custom_timeline = bool(options.video_segments)
+    duration = sum(segment.duration_ms for segment in segments) / 1000
     command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error", "-i", str(options.video_path)]
     if options.audio_path is not None:
         command.extend(["-i", str(options.audio_path)])
@@ -409,20 +423,32 @@ def build_editor_export_command(
                 margin=options.subtitle_margin,
             )
         )
-    if video_filters:
-        command.extend(["-vf", ",".join(video_filters)])
-    command.extend(["-map", "0:v:0"])
-
-    duration = media.duration_seconds
-    if options.audio_path is not None:
-        audio_graph = _audio_filter_graph(options, media)
-        command.extend(["-filter_complex", audio_graph, "-map", "[editor_audio]"])
-    elif media.has_audio:
-        command.extend(
-            ["-map", "0:a:0", "-af", f"volume={_volume(options.source_volume)}"]
+    if custom_timeline:
+        graph, has_editor_audio = _timeline_filter_graph(
+            options,
+            media,
+            segments,
+            video_filters,
+            duration,
         )
+        command.extend(["-filter_complex", graph, "-map", "[editor_video]"])
+        if has_editor_audio:
+            command.extend(["-map", "[editor_audio]"])
+        else:
+            command.append("-an")
     else:
-        command.append("-an")
+        if video_filters:
+            command.extend(["-vf", ",".join(video_filters)])
+        command.extend(["-map", "0:v:0"])
+        if options.audio_path is not None:
+            audio_graph = _audio_filter_graph(options, media)
+            command.extend(["-filter_complex", audio_graph, "-map", "[editor_audio]"])
+        elif media.has_audio:
+            command.extend(
+                ["-map", "0:a:0", "-af", f"volume={_volume(options.source_volume)}"]
+            )
+        else:
+            command.append("-an")
 
     command.extend(_video_encoder_args(encoder, options.quality))
     if options.audio_path is not None or media.has_audio:
@@ -460,15 +486,17 @@ def export_editor_video(
         raise RuntimeError(ffmpeg_missing_message("export an edited video"))
 
     media = probe_editor_media(video_path)
+    segments = _normalized_video_segments(options.video_segments, media)
+    timeline_duration_seconds = sum(segment.duration_ms for segment in segments) / 1000
     if (
         options.audio_path is not None
-        and max(0, int(options.audio_offset_ms)) >= round(media.duration_seconds * 1000)
+        and max(0, int(options.audio_offset_ms)) >= round(timeline_duration_seconds * 1000)
     ):
         raise ValueError("Audio phải bắt đầu trước khi video kết thúc.")
     project_dir = unique_project_dir(options.output_dir, options.project_name, "editor")
     output_path = project_dir / f"{project_dir.name}.mp4"
     subtitle_path: Path | None = None
-    cues = normalize_cues(list(options.subtitle_cues), round(media.duration_seconds * 1000))
+    cues = normalize_cues(list(options.subtitle_cues), round(timeline_duration_seconds * 1000))
     if cues:
         subtitle_path = project_dir / f"{project_dir.name}.srt"
         subtitle_path.write_text(render_srt(cues), encoding="utf-8")
@@ -489,7 +517,7 @@ def export_editor_video(
             _run_export(
                 command,
                 project_dir,
-                media.duration_seconds,
+                timeline_duration_seconds,
                 report,
                 cancellation,
                 task_id=task_id,
@@ -517,7 +545,7 @@ def export_editor_video(
             _run_export(
                 fallback,
                 project_dir,
-                media.duration_seconds,
+                timeline_duration_seconds,
                 report,
                 cancellation,
                 task_id=task_id,
@@ -540,6 +568,13 @@ def export_editor_video(
                 "encoder": selected_encoder,
                 "audio_mode": options.audio_mode,
                 "audio_offset_ms": max(0, options.audio_offset_ms),
+                "video_segments": [
+                    {
+                        "source_start_ms": segment.source_start_ms,
+                        "source_end_ms": segment.source_end_ms,
+                    }
+                    for segment in segments
+                ],
                 "files": {
                     "video": output_path.name,
                     "subtitle": subtitle_path.name if subtitle_path else None,
@@ -631,6 +666,92 @@ def _audio_filter_graph(options: EditorExportOptions, media: EditorMediaInfo) ->
             f"dropout_transition=0:normalize=0,atrim=duration={duration}[editor_audio]"
         )
     return f"{external};[external_audio]anull[editor_audio]"
+
+
+def _normalized_video_segments(
+    segments: tuple[EditorVideoSegment, ...],
+    media: EditorMediaInfo,
+) -> tuple[EditorVideoSegment, ...]:
+    source_duration_ms = round(media.duration_seconds * 1000)
+    if not segments:
+        return (EditorVideoSegment(0, source_duration_ms),)
+    normalized: list[EditorVideoSegment] = []
+    for segment in segments:
+        start = int(segment.source_start_ms)
+        end = int(segment.source_end_ms)
+        if start < 0 or end <= start or end > source_duration_ms:
+            raise ValueError(
+                f"Invalid video segment {start}-{end} ms for a {source_duration_ms} ms source."
+            )
+        normalized.append(EditorVideoSegment(start, end))
+    return tuple(normalized)
+
+
+def _timeline_filter_graph(
+    options: EditorExportOptions,
+    media: EditorMediaInfo,
+    segments: tuple[EditorVideoSegment, ...],
+    video_filters: list[str],
+    duration_seconds: float,
+) -> tuple[str, bool]:
+    graph: list[str] = []
+    video_labels: list[str] = []
+    for index, segment in enumerate(segments):
+        label = f"video_segment_{index}"
+        graph.append(
+            f"[0:v:0]trim=start={_seconds(segment.source_start_ms / 1000)}:"
+            f"end={_seconds(segment.source_end_ms / 1000)},setpts=PTS-STARTPTS[{label}]"
+        )
+        video_labels.append(f"[{label}]")
+    if len(video_labels) == 1:
+        graph.append(f"{video_labels[0]}null[video_timeline]")
+    else:
+        graph.append(
+            f"{''.join(video_labels)}concat=n={len(video_labels)}:v=1:a=0[video_timeline]"
+        )
+    video_chain = ",".join(video_filters) if video_filters else "null"
+    graph.append(f"[video_timeline]{video_chain}[editor_video]")
+
+    duration = _seconds(duration_seconds)
+    source_audio_label: str | None = None
+    if media.has_audio and (options.audio_path is None or options.audio_mode == MIX_AUDIO):
+        audio_labels: list[str] = []
+        for index, segment in enumerate(segments):
+            label = f"audio_segment_{index}"
+            graph.append(
+                f"[0:a:0]atrim=start={_seconds(segment.source_start_ms / 1000)}:"
+                f"end={_seconds(segment.source_end_ms / 1000)},asetpts=PTS-STARTPTS[{label}]"
+            )
+            audio_labels.append(f"[{label}]")
+        if len(audio_labels) == 1:
+            graph.append(f"{audio_labels[0]}anull[source_timeline_audio]")
+        else:
+            graph.append(
+                f"{''.join(audio_labels)}concat=n={len(audio_labels)}:v=0:a=1[source_timeline_audio]"
+            )
+        graph.append(
+            f"[source_timeline_audio]volume={_volume(options.source_volume)},"
+            f"apad,atrim=duration={duration}[source_audio]"
+        )
+        source_audio_label = "[source_audio]"
+
+    external_audio_label: str | None = None
+    if options.audio_path is not None:
+        offset = max(0, int(options.audio_offset_ms))
+        graph.append(
+            f"[1:a:0]adelay={offset}:all=1,volume={_volume(options.external_volume)},"
+            f"apad,atrim=duration={duration}[external_audio]"
+        )
+        external_audio_label = "[external_audio]"
+
+    if source_audio_label and external_audio_label:
+        graph.append(
+            f"{source_audio_label}{external_audio_label}amix=inputs=2:duration=longest:"
+            f"dropout_transition=0:normalize=0,atrim=duration={duration}[editor_audio]"
+        )
+    elif source_audio_label or external_audio_label:
+        graph.append(f"{source_audio_label or external_audio_label}anull[editor_audio]")
+    return ";".join(graph), bool(source_audio_label or external_audio_label)
 
 
 def _video_encoder_args(encoder: str, quality: int) -> list[str]:

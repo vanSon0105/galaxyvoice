@@ -69,7 +69,8 @@ class VideoEditorApiTests(unittest.TestCase):
     def test_export_passes_task_context_and_serves_result(self) -> None:
         captured: dict[str, object] = {}
 
-        def fake_export(_options, **kwargs):
+        def fake_export(options, **kwargs):
+            captured["options"] = options
             captured.update(kwargs)
             project = self.root / "edit"
             project.mkdir(exist_ok=True)
@@ -82,7 +83,14 @@ class VideoEditorApiTests(unittest.TestCase):
         with mock.patch("app.video_editor.service.export_editor_video", side_effect=fake_export):
             response = self.client.post(
                 "/api/editor/export",
-                json={"video_path": str(self.video), "output_dir": str(self.root)},
+                json={
+                    "video_path": str(self.video),
+                    "output_dir": str(self.root),
+                    "segments": [
+                        {"source_start_ms": 500, "source_end_ms": 1500},
+                        {"source_start_ms": 3000, "source_end_ms": 4500},
+                    ],
+                },
             )
             task_id = response.json()["task_id"]
             self.assertEqual(_wait_status(task_id), DONE)
@@ -90,6 +98,10 @@ class VideoEditorApiTests(unittest.TestCase):
         record = task_registry.get(task_id)
         self.assertIs(captured["cancellation"], record.stop_event)
         self.assertEqual(captured["task_id"], task_id)
+        self.assertEqual(
+            [(segment.source_start_ms, segment.source_end_ms) for segment in captured["options"].video_segments],
+            [(500, 1500), (3000, 4500)],
+        )
         self.assertEqual(self.client.get(f"/api/files/task/{task_id}/edit.mp4").content, b"edited")
 
     def test_cancel_terminates_only_editor_processes(self) -> None:

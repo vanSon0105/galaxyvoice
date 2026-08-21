@@ -32,6 +32,10 @@ export interface EditorExportRequest {
   project_name: string
   audio_path?: string
   cues: EditorCue[]
+  segments: Array<{
+    source_start_ms: number
+    source_end_ms: number
+  }>
   audio_offset_ms: number
   audio_mode: string
   source_volume: number

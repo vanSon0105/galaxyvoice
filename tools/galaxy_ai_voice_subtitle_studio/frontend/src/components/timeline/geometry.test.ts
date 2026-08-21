@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { cueOverviewIntervals, hitTestCue, msToPx, parseClock, pxToMs, rulerStepSeconds, snapMs, visibleCues, visibleTimeRange } from './geometry'
+import { TRACK_LABEL_WIDTH, cueOverviewIntervals, hitTestCue, msToPx, parseClock, pxToMs, rulerStepSeconds, snapMs, visibleCues, visibleTimeRange } from './geometry'
 
 const cues = [
   { index: 1, start_ms: 0, end_ms: 1_000, text: 'Một' },
@@ -15,7 +15,7 @@ describe('timeline geometry', () => {
 
   it('only materializes cues intersecting the viewport', () => {
     expect(visibleCues(cues, 4_000, 8_000).map((cue) => cue.index)).toEqual([2])
-    expect(visibleTimeRange(8_088, 800, 80, 0)).toEqual([100_000, 110_000])
+    expect(visibleTimeRange(8_000 + TRACK_LABEL_WIDTH, 800, 80, 0)).toEqual([100_000, 110_000])
   })
 
   it('hit-tests cues and chooses readable ruler spacing', () => {

@@ -14,6 +14,7 @@ from app.video_editor.service import (
     NVIDIA_ENCODER,
     EditorExportOptions,
     EditorMediaInfo,
+    EditorVideoSegment,
     build_editor_export_command,
     build_editor_frame_command,
     export_editor_video,
@@ -100,6 +101,46 @@ class EditorServiceTests(unittest.TestCase):
         self.assertIn("adelay=500", audio_filter)
         self.assertIn("amix=inputs=2", audio_filter)
         self.assertEqual(command[command.index("-c:v") + 1], "libx264")
+
+    def test_export_command_trims_and_concatenates_video_segments(self) -> None:
+        options = EditorExportOptions(
+            video_path=Path("source.mp4"),
+            output_dir=Path("exports"),
+            video_segments=(
+                EditorVideoSegment(1_000, 4_000),
+                EditorVideoSegment(8_500, 10_000),
+            ),
+        )
+        media = EditorMediaInfo(20.0, 1920, 1080, 24.0, True)
+
+        command = build_editor_export_command(
+            "ffmpeg", options, media, Path("result.mp4"),
+            encoder=CPU_ENCODER, subtitle_path=None,
+        )
+
+        graph = command[command.index("-filter_complex") + 1]
+        self.assertIn("trim=start=1.000:end=4.000", graph)
+        self.assertIn("trim=start=8.500:end=10.000", graph)
+        self.assertIn("concat=n=2:v=1:a=0", graph)
+        self.assertIn("atrim=start=1.000:end=4.000", graph)
+        self.assertIn("concat=n=2:v=0:a=1", graph)
+        self.assertEqual(command[command.index("-t") + 1], "4.500")
+        self.assertIn("[editor_video]", command)
+        self.assertIn("[editor_audio]", command)
+
+    def test_export_command_rejects_segment_outside_source(self) -> None:
+        options = EditorExportOptions(
+            video_path=Path("source.mp4"),
+            output_dir=Path("exports"),
+            video_segments=(EditorVideoSegment(5_000, 21_000),),
+        )
+        media = EditorMediaInfo(20.0, 1920, 1080, 24.0, True)
+
+        with self.assertRaisesRegex(ValueError, "segment"):
+            build_editor_export_command(
+                "ffmpeg", options, media, Path("result.mp4"),
+                encoder=CPU_ENCODER, subtitle_path=None,
+            )
 
     def test_export_command_covers_all_resolutions_fps_encoders_and_replace_audio(self) -> None:
         media = EditorMediaInfo(20.0, 1921, 1081, 23.976, True)

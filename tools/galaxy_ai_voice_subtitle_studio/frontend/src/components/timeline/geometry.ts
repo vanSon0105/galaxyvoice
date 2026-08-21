@@ -1,6 +1,6 @@
 import type { EditorCue } from '../../api/editor'
 
-export const TRACK_LABEL_WIDTH = 88
+export const TRACK_LABEL_WIDTH = 180
 export const MIN_CUE_DURATION_MS = 100
 
 export function clamp(value: number, minimum: number, maximum: number): number {

@@ -19,6 +19,7 @@ from ...video_editor.service import (
     EDITOR_FPS_OPTIONS,
     EDITOR_RESOLUTIONS,
     EditorExportOptions,
+    EditorVideoSegment,
     load_editor_subtitles,
     probe_audio_duration,
     probe_editor_media,
@@ -57,12 +58,23 @@ class CuePayload(BaseModel):
         return SubtitleCue(self.index, self.start_ms, self.end_ms, self.text)
 
 
+class VideoSegmentPayload(BaseModel):
+    source_start_ms: int = Field(ge=0)
+    source_end_ms: int = Field(gt=0)
+
+    def to_segment(self) -> EditorVideoSegment:
+        if self.source_end_ms <= self.source_start_ms:
+            raise ValueError("Điểm kết thúc đoạn video phải sau điểm bắt đầu.")
+        return EditorVideoSegment(self.source_start_ms, self.source_end_ms)
+
+
 class ExportRequest(BaseModel):
     video_path: str
     output_dir: str
     project_name: str = ""
     audio_path: str | None = None
     cues: list[CuePayload] = Field(default_factory=list)
+    segments: list[VideoSegmentPayload] = Field(default_factory=list)
     audio_offset_ms: int = Field(0, ge=0)
     audio_mode: str = "mix"
     source_volume: int = Field(100, ge=0, le=200)
@@ -167,6 +179,7 @@ def start_export(body: ExportRequest) -> dict[str, str]:
         raise HTTPException(status_code=422, detail="Thiết lập xuất video không hợp lệ.")
     try:
         cues = tuple(item.to_cue() for item in body.cues)
+        segments = tuple(item.to_segment() for item in body.segments)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
@@ -176,6 +189,7 @@ def start_export(body: ExportRequest) -> dict[str, str]:
         project_name=body.project_name,
         audio_path=audio_path,
         subtitle_cues=cues,
+        video_segments=segments,
         audio_offset_ms=body.audio_offset_ms,
         audio_mode=body.audio_mode,
         source_volume=body.source_volume,

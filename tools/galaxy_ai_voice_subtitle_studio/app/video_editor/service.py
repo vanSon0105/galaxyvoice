@@ -5,6 +5,7 @@ import os
 import re
 import subprocess
 import threading
+from collections import deque
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -446,6 +447,7 @@ def export_editor_video(
     progress: ProgressCallback | None = None,
     cancellation: threading.Event | None = None,
     ffmpeg_path: str | None = None,
+    task_id: str | None = None,
 ) -> EditorExportResult:
     report = progress or (lambda _message: None)
     video_path = Path(options.video_path).expanduser()
@@ -458,6 +460,11 @@ def export_editor_video(
         raise RuntimeError(ffmpeg_missing_message("export an edited video"))
 
     media = probe_editor_media(video_path)
+    if (
+        options.audio_path is not None
+        and max(0, int(options.audio_offset_ms)) >= round(media.duration_seconds * 1000)
+    ):
+        raise ValueError("Audio phải bắt đầu trước khi video kết thúc.")
     project_dir = unique_project_dir(options.output_dir, options.project_name, "editor")
     output_path = project_dir / f"{project_dir.name}.mp4"
     subtitle_path: Path | None = None
@@ -479,7 +486,14 @@ def export_editor_video(
             subtitle_path=subtitle_path.name if subtitle_path else None,
         )
         try:
-            _run_export(command, project_dir, media.duration_seconds, report, cancellation)
+            _run_export(
+                command,
+                project_dir,
+                media.duration_seconds,
+                report,
+                cancellation,
+                task_id=task_id,
+            )
         except RuntimeError:
             if cancellation is not None and cancellation.is_set():
                 raise
@@ -500,7 +514,14 @@ def export_editor_video(
                 encoder=CPU_ENCODER,
                 subtitle_path=subtitle_path.name if subtitle_path else None,
             )
-            _run_export(fallback, project_dir, media.duration_seconds, report, cancellation)
+            _run_export(
+                fallback,
+                project_dir,
+                media.duration_seconds,
+                report,
+                cancellation,
+                task_id=task_id,
+            )
             selected_encoder = CPU_ENCODER
         if not output_path.is_file() or output_path.stat().st_size == 0:
             raise RuntimeError("FFmpeg did not create the edited video.")
@@ -544,6 +565,8 @@ def _run_export(
     duration_seconds: float,
     report: ProgressCallback,
     cancellation: threading.Event | None,
+    *,
+    task_id: str | None = None,
 ) -> None:
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
     process = subprocess.Popen(
@@ -557,8 +580,8 @@ def _run_export(
         errors="replace",
         creationflags=creationflags,
     )
-    managed_media_processes.add(process)
-    output: list[str] = []
+    managed_media_processes.add(process, task_id=task_id)
+    output: deque[str] = deque(maxlen=80)
     last_percent = -1
     try:
         if process.stdout is not None:

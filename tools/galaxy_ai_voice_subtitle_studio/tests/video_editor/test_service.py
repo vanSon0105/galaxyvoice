@@ -101,6 +101,38 @@ class EditorServiceTests(unittest.TestCase):
         self.assertIn("amix=inputs=2", audio_filter)
         self.assertEqual(command[command.index("-c:v") + 1], "libx264")
 
+    def test_export_command_covers_all_resolutions_fps_encoders_and_replace_audio(self) -> None:
+        media = EditorMediaInfo(20.0, 1921, 1081, 23.976, True)
+        codec_by_encoder = {
+            CPU_ENCODER: "libx264",
+            NVIDIA_ENCODER: "h264_nvenc",
+            INTEL_ENCODER: "h264_qsv",
+        }
+        for resolution in ("original", "720p", "1080p", "2k"):
+            for fps in ("source", "24", "30", "50", "60"):
+                for encoder, codec in codec_by_encoder.items():
+                    with self.subTest(resolution=resolution, fps=fps, encoder=encoder):
+                        options = EditorExportOptions(
+                            video_path=Path("source.mp4"),
+                            audio_path=Path("voice.wav"),
+                            output_dir=Path("exports"),
+                            resolution=resolution,
+                            fps=fps,
+                            encoder=encoder,
+                            audio_mode="replace",
+                        )
+                        command = build_editor_export_command(
+                            "ffmpeg", options, media, Path("result.mp4"),
+                            encoder=encoder, subtitle_path=None,
+                        )
+                        graph = command[command.index("-filter_complex") + 1]
+                        self.assertNotIn("amix=", graph)
+                        self.assertEqual(command[command.index("-c:v") + 1], codec)
+                        if fps == "source":
+                            self.assertNotIn("fps=", " ".join(command))
+                        else:
+                            self.assertIn(f"fps={fps}", command[command.index("-vf") + 1])
+
     def test_still_preview_outputs_exactly_one_raw_frame(self) -> None:
         command = build_editor_frame_command(
             "ffmpeg",
@@ -153,6 +185,28 @@ class EditorServiceTests(unittest.TestCase):
                     )
 
             run_export.assert_called_once()
+
+    def test_export_rejects_audio_offset_after_video_end(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mp4"
+            audio = root / "voice.wav"
+            source.touch()
+            audio.touch()
+            options = EditorExportOptions(
+                video_path=source,
+                audio_path=audio,
+                output_dir=root / "exports",
+                audio_offset_ms=2_000,
+            )
+            with patch(
+                "app.video_editor.service.probe_editor_media",
+                return_value=EditorMediaInfo(2.0, 640, 360, 24.0, False),
+            ):
+                with self.assertRaisesRegex(ValueError, "trước khi video kết thúc"):
+                    export_editor_video(options, ffmpeg_path="ffmpeg")
+
+            self.assertFalse((root / "exports").exists())
 
 
 if __name__ == "__main__":

@@ -1,0 +1,114 @@
+from __future__ import annotations
+
+import tempfile
+import time
+import unittest
+from pathlib import Path
+from unittest import mock
+
+from fastapi.testclient import TestClient
+
+from app.common.errors import TaskCancelledError
+from app.server.main import create_app
+from app.server.routers import video_editor as editor_router
+from app.server.tasks import CANCELLED, DONE, task_registry
+from app.video_editor.service import EditorExportResult, EditorMediaInfo
+
+
+def _wait_status(task_id: str, timeout: float = 3.0) -> str:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        record = task_registry.get(task_id)
+        if record is not None and record.status != "running":
+            return record.status
+        time.sleep(0.02)
+    raise AssertionError(f"Task {task_id} did not finish")
+
+
+class VideoEditorApiTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temp = tempfile.TemporaryDirectory(prefix="galaxy_editor_api_")
+        self.root = Path(self._temp.name)
+        self.video = self.root / "source.mp4"
+        self.audio = self.root / "voice.wav"
+        self.video.write_bytes(b"video")
+        self.audio.write_bytes(b"audio")
+        self.client = TestClient(create_app(config_path=self.root / "config.json"))
+        task_registry._tasks.clear()
+        editor_router.reset_editor_sources()
+
+    def tearDown(self) -> None:
+        self.client.close()
+        self._temp.cleanup()
+
+    def test_load_video_returns_seekable_opaque_url(self) -> None:
+        with mock.patch.object(
+            editor_router,
+            "probe_editor_media",
+            return_value=EditorMediaInfo(42.5, 1920, 1080, 29.97, True),
+        ):
+            response = self.client.post("/api/editor/load", json={"path": str(self.video), "kind": "video"})
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["duration_seconds"], 42.5)
+        self.assertEqual(payload["width"], 1920)
+        self.assertEqual(self.client.get(payload["url"]).content, b"video")
+
+    def test_parse_srt_clamps_cues_to_video_duration(self) -> None:
+        srt = self.root / "source.srt"
+        srt.write_text(
+            "1\n00:00:00,000 --> 00:00:01,500\nXin chào\n\n"
+            "2\n00:00:03,000 --> 00:00:05,000\nBị loại\n",
+            encoding="utf-8",
+        )
+        response = self.client.post("/api/editor/cues", json={"path": str(srt), "duration_ms": 2_000})
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(len(response.json()["cues"]), 1)
+
+    def test_export_passes_task_context_and_serves_result(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_export(_options, **kwargs):
+            captured.update(kwargs)
+            project = self.root / "edit"
+            project.mkdir(exist_ok=True)
+            video = project / "edit.mp4"
+            video.write_bytes(b"edited")
+            manifest = project / "editor_manifest.json"
+            manifest.write_text("{}", encoding="utf-8")
+            return EditorExportResult(project, video, None, manifest, [])
+
+        with mock.patch("app.video_editor.service.export_editor_video", side_effect=fake_export):
+            response = self.client.post(
+                "/api/editor/export",
+                json={"video_path": str(self.video), "output_dir": str(self.root)},
+            )
+            task_id = response.json()["task_id"]
+            self.assertEqual(_wait_status(task_id), DONE)
+
+        record = task_registry.get(task_id)
+        self.assertIs(captured["cancellation"], record.stop_event)
+        self.assertEqual(captured["task_id"], task_id)
+        self.assertEqual(self.client.get(f"/api/files/task/{task_id}/edit.mp4").content, b"edited")
+
+    def test_cancel_terminates_only_editor_processes(self) -> None:
+        def wait_for_cancel(_options, *, cancellation, **_kwargs):
+            cancellation.wait(2)
+            raise TaskCancelledError()
+
+        with (
+            mock.patch("app.video_editor.service.export_editor_video", side_effect=wait_for_cancel),
+            mock.patch.object(editor_router.managed_media_processes, "terminate_task") as terminate,
+        ):
+            task_id = self.client.post(
+                "/api/editor/export",
+                json={"video_path": str(self.video), "output_dir": str(self.root)},
+            ).json()["task_id"]
+            self.client.post(f"/api/tasks/{task_id}/cancel")
+            self.assertEqual(_wait_status(task_id), CANCELLED)
+            terminate.assert_called_once_with(task_id)
+
+
+if __name__ == "__main__":
+    unittest.main()

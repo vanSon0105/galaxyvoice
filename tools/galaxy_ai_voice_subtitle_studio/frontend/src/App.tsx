@@ -14,7 +14,7 @@ import { StudioPage } from './pages/omnivoice/StudioPage'
 import { TranscriptsPage } from './pages/omnivoice/TranscriptsPage'
 import { VoiceStudioPage } from './pages/omnivoice/VoiceStudioPage'
 import { WorkspacesPage } from './pages/omnivoice/WorkspacesPage'
-import { PlaceholderPage } from './pages/PlaceholderPage'
+import { EditorPage } from './pages/EditorPage'
 import { SeparationPage } from './pages/SeparationPage'
 import { RemovalPage } from './pages/RemovalPage'
 import { SettingsPage } from './pages/SettingsPage'
@@ -56,7 +56,7 @@ export default function App() {
           <Route path="dubbing" element={<DubbingPage />} />
           <Route path="voicestudio" element={<VoiceStudioPage />} />
         </Route>
-        <Route path="/editor" element={<PlaceholderPage title="Dựng video" phase="Pha 7" />} />
+        <Route path="/editor" element={<EditorPage />} />
         <Route path="/separation" element={<SeparationPage />} />
         <Route path="/removal" element={<RemovalPage />} />
         <Route path="/settings" element={<SettingsPage />} />

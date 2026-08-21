@@ -1,6 +1,6 @@
 # Kế hoạch di cư Galaxy sang kiến trúc web (pywebview + FastAPI + React)
 
-> Cập nhật: 2026-08-21. Pha 0–6 đã hoàn thành; Pha 7–8 còn lại.
+> Cập nhật: 2026-08-21. Pha 0–7 đã hoàn thành; Pha 8 chờ người dùng sign-off.
 > File này là bản kế hoạch chi tiết cho toàn bộ quá trình di cư.
 
 ## 1. Bối cảnh & quyết định đã chốt
@@ -26,7 +26,7 @@ Cấu trúc:
 ```
 app/server/               # FastAPI backend
   main.py  shell.py  event_bus.py  tasks.py  ws.py  files.py
-  routers/{tasks,settings,voice,omnivoice,omnivoice_workspaces}.py
+  routers/{tasks,settings,voice,omnivoice,omnivoice_workspaces,audio_separation,subtitle_removal,video_editor}.py
 frontend/                 # React + TS + Vite + Tailwind (dist/ được commit)
 app/<domain>/*            # Service thuần — tái sử dụng nguyên vẹn cho cả 2 UI
 app/gui.py + app/*/gui.py # tkinter — sẽ xóa ở Pha 8
@@ -46,6 +46,7 @@ Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python 
 | 4 | VoiceStudio iframe: tự khởi động, install/launch single-flight, shutdown sạch | `f91dd32`, `64714bd` |
 | 5 | Tách âm thanh UVR: workspace web, preset/runtime cache, cancel theo task | `feat(P5)` |
 | 6 | Xóa phụ đề: 5 mode, worker ProPainter dài hạn, preview và cancel | `feat(P6)` |
+| 7 | Dựng video: media bin, timeline SVG, sửa cue, mix/replace audio và export | `feat(P7)` |
 
 ## 3. Pha 4 đã hoàn thành và các pha còn lại
 
@@ -90,17 +91,17 @@ Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python 
 - Frontend: `RemovalPage.tsx` — `<video>` preview, kéo vùng phụ đề bằng pointer events, license accept
 - **DoD**: cả 5 chế độ chạy; model load 1 lần/job (log-verified); cancel; preview scrub; tests xanh
 
-### Pha 7 — Dựng video
+### Pha 7 — Dựng video ✅
 
 **Mục tiêu**: timeline editor trên web — khó nhất về UI.
 
 - Backend `app/server/routers/video_editor.py`:
-  - `POST /api/editor/load` (probe → EditorMediaInfo), `POST /api/editor/cues` (parse SRT), `POST /api/editor/export` (task + cancel), still/preview qua `files.py`
-- **Fix service**: validate audio offset ≥ duration (hết xuất câm im lặng); stderr drain; task-scoped kill
+  - `POST /api/editor/load` (probe → EditorMediaInfo + URL stream seek được), `POST /api/editor/cues` (parse SRT), `POST /api/editor/export` (task + cancel)
+- **Fix service**: validate audio offset ≥ duration (hết xuất câm im lặng); bounded FFmpeg output; task-scoped kill
 - Frontend:
   - `src/components/timeline/geometry.ts` — module thuần (hit-test, snap, px↔ms) port ngữ nghĩa `timeline.py`, test vitest
   - `Timeline.tsx` — SVG: ruler, clip, track cue, playhead, kéo/thả
-  - `EditorPage.tsx` — media bin, bảng cue, track audio (volume/offset), export modal
+  - `EditorPage.tsx` — media bin kéo/thả, bảng cue virtualized, track audio (volume/offset), thiết lập export
   - Playback bằng `<video>` element — bỏ cả hệ ffplay frame-rendering của tkinter
 - **DoD**: seek, kéo clip, sửa cue, preview, export mix/replace với mọi encoder/resolution; không fail im lặng; vitest geometry xanh
 
@@ -133,7 +134,7 @@ Lệnh chạy: `python run.py` (tkinter, mặc định hiện tại) · `python 
 | 12 | probe nvidia-smi/venv trên UI thread | P5 | ✅ |
 | 13 | ProPainter spawn mỗi chunk | P6 | ✅ |
 | 14 | blur/fill muxer `-c:a copy` | P6 | ✅ |
-| 15 | audio offset ≥ duration xuất câm | P7 | ⏳ |
+| 15 | audio offset ≥ duration xuất câm | P7 | ✅ |
 | 16 | installer ffmpeg không checksum; pin faster-whisper | độc lập | ✅ (hoàn thành cùng P5) |
 
 ## 5. Testing

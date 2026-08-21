@@ -644,11 +644,7 @@ export function DubPage() {
                 type="password"
                 id="dub-ai-api-key"
                 autoComplete="off"
-                placeholder={
-                  providerMeta?.api_key_configured
-                    ? `•••••••• (${providerMeta.api_key_environment_name})`
-                    : providerMeta?.api_key_environment_name ?? ''
-                }
+                placeholder={providerMeta?.api_key_configured ? '********' : ''}
                 value={apiKey}
                 onChange={(event) => setApiKey(event.target.value)}
                 onPaste={handleApiKeyPaste}
@@ -658,8 +654,8 @@ export function DubPage() {
               <span className="field-hint">
                 {apiKeyMessage ||
                   (providerMeta?.api_key_configured
-                    ? `Đang dùng ${providerMeta.api_key_environment_name}.`
-                    : `Sẽ lưu vào ${providerMeta?.api_key_environment_name ?? 'User Environment'}.`)}
+                    ? `Đã có API key (${providerMeta.api_key_environment_name}).`
+                    : `Chưa có API key. Dán key để lưu vào ${providerMeta?.api_key_environment_name ?? 'User Environment'}.`)}
               </span>
             </div>
           </div>

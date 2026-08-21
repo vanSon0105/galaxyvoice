@@ -1,7 +1,8 @@
 """Settings & system endpoints: shared config.json CRUD plus UI metadata.
 
-API keys never appear here: AppConfig deliberately has no secret fields,
-and the translation API key flows through env vars / per-request input only.
+API keys never appear in AppConfig or API responses. Translation keys are read
+from environment variables, with an explicit endpoint for writing the current
+Windows user's provider-specific Galaxy environment variable.
 """
 from __future__ import annotations
 
@@ -20,6 +21,7 @@ from ...common.config import (
     load_app_config,
     save_app_config,
 )
+from ...common.env_config import set_user_environment
 from ...common.processes import managed_media_processes
 from ...audio_separation.service import (
     AUDIO_OUTPUT_FORMATS,
@@ -48,6 +50,7 @@ from ...voice.translator import (
     default_translation_model,
     default_translation_provider,
     translation_provider_codes,
+    translation_provider_api_key_environment_name,
     translation_provider_label,
     translation_provider_models,
 )
@@ -85,6 +88,29 @@ def update_settings(body: dict[str, Any], request: Request) -> dict[str, Any]:
     return asdict(validated)
 
 
+@router.post("/settings/translation-api-key")
+def save_translation_api_key(body: dict[str, Any]) -> dict[str, Any]:
+    provider = str(body.get("provider") or "").strip().lower()
+    api_key = str(body.get("api_key") or "").strip()
+    if provider not in translation_provider_codes():
+        raise HTTPException(status_code=400, detail="Nhà cung cấp AI không hợp lệ")
+    if not api_key:
+        raise HTTPException(status_code=400, detail="API key không được để trống")
+    if len(api_key) > 16_384:
+        raise HTTPException(status_code=400, detail="API key quá dài")
+
+    environment_name = translation_provider_api_key_environment_name(provider)
+    try:
+        set_user_environment(environment_name, api_key)
+    except (OSError, ValueError) as error:
+        raise HTTPException(status_code=500, detail=f"Không lưu được API key: {error}") from error
+    return {
+        "provider": provider,
+        "environment_name": environment_name,
+        "configured": True,
+    }
+
+
 @router.get("/settings/meta")
 def get_settings_meta() -> dict[str, Any]:
     engines = [
@@ -103,6 +129,7 @@ def get_settings_meta() -> dict[str, Any]:
             "default_base_url": default_translation_base_url(code),
             "models": list(translation_provider_models(code)),
             "api_key_configured": bool(default_translation_api_key(code)),
+            "api_key_environment_name": translation_provider_api_key_environment_name(code),
         }
         for code in provider_codes
     ]

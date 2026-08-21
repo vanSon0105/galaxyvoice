@@ -1,7 +1,7 @@
 import { apiJson } from './client'
 
-/** Flat settings record mirroring AppConfig (no secrets — the backend
- *  deliberately excludes API keys from the config). */
+/** Flat settings record mirroring AppConfig. Provider keys are stored only in
+ *  the Windows user environment and deliberately excluded from this record. */
 export type AppSettings = Record<string, string | number | boolean | undefined>
 
 export interface Option {
@@ -14,6 +14,13 @@ export interface ProviderMeta extends Option {
   default_base_url: string
   models: string[]
   api_key_configured: boolean
+  api_key_environment_name: string
+}
+
+export interface SavedTranslationApiKey {
+  provider: string
+  environment_name: string
+  configured: boolean
 }
 
 export interface SettingsMeta {
@@ -50,4 +57,15 @@ export function updateSettings(patch: Record<string, unknown>): Promise<AppSetti
 
 export function fetchSettingsMeta(): Promise<SettingsMeta> {
   return apiJson<SettingsMeta>('/api/settings/meta')
+}
+
+export function saveTranslationApiKey(
+  provider: string,
+  apiKey: string,
+): Promise<SavedTranslationApiKey> {
+  return apiJson<SavedTranslationApiKey>('/api/settings/translation-api-key', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ provider, api_key: apiKey }),
+  })
 }

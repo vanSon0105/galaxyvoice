@@ -22,6 +22,12 @@ describe('Dubbing translation controls', () => {
 
   it('shows a masked placeholder when the provider key comes from the environment', () => {
     expect(dubPageSource).toContain("providerMeta?.api_key_configured")
-    expect(dubPageSource).toContain("'•••••••• (từ environment)'")
+    expect(dubPageSource).toContain('`•••••••• (${providerMeta.api_key_environment_name})`')
+  })
+
+  it('persists pasted provider keys to the Galaxy user environment', () => {
+    expect(dubPageSource).toContain('saveTranslationApiKey')
+    expect(dubPageSource).toContain('onPaste={handleApiKeyPaste}')
+    expect(dubPageSource).toContain('onBlur={() => void persistApiKey(provider, apiKey)}')
   })
 })

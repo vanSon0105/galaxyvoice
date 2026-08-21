@@ -291,6 +291,16 @@ def translation_provider_models(provider: str) -> tuple[str, ...]:
     return _provider_defaults(provider).models
 
 
+def translation_provider_api_key_environment_name(provider: str) -> str:
+    code = provider.strip().lower()
+    if code not in TRANSLATION_PROVIDERS:
+        raise ValueError(f"Unknown translation provider: {provider}")
+    for name in TRANSLATION_PROVIDERS[code].api_key_env_names:
+        if name.startswith("GALAXY_") and name.endswith("_API_KEY"):
+            return name
+    raise ValueError(f"Provider has no Galaxy API key environment: {provider}")
+
+
 def translation_provider_code(label_or_code: str) -> str:
     return normalize_translation_provider(label_or_code)
 

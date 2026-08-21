@@ -83,6 +83,13 @@ class SettingsApiTests(unittest.TestCase):
             {"openai", "deepseek", "gemini", "groq", "openrouter", "mistral", "xai", "ollama"},
             {provider["code"] for provider in body["translation_providers"]},
         )
+        self.assertTrue(
+            all(
+                provider["api_key_environment_name"].startswith("GALAXY_")
+                and provider["api_key_environment_name"].endswith("_API_KEY")
+                for provider in body["translation_providers"]
+            )
+        )
         self.assertIn(("auto", "Auto detect"), [(item["code"], item["label"]) for item in body["source_languages"]])
 
     def test_settings_meta_reports_environment_key_without_exposing_it(self) -> None:
@@ -96,7 +103,47 @@ class SettingsApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         providers = {item["code"]: item for item in response.json()["translation_providers"]}
         self.assertTrue(providers["deepseek"]["api_key_configured"])
+        self.assertEqual(
+            providers["deepseek"]["api_key_environment_name"],
+            "GALAXY_DEEPSEEK_API_KEY",
+        )
         self.assertNotIn("deepseek-secret-value", response.text)
+
+    def test_save_translation_api_key_uses_provider_galaxy_environment_name(self) -> None:
+        with mock.patch(
+            "app.server.routers.settings.set_user_environment"
+        ) as save_environment:
+            response = self.client.post(
+                "/api/settings/translation-api-key",
+                json={"provider": "deepseek", "api_key": "deepseek-secret-value"},
+            )
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(
+            response.json(),
+            {
+                "provider": "deepseek",
+                "environment_name": "GALAXY_DEEPSEEK_API_KEY",
+                "configured": True,
+            },
+        )
+        save_environment.assert_called_once_with(
+            "GALAXY_DEEPSEEK_API_KEY", "deepseek-secret-value"
+        )
+        self.assertNotIn("deepseek-secret-value", response.text)
+
+    def test_save_translation_api_key_rejects_unknown_provider_and_empty_key(self) -> None:
+        unknown = self.client.post(
+            "/api/settings/translation-api-key",
+            json={"provider": "unknown", "api_key": "secret"},
+        )
+        empty = self.client.post(
+            "/api/settings/translation-api-key",
+            json={"provider": "deepseek", "api_key": "   "},
+        )
+
+        self.assertEqual(unknown.status_code, 400)
+        self.assertEqual(empty.status_code, 400)
 
     def test_system_processes_returns_snapshot(self) -> None:
         response = self.client.get("/api/system/processes")

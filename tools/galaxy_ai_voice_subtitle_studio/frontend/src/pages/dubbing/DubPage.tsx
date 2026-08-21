@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
-import { fetchSettings, fetchSettingsMeta } from '../../api/settings'
+import { fetchSettings, fetchSettingsMeta, saveTranslationApiKey } from '../../api/settings'
 import type { AppSettings, SettingsMeta } from '../../api/settings'
 import {
   fetchDraft,
@@ -68,6 +68,8 @@ export function DubPage() {
   const [aiModel, setAiModel] = useState('')
   const [aiBaseUrl, setAiBaseUrl] = useState('')
   const [apiKey, setApiKey] = useState('')
+  const [apiKeyMessage, setApiKeyMessage] = useState('')
+  const [apiKeySaving, setApiKeySaving] = useState(false)
   const [discoveredModels, setDiscoveredModels] = useState<string[] | null>(null)
   const [modelsLoading, setModelsLoading] = useState(false)
   const [modelsMessage, setModelsMessage] = useState('')
@@ -78,6 +80,7 @@ export function DubPage() {
   const [generateResult, setGenerateResult] = useState<GenerateResultPayload | null>(null)
   const [extractResult, setExtractResult] = useState<ExtractResultPayload | null>(null)
   const [formError, setFormError] = useState('')
+  const apiKeySaveRef = useRef<{ provider: string; apiKey: string; promise: Promise<void> } | null>(null)
 
   const voiceQuery = useQuery({
     queryKey: ['voices', engine],
@@ -205,12 +208,48 @@ export function DubPage() {
     setApiKey('')
     setDiscoveredModels(null)
     setModelsMessage('')
+    setApiKeyMessage('')
     // Provider keys are isolated so one vendor never receives another vendor's key.
     const providerMeta = meta?.translation_providers.find((item) => item.code === code)
     if (providerMeta) {
       setAiModel(providerMeta.default_model)
       setAiBaseUrl(providerMeta.default_base_url)
     }
+  }
+
+  const persistApiKey = (providerCode: string, rawApiKey: string): Promise<void> => {
+    const value = rawApiKey.trim()
+    if (!providerCode || !value) return Promise.resolve()
+    const inFlight = apiKeySaveRef.current
+    if (inFlight?.provider === providerCode && inFlight.apiKey === value) {
+      return inFlight.promise
+    }
+
+    setApiKeySaving(true)
+    setApiKeyMessage('Đang lưu API key...')
+    const promise = saveTranslationApiKey(providerCode, value)
+      .then(async (saved) => {
+        setApiKey((current) => (current.trim() === value ? '' : current))
+        setApiKeyMessage(`Đã lưu vào ${saved.environment_name}.`)
+        await queryClient.invalidateQueries({ queryKey: ['settings-meta'] })
+      })
+      .catch((error: unknown) => {
+        setApiKeyMessage(error instanceof Error ? error.message : String(error))
+      })
+      .finally(() => {
+        if (apiKeySaveRef.current?.promise === promise) apiKeySaveRef.current = null
+        setApiKeySaving(false)
+      })
+    apiKeySaveRef.current = { provider: providerCode, apiKey: value, promise }
+    return promise
+  }
+
+  const handleApiKeyPaste = (event: React.ClipboardEvent<HTMLInputElement>) => {
+    const value = event.clipboardData.getData('text').trim()
+    if (!value) return
+    event.preventDefault()
+    setApiKey(value)
+    void persistApiKey(provider, value)
   }
 
   const refreshTranslationModels = async () => {
@@ -600,20 +639,28 @@ export function DubPage() {
               />
             </div>
             <div className="field">
-              <label>API key (không lưu)</label>
+              <label>API key</label>
               <input
                 type="password"
                 id="dub-ai-api-key"
                 autoComplete="off"
                 placeholder={
-                  providerMeta?.api_key_configured ? '•••••••• (từ environment)' : ''
+                  providerMeta?.api_key_configured
+                    ? `•••••••• (${providerMeta.api_key_environment_name})`
+                    : providerMeta?.api_key_environment_name ?? ''
                 }
                 value={apiKey}
                 onChange={(event) => setApiKey(event.target.value)}
+                onPaste={handleApiKeyPaste}
+                onBlur={() => void persistApiKey(provider, apiKey)}
+                disabled={apiKeySaving}
               />
-              {providerMeta?.api_key_configured && !apiKey && (
-                <span className="field-hint">Đang dùng API key từ biến môi trường.</span>
-              )}
+              <span className="field-hint">
+                {apiKeyMessage ||
+                  (providerMeta?.api_key_configured
+                    ? `Đang dùng ${providerMeta.api_key_environment_name}.`
+                    : `Sẽ lưu vào ${providerMeta?.api_key_environment_name ?? 'User Environment'}.`)}
+              </span>
             </div>
           </div>
           <div style={{ display: 'flex', gap: 10, marginTop: 12 }}>

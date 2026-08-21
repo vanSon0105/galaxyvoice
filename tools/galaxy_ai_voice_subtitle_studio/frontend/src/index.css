@@ -1042,6 +1042,7 @@ body {
 .timeline-handle { fill: var(--color-accent); cursor: ew-resize; }
 .timeline-cue-overview { fill: #765832; opacity: 0.88; pointer-events: none; }
 .timeline-playhead { stroke: var(--color-danger); stroke-width: 2; pointer-events: none; }
+.timeline-playhead-hit { stroke: transparent; stroke-width: 14; cursor: ew-resize; }
 .timeline-playhead-head { fill: var(--color-danger); pointer-events: none; }
 
 .timeline-labels {

@@ -63,6 +63,7 @@ export function Timeline({
 }: TimelineProps) {
   const viewportRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
+  const playheadPointerRef = useRef<number | null>(null)
   const [viewport, setViewport] = useState({ left: 0, width: 900 })
   const pixelsPerSecond = clamp(zoom, 0.1, 300)
   const contentWidth = Math.max(viewport.width, TRACK_LABEL_WIDTH + msToPx(durationMs, pixelsPerSecond) + 24)
@@ -164,8 +165,23 @@ export function Timeline({
           viewBox={`0 0 ${contentWidth} ${SVG_HEIGHT}`}
           onPointerDown={(event) => {
             if (event.button !== 0) return
+            if (typeof event.currentTarget.setPointerCapture === 'function') {
+              event.currentTarget.setPointerCapture(event.pointerId)
+            }
+            playheadPointerRef.current = event.pointerId
             onSeek(eventTime(event))
           }}
+          onPointerMove={(event) => {
+            if (playheadPointerRef.current === event.pointerId) onSeek(eventTime(event))
+          }}
+          onPointerUp={(event) => {
+            if (playheadPointerRef.current !== event.pointerId) return
+            playheadPointerRef.current = null
+            if (typeof event.currentTarget.releasePointerCapture === 'function') {
+              event.currentTarget.releasePointerCapture(event.pointerId)
+            }
+          }}
+          onPointerCancel={() => { playheadPointerRef.current = null }}
         >
           <rect width={contentWidth} height={SVG_HEIGHT} className="timeline-bg" />
           {ticks.map((second) => {
@@ -217,6 +233,7 @@ export function Timeline({
               </g>
             )
           })}
+          <line x1={positionX(playheadMs)} x2={positionX(playheadMs)} y1={0} y2={SVG_HEIGHT} className="timeline-playhead-hit" />
           <line x1={positionX(playheadMs)} x2={positionX(playheadMs)} y1={0} y2={SVG_HEIGHT} className="timeline-playhead" />
           <path d={`M ${positionX(playheadMs) - 5} 0 L ${positionX(playheadMs) + 5} 0 L ${positionX(playheadMs)} 8 Z`} className="timeline-playhead-head" />
         </svg>

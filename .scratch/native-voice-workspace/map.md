@@ -26,14 +26,15 @@ explicitly approved.
 
 ## Decisions so far
 
-- Native workflow parity over engine parity — Galaxy reimplements its own
+- [VoiceStudio parity inventory and acceptance matrix](issues/01-voice-studio-parity-inventory.md) - The source-backed matrix assigns every shipped workflow to a native workspace, shared foundation, explicit extension disposition, or explicit non-goal; Wav2Lip remains roadmap-only.
+- Native workflow parity over engine parity - Galaxy reimplements its own
   workflows while VoiceStudio remains a comparison reference until the final
   retirement gate.
-- Portable project ownership — Galaxy Project Bundles own workflow state and
+- Portable project ownership - Galaxy Project Bundles own workflow state and
   outputs rather than relying on one shared runtime database.
-- Local-first voice ownership — Voice Library has no community gallery or
+- Local-first voice ownership - Voice Library has no community gallery or
   marketplace requirement in this effort.
-- Dubbing quality boundary — timing/fit/QC is in scope; visual lip-sync is a
+- Dubbing quality boundary - timing/fit/QC is in scope; visual lip-sync is a
   separately evaluated optional capability.
 
 ## Not yet specified
@@ -44,8 +45,6 @@ explicitly approved.
   compatibility, provenance watermarking, remote backend) become first-class
   Galaxy tools after the core workspace is complete. They remain in the
   inventory and cannot disappear by accident.
-- Data-import policy for pre-existing VoiceStudio projects and profiles once
-  their on-disk schemas have been audited.
 
 ## Out of scope
 

@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "workflow_id": "40000000-0000-4000-8000-000000000004",
+  "type": "longform",
+  "revision": 2,
+  "name": "Example audiobook",
+  "status": "draft",
+  "created_at": "2026-08-25T09:15:00Z",
+  "updated_at": "2026-08-25T09:30:00Z",
+  "inputs": [
+    {
+      "kind": "asset",
+      "asset_id": "20000000-0000-4000-8000-000000000004",
+      "role": "cover"
+    }
+  ],
+  "voice_snapshot_ids": [
+    "30000000-0000-4000-8000-000000000001"
+  ],
+  "settings": {
+    "language": "vi-VN",
+    "gap_ms": 250,
+    "export_formats": [
+      "wav",
+      "mp3",
+      "m4b"
+    ],
+    "export_stems": true,
+    "metadata": {
+      "title": "Một hành trình ngắn",
+      "author": "Galaxy Author",
+      "cover_asset_id": "20000000-0000-4000-8000-000000000004"
+    }
+  },
+  "content": {
+    "chapters": [
+      {
+        "chapter_id": "47000000-0000-4000-8000-000000000001",
+        "position": 0,
+        "title": "Chương 1",
+        "spans": [
+          {
+            "span_id": "48000000-0000-4000-8000-000000000001",
+            "position": 0,
+            "kind": "speech",
+            "text": "Buổi sáng ấy, Lan bắt đầu chuyến đi.",
+            "voice_snapshot_id": "30000000-0000-4000-8000-000000000001",
+            "speed": 1.0,
+            "volume": 1.0
+          },
+          {
+            "span_id": "48000000-0000-4000-8000-000000000002",
+            "position": 1,
+            "kind": "pause",
+            "pause_ms": 700
+          }
+        ]
+      }
+    ]
+  },
+  "handoffs": []
+}

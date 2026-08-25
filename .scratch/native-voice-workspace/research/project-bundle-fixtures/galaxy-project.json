@@ -1,0 +1,176 @@
+{
+  "schema_version": 1,
+  "project_id": "11111111-1111-4111-8111-111111111111",
+  "revision": 12,
+  "name": "Chinese video localization",
+  "created_at": "2026-08-25T08:00:00Z",
+  "updated_at": "2026-08-25T09:30:00Z",
+  "created_by": {
+    "application": "galaxy-ai-studio",
+    "version": "1.0.0"
+  },
+  "paths": {
+    "assets": "assets",
+    "workflows": "workflows",
+    "generated": "generated",
+    "exports": "exports",
+    "jobs": "jobs",
+    "backups": "backups",
+    "cache": "cache"
+  },
+  "assets": [
+    {
+      "asset_id": "20000000-0000-4000-8000-000000000001",
+      "kind": "video",
+      "role": "source_video",
+      "ownership": "linked",
+      "state": "available",
+      "bundle_path": null,
+      "relative_hint": null,
+      "absolute_hint": "C:/FixtureMedia/chinese-source.mp4",
+      "fingerprint": {
+        "algorithm": "sha256",
+        "digest": "1111111111111111111111111111111111111111111111111111111111111111",
+        "size_bytes": 734003200,
+        "modified_at": "2026-08-20T10:00:00Z"
+      },
+      "provenance": {
+        "origin": "imported",
+        "original_name": "chinese-source.mp4",
+        "imported_at": "2026-08-25T08:00:00Z",
+        "replacements": []
+      }
+    },
+    {
+      "asset_id": "20000000-0000-4000-8000-000000000002",
+      "kind": "subtitle",
+      "role": "source_subtitle",
+      "ownership": "managed",
+      "state": "available",
+      "bundle_path": "assets/20000000-0000-4000-8000-000000000002/source.zh-CN.srt",
+      "relative_hint": null,
+      "absolute_hint": null,
+      "fingerprint": {
+        "algorithm": "sha256",
+        "digest": "2222222222222222222222222222222222222222222222222222222222222222",
+        "size_bytes": 4821,
+        "modified_at": "2026-08-25T08:05:00Z"
+      },
+      "provenance": {
+        "origin": "workflow",
+        "original_name": "source.zh-CN.srt",
+        "imported_at": "2026-08-25T08:05:00Z",
+        "replacements": []
+      }
+    },
+    {
+      "asset_id": "20000000-0000-4000-8000-000000000003",
+      "kind": "audio",
+      "role": "reference_voice",
+      "ownership": "managed",
+      "state": "available",
+      "bundle_path": "assets/20000000-0000-4000-8000-000000000003/lan-reference.wav",
+      "relative_hint": null,
+      "absolute_hint": null,
+      "fingerprint": {
+        "algorithm": "sha256",
+        "digest": "3333333333333333333333333333333333333333333333333333333333333333",
+        "size_bytes": 1048576,
+        "modified_at": "2026-08-25T08:10:00Z"
+      },
+      "provenance": {
+        "origin": "voice_library_snapshot",
+        "original_name": "lan-reference.wav",
+        "imported_at": "2026-08-25T08:10:00Z",
+        "replacements": []
+      }
+    },
+    {
+      "asset_id": "20000000-0000-4000-8000-000000000004",
+      "kind": "image",
+      "role": "cover",
+      "ownership": "managed",
+      "state": "available",
+      "bundle_path": "assets/20000000-0000-4000-8000-000000000004/book-cover.jpg",
+      "relative_hint": null,
+      "absolute_hint": null,
+      "fingerprint": {
+        "algorithm": "sha256",
+        "digest": "4444444444444444444444444444444444444444444444444444444444444444",
+        "size_bytes": 245760,
+        "modified_at": "2026-08-25T08:12:00Z"
+      },
+      "provenance": {
+        "origin": "imported",
+        "original_name": "book-cover.jpg",
+        "imported_at": "2026-08-25T08:12:00Z",
+        "replacements": []
+      }
+    }
+  ],
+  "voice_snapshots": [
+    {
+      "voice_snapshot_id": "30000000-0000-4000-8000-000000000001",
+      "revision": 1,
+      "name": "Lan Vietnamese narrator",
+      "document_path": "workflows/voices/voice-snapshot.json",
+      "updated_at": "2026-08-25T08:15:00Z"
+    }
+  ],
+  "workflows": [
+    {
+      "workflow_id": "40000000-0000-4000-8000-000000000001",
+      "type": "batch",
+      "name": "Short announcements",
+      "schema_version": 1,
+      "revision": 2,
+      "status": "draft",
+      "document_path": "workflows/batch/batch.json",
+      "created_at": "2026-08-25T08:20:00Z",
+      "updated_at": "2026-08-25T08:25:00Z"
+    },
+    {
+      "workflow_id": "40000000-0000-4000-8000-000000000002",
+      "type": "transcript",
+      "name": "Chinese source transcript",
+      "schema_version": 1,
+      "revision": 3,
+      "status": "ready",
+      "document_path": "workflows/transcripts/transcript.json",
+      "created_at": "2026-08-25T08:30:00Z",
+      "updated_at": "2026-08-25T08:45:00Z"
+    },
+    {
+      "workflow_id": "40000000-0000-4000-8000-000000000003",
+      "type": "dubbing",
+      "name": "Vietnamese dub",
+      "schema_version": 1,
+      "revision": 4,
+      "status": "draft",
+      "document_path": "workflows/dubbing/dubbing.json",
+      "created_at": "2026-08-25T08:50:00Z",
+      "updated_at": "2026-08-25T09:10:00Z"
+    },
+    {
+      "workflow_id": "40000000-0000-4000-8000-000000000004",
+      "type": "longform",
+      "name": "Example audiobook",
+      "schema_version": 1,
+      "revision": 2,
+      "status": "draft",
+      "document_path": "workflows/longform/longform.json",
+      "created_at": "2026-08-25T09:15:00Z",
+      "updated_at": "2026-08-25T09:30:00Z"
+    }
+  ],
+  "runs": [],
+  "exports": [],
+  "jobs": [],
+  "secret_references": [
+    {
+      "name": "GALAXY_DEEPSEEK_API_KEY",
+      "provider": "deepseek",
+      "purpose": "translation"
+    }
+  ]
+}

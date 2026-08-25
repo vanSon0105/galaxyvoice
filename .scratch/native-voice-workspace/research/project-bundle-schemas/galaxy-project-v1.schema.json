@@ -1,0 +1,509 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "galaxy://schemas/project-manifest/v1",
+  "title": "Galaxy Project Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "project_id",
+    "revision",
+    "name",
+    "created_at",
+    "updated_at",
+    "created_by",
+    "paths",
+    "assets",
+    "voice_snapshots",
+    "workflows",
+    "runs",
+    "exports",
+    "jobs",
+    "secret_references"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "project_id": {
+      "$ref": "#/$defs/uuid"
+    },
+    "revision": {
+      "$ref": "#/$defs/revision"
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200
+    },
+    "created_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "updated_at": {
+      "$ref": "#/$defs/timestamp"
+    },
+    "created_by": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "application",
+        "version"
+      ],
+      "properties": {
+        "application": {
+          "const": "galaxy-ai-studio"
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "paths": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "assets",
+        "workflows",
+        "generated",
+        "exports",
+        "jobs",
+        "backups",
+        "cache"
+      ],
+      "properties": {
+        "assets": {
+          "$ref": "#/$defs/bundlePath"
+        },
+        "workflows": {
+          "$ref": "#/$defs/bundlePath"
+        },
+        "generated": {
+          "$ref": "#/$defs/bundlePath"
+        },
+        "exports": {
+          "$ref": "#/$defs/bundlePath"
+        },
+        "jobs": {
+          "$ref": "#/$defs/bundlePath"
+        },
+        "backups": {
+          "$ref": "#/$defs/bundlePath"
+        },
+        "cache": {
+          "$ref": "#/$defs/bundlePath"
+        }
+      }
+    },
+    "assets": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/asset"
+      }
+    },
+    "voice_snapshots": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/voiceSnapshotIndex"
+      }
+    },
+    "workflows": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/workflowIndex"
+      }
+    },
+    "runs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/runIndex"
+      }
+    },
+    "exports": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/exportIndex"
+      }
+    },
+    "jobs": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/jobIndex"
+      }
+    },
+    "secret_references": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/secretReference"
+      }
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "revision": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "pattern": "Z$"
+    },
+    "bundlePath": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^(?![A-Za-z]:)(?!/)(?!.*(^|/)\\.\\.(/|$))(?!.*://).+$"
+    },
+    "nullableString": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "fingerprint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "algorithm",
+        "digest",
+        "size_bytes",
+        "modified_at"
+      ],
+      "properties": {
+        "algorithm": {
+          "const": "sha256"
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "modified_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "origin",
+        "original_name",
+        "imported_at",
+        "replacements"
+      ],
+      "properties": {
+        "origin": {
+          "type": "string",
+          "minLength": 1
+        },
+        "original_name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "imported_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "replacements": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        }
+      }
+    },
+    "asset": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "asset_id",
+        "kind",
+        "role",
+        "ownership",
+        "state",
+        "bundle_path",
+        "relative_hint",
+        "absolute_hint",
+        "fingerprint",
+        "provenance"
+      ],
+      "properties": {
+        "asset_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "kind": {
+          "enum": [
+            "video",
+            "audio",
+            "subtitle",
+            "transcript",
+            "image",
+            "document",
+            "other"
+          ]
+        },
+        "role": {
+          "type": "string",
+          "minLength": 1
+        },
+        "ownership": {
+          "enum": [
+            "managed",
+            "linked"
+          ]
+        },
+        "state": {
+          "enum": [
+            "available",
+            "missing",
+            "modified"
+          ]
+        },
+        "bundle_path": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/bundlePath"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "relative_hint": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "absolute_hint": {
+          "$ref": "#/$defs/nullableString"
+        },
+        "fingerprint": {
+          "$ref": "#/$defs/fingerprint"
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "ownership": {
+                "const": "managed"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "bundle_path": {
+                "$ref": "#/$defs/bundlePath"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "ownership": {
+                "const": "linked"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "bundle_path": {
+                "type": "null"
+              }
+            }
+          }
+        }
+      ]
+    },
+    "voiceSnapshotIndex": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "voice_snapshot_id",
+        "revision",
+        "name",
+        "document_path",
+        "updated_at"
+      ],
+      "properties": {
+        "voice_snapshot_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "document_path": {
+          "$ref": "#/$defs/bundlePath"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "workflowIndex": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "workflow_id",
+        "type",
+        "name",
+        "schema_version",
+        "revision",
+        "status",
+        "document_path",
+        "created_at",
+        "updated_at"
+      ],
+      "properties": {
+        "workflow_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "type": {
+          "enum": [
+            "batch",
+            "transcript",
+            "dubbing",
+            "longform"
+          ]
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "schema_version": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "revision": {
+          "$ref": "#/$defs/revision"
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "document_path": {
+          "$ref": "#/$defs/bundlePath"
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "runIndex": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "run_id",
+        "workflow_id",
+        "status",
+        "document_path",
+        "created_at"
+      ],
+      "properties": {
+        "run_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "workflow_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "document_path": {
+          "$ref": "#/$defs/bundlePath"
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "exportIndex": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "export_id",
+        "document_path",
+        "created_at"
+      ],
+      "properties": {
+        "export_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "document_path": {
+          "$ref": "#/$defs/bundlePath"
+        },
+        "created_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "jobIndex": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "job_id",
+        "workflow_id",
+        "status",
+        "document_path",
+        "updated_at"
+      ],
+      "properties": {
+        "job_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "workflow_id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "status": {
+          "type": "string",
+          "minLength": 1
+        },
+        "document_path": {
+          "$ref": "#/$defs/bundlePath"
+        },
+        "updated_at": {
+          "$ref": "#/$defs/timestamp"
+        }
+      }
+    },
+    "secretReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name",
+        "provider",
+        "purpose"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]*$"
+        },
+        "provider": {
+          "type": "string",
+          "minLength": 1
+        },
+        "purpose": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "workflow_id": "40000000-0000-4000-8000-000000000001",
+  "type": "batch",
+  "revision": 2,
+  "name": "Short announcements",
+  "status": "draft",
+  "created_at": "2026-08-25T08:20:00Z",
+  "updated_at": "2026-08-25T08:25:00Z",
+  "inputs": [],
+  "voice_snapshot_ids": [
+    "30000000-0000-4000-8000-000000000001"
+  ],
+  "settings": {
+    "output_format": "wav",
+    "combine": false,
+    "parallelism": 1
+  },
+  "content": {
+    "items": [
+      {
+        "item_id": "41000000-0000-4000-8000-000000000001",
+        "position": 0,
+        "text": "Xin chào, chào mừng bạn đến với Galaxy.",
+        "language": "vi-VN",
+        "voice_snapshot_id": "30000000-0000-4000-8000-000000000001",
+        "speed": 1.0,
+        "status": "pending"
+      },
+      {
+        "item_id": "41000000-0000-4000-8000-000000000002",
+        "position": 1,
+        "text": "Video tiếp theo sẽ bắt đầu ngay bây giờ.",
+        "language": "vi-VN",
+        "voice_snapshot_id": "30000000-0000-4000-8000-000000000001",
+        "speed": 1.05,
+        "status": "pending"
+      }
+    ]
+  },
+  "handoffs": []
+}

@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "workflow_id": "40000000-0000-4000-8000-000000000002",
+  "type": "transcript",
+  "revision": 3,
+  "name": "Chinese source transcript",
+  "status": "ready",
+  "created_at": "2026-08-25T08:30:00Z",
+  "updated_at": "2026-08-25T08:45:00Z",
+  "inputs": [
+    {
+      "kind": "asset",
+      "asset_id": "20000000-0000-4000-8000-000000000001",
+      "role": "source_media"
+    }
+  ],
+  "voice_snapshot_ids": [],
+  "settings": {
+    "language": "zh-CN",
+    "model": "faster-whisper-large-v3",
+    "diarization": true,
+    "word_timestamps": true
+  },
+  "content": {
+    "detected_language": "zh-CN",
+    "speakers": [
+      {
+        "speaker_id": "42000000-0000-4000-8000-000000000001",
+        "label": "Speaker 1"
+      }
+    ],
+    "segments": [
+      {
+        "segment_id": "43000000-0000-4000-8000-000000000001",
+        "position": 0,
+        "start_ms": 0,
+        "end_ms": 3760,
+        "speaker_id": "42000000-0000-4000-8000-000000000001",
+        "text": "我的世界，但只能使用一个物品栏。",
+        "confidence": 0.96
+      },
+      {
+        "segment_id": "43000000-0000-4000-8000-000000000002",
+        "position": 1,
+        "start_ms": 3760,
+        "end_ms": 6280,
+        "speaker_id": "42000000-0000-4000-8000-000000000001",
+        "text": "所以我要挑战一个更难的。",
+        "confidence": 0.94
+      }
+    ]
+  },
+  "handoffs": [
+    {
+      "handoff_id": "44000000-0000-4000-8000-000000000001",
+      "target_workflow_id": "40000000-0000-4000-8000-000000000003",
+      "created_at": "2026-08-25T08:50:00Z"
+    }
+  ]
+}

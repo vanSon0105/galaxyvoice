@@ -24,8 +24,18 @@
   --color-warning: #e0ad67;
   --color-danger: #dc766f;
   --color-preview: #0c0f11;
+  --color-hover: rgba(255, 255, 255, 0.045);
   --border-soft: rgba(255, 255, 255, 0.12);
   --border-strong: rgba(255, 255, 255, 0.23);
+  --radius-control: 4px;
+  --radius-panel: 6px;
+  --control-height: 34px;
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
   --font-sans: 'Segoe UI Variable Text', 'Segoe UI', Arial, sans-serif;
   --font-mono: 'Cascadia Mono', 'Cascadia Code', Consolas, monospace;
 }

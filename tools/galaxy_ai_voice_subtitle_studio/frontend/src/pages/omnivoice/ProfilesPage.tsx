@@ -1,14 +1,24 @@
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { deleteProfile, fetchProfiles } from '../../api/omnivoice'
+import { WorkspaceLoading, WorkspaceState } from '../../components/WorkspaceState'
 
 /** Saved voice-profile library with delete. */
 export function ProfilesPage() {
   const queryClient = useQueryClient()
   const profilesQuery = useQuery({ queryKey: ['omnivoice-profiles'], queryFn: fetchProfiles })
 
-  if (profilesQuery.isPending) return <div className="section-card">Đang tải…</div>
-  if (!profilesQuery.data) return <div className="section-card">Không tải được thư viện giọng.</div>
+  if (profilesQuery.isPending) return <WorkspaceLoading label="Đang tải thư viện giọng..." />
+  if (profilesQuery.isError || !profilesQuery.data) {
+    return (
+      <WorkspaceState
+        title="Không tải được thư viện giọng"
+        description="Kiểm tra runtime local rồi thử làm mới dữ liệu."
+        tone="error"
+        action={<button className="btn" onClick={() => void profilesQuery.refetch()}>Thử lại</button>}
+      />
+    )
+  }
 
   const handleDelete = async (profileId: string, name: string) => {
     if (!window.confirm(`Xóa profile giọng "${name}"?`)) return
@@ -24,9 +34,10 @@ export function ProfilesPage() {
     <section className="section-card">
       <h2 className="section-title">Thư viện giọng</h2>
       {profilesQuery.data.length === 0 ? (
-        <div style={{ color: 'var(--color-fg-subtle)' }}>
-          Chưa có profile nào. Tạo bằng cách nhái giọng và điền "Lưu thành profile mới" trong tab Studio.
-        </div>
+        <WorkspaceState
+          title="Chưa có giọng đã lưu"
+          description={'Tạo một giọng trong Studio, rồi chọn "Lưu thành profile mới" để dùng lại ở mọi workflow.'}
+        />
       ) : (
         <table className="data-table">
           <thead>

@@ -56,7 +56,7 @@ export function GalleryPage() {
     if (item.language) params.set('language', item.language)
     if (item.instruct) params.set('instruct', item.instruct)
     if (item.sample_text) params.set('sample', item.sample_text)
-    navigate(`/omnivoice?${params.toString()}`)
+    navigate(`/voice?${params.toString()}`)
   }
 
   // Extract unique filter options from current results

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { DEFAULT_ROUTE, NAV_ITEMS } from './nav'
+import { DEFAULT_ROUTE, NAV_ITEMS, VOICE_NAV_ITEMS } from './nav'
 
 describe('nav', () => {
   it('has unique ids and routes', () => {
@@ -20,9 +20,26 @@ describe('nav', () => {
     }
   })
 
-  it('routes the top-level VoiceStudio tab to its nested workspace', () => {
-    expect(NAV_ITEMS.find((item) => item.id === 'voicestudio')?.route).toBe(
-      '/omnivoice/voicestudio',
-    )
+  it('exposes Voice as one top-level workspace', () => {
+    expect(NAV_ITEMS.filter((item) => item.id === 'voice')).toHaveLength(1)
+    expect(NAV_ITEMS.some((item) => item.id === 'voicestudio')).toBe(false)
+    expect(NAV_ITEMS.some((item) => item.id === 'omnivoice')).toBe(false)
+  })
+
+  it('defines the six stable native Voice surfaces', () => {
+    expect(VOICE_NAV_ITEMS.map((item) => item.id)).toEqual([
+      'studio',
+      'batch',
+      'library',
+      'transcripts',
+      'longform',
+      'dubbing',
+    ])
+    expect(VOICE_NAV_ITEMS.every((item) => item.route.startsWith('/voice'))).toBe(true)
+  })
+
+  it('keeps Gallery inside the Voice Library instead of primary navigation', () => {
+    expect(VOICE_NAV_ITEMS.some((item) => item.id === 'gallery')).toBe(false)
+    expect(VOICE_NAV_ITEMS.find((item) => item.id === 'library')?.route).toBe('/voice/library')
   })
 })

@@ -1,5 +1,6 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
+import { useLocation, useSearchParams } from 'react-router-dom'
 
 import { fetchSettings } from '../../api/settings'
 import { fetchOmniVoiceStatus } from '../../api/omnivoice'
@@ -10,9 +11,13 @@ import type { DubbingSegment, RenderResultPayload } from '../../api/workspaces'
 import { TaskButton } from '../../components/TaskButton'
 import { pickFolder } from '../../lib/dialogs'
 import type { TaskState } from '../../ws/useTasks'
+import { fetchTranscriptHandoff, type TranscriptHandoff } from '../../api/transcripts'
 
 /** Dubbing workspace: SRT → speaker segments → render per-segment TTS. */
 export function DubbingPage() {
+  const location = useLocation()
+  const [searchParams] = useSearchParams()
+  const handoffApplied = useRef('')
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
   const profilesQuery = useQuery({ queryKey: ['voice-library-picker'], queryFn: () => fetchLibraryVoices() })
   const statusQuery = useQuery({ queryKey: ['omnivoice-status'], queryFn: fetchOmniVoiceStatus })
@@ -35,9 +40,36 @@ export function DubbingPage() {
     if (!settings) return
     setOutputDir(String(settings.omnivoice_output_dir ?? settings.output_dir ?? ''))
     setDevice(String(settings.omnivoice_device ?? 'auto'))
-    setLanguage(String(settings.omnivoice_language ?? 'vi'))
+    if (!handoffApplied.current) setLanguage(String(settings.omnivoice_language ?? 'vi'))
     setSpeed(Number(settings.omnivoice_speed ?? 1))
   }, [settingsQuery.data])
+
+  useEffect(() => {
+    let cancelled = false
+    const applyHandoff = (handoff: TranscriptHandoff) => {
+      if (cancelled || handoff.target !== 'dubbing' || handoffApplied.current === handoff.transcript_id) return
+      handoffApplied.current = handoff.transcript_id
+      setSrtText(handoff.srt_text ?? '')
+      setProjectName(`dubbing-${handoff.transcript_id.slice(0, 8)}`)
+      if (handoff.language) setLanguage(handoff.language)
+      if (handoff.segments) {
+        setSegments(handoff.segments as unknown as DubbingSegment[])
+        setIssues([])
+      }
+    }
+    const stateHandoff = (location.state as { transcriptHandoff?: TranscriptHandoff } | null)
+      ?.transcriptHandoff
+    if (stateHandoff) applyHandoff(stateHandoff)
+    else {
+      const transcriptId = searchParams.get('transcript') ?? ''
+      if (transcriptId && handoffApplied.current !== transcriptId) {
+        void fetchTranscriptHandoff(transcriptId, 'dubbing').then(applyHandoff).catch((cause) => {
+          if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause))
+        })
+      }
+    }
+    return () => { cancelled = true }
+  }, [location.state, searchParams])
 
   const handlePlan = async () => {
     setError('')

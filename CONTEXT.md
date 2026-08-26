@@ -161,6 +161,18 @@ It is not a public marketplace or community gallery.
 A reusable local voice definition with its consent record, engine capability,
 reference material where needed, tags, and preview/history metadata.
 
+### Voice Consent Record
+
+The ownership or permission assertion attached to a cloned voice, including
+its basis, statement, timestamp, and reference provenance. Galaxy refuses to
+save a new cloned profile without explicit confirmation.
+
+### Galaxy Voice Bundle
+
+A versioned `.galaxyvoice` transfer archive containing one Voice Profile,
+consent metadata, and optional reference or prompt assets. It is a Galaxy
+format and is not an alias for a third-party persona format.
+
 ### Voice Workspace
 
 The Galaxy-owned group of workflows for Studio, Batch, Voice Library,

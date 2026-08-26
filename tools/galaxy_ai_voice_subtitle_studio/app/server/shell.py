@@ -240,6 +240,16 @@ def run_web_app(
             )
             return result
 
+        def choose_voice_bundle_file(self) -> tuple[str] | None:
+            return window.create_file_dialog(
+                webview.OPEN_DIALOG,
+                allow_multiple=False,
+                file_types=(
+                    "Galaxy voice bundles (*.galaxyvoice)",
+                    "All files (*.*)",
+                ),
+            )
+
         def choose_folder(self) -> tuple[str] | None:
             result = window.create_file_dialog(webview.FOLDER_DIALOG, allow_multiple=False)
             return result

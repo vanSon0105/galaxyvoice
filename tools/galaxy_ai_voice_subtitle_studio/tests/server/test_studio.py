@@ -145,6 +145,28 @@ class StudioApiTests(unittest.TestCase):
         )
         self.assertEqual(unavailable.status_code, 404)
 
+    def test_saving_a_cloned_profile_requires_consent(self) -> None:
+        reference = self.root / "reference.wav"
+        reference.write_bytes(b"RIFFreference")
+        payload = {
+            "project_id": "project-1",
+            "title": "Clone",
+            "text": "Xin chào",
+            "output_dir": str(self.root),
+            "voice": {
+                "source": "reference",
+                "reference_audio": str(reference),
+                "save_profile_name": "My clone",
+            },
+        }
+        rejected = self.client.post("/api/studio/generations", json=payload)
+        self.assertEqual(rejected.status_code, 422)
+
+        payload["voice"]["consent_confirmed"] = True
+        accepted = self.client.post("/api/studio/generations", json=payload)
+        self.assertEqual(accepted.status_code, 200, accepted.text)
+        _wait_done(accepted.json()["task_id"])
+
 
 if __name__ == "__main__":
     unittest.main()

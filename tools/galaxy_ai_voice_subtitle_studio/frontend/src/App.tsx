@@ -8,7 +8,6 @@ import { DubPage } from './pages/dubbing/DubPage'
 import { BatchPage } from './pages/voice/BatchPage'
 import { DubbingPage } from './pages/omnivoice/DubbingPage'
 import { GalleryPage } from './pages/omnivoice/GalleryPage'
-import { ProfilesPage } from './pages/omnivoice/ProfilesPage'
 import { StudioPage } from './pages/voice/StudioPage'
 import { TranscriptsPage } from './pages/omnivoice/TranscriptsPage'
 import { VoiceStudioPage } from './pages/omnivoice/VoiceStudioPage'
@@ -55,10 +54,8 @@ export default function App() {
         <Route path="/voice" element={<VoiceWorkspace />}>
           <Route index element={<StudioPage />} />
           <Route path="batch" element={<BatchPage />} />
-          <Route path="library" element={<VoiceLibraryPage />}>
-            <Route index element={<ProfilesPage />} />
-            <Route path="gallery" element={<GalleryPage />} />
-          </Route>
+          <Route path="library" element={<VoiceLibraryPage />} />
+          <Route path="library/gallery" element={<GalleryPage />} />
           <Route path="transcripts" element={<TranscriptsPage />} />
           <Route path="longform" element={<WorkspacesPage />} />
           <Route path="dubbing" element={<DubbingPage />} />

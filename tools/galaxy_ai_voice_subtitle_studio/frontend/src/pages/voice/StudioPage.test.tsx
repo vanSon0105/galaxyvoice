@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { fetchSettings } from '../../api/settings'
 import { fetchOmniVoiceStatus, fetchProfiles } from '../../api/omnivoice'
+import { fetchLibraryVoices } from '../../api/voiceLibrary'
 import { fetchStudioTakes, setStudioTakePrimary } from '../../api/studio'
 import type { StudioTake } from '../../api/studio'
 import { VoiceProjectContext } from './VoiceProjectContext'
@@ -16,6 +17,7 @@ vi.mock('../../api/omnivoice', () => ({
   fetchProfiles: vi.fn(),
   installOmniVoiceRuntime: vi.fn(),
 }))
+vi.mock('../../api/voiceLibrary', () => ({ fetchLibraryVoices: vi.fn(), libraryVoiceRequest: vi.fn() }))
 vi.mock('../../api/studio', async () => {
   const actual = await vi.importActual<typeof import('../../api/studio')>('../../api/studio')
   return {
@@ -74,6 +76,7 @@ describe('native Studio', () => {
       design_options: { gender: [], age: [], pitch: [], style: [], accent: [], dialect: [] },
     })
     vi.mocked(fetchProfiles).mockResolvedValue([])
+    vi.mocked(fetchLibraryVoices).mockResolvedValue([])
     vi.mocked(fetchStudioTakes).mockResolvedValue(takes)
     vi.mocked(setStudioTakePrimary).mockResolvedValue({ ...takes[1], primary: true })
   })

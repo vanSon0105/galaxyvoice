@@ -32,6 +32,7 @@ explicitly approved.
 - [Native Voice Workspace information architecture](issues/04-native-voice-navigation-and-design-system.md) - Galaxy exposes one top-level Voice workspace with six canonical `/voice/*` surfaces, one shared project context, Gallery inside Voice Library, reusable async states, legacy route redirects, and VoiceStudio isolated behind an explicit comparison action until cutover.
 - [Native Studio and generation history](issues/05-studio-and-generation-history.md) - Studio records engine-neutral immutable takes with persistent history, secure preview/export, rerun lineage, A/B comparison, and one atomic Primary Studio Take per Active Project; expressive text remains parser-independent until issue 18 resolves its markup contract.
 - [Batch and queue workflow](issues/06-batch-and-queue-workflow.md) - Batch imports plain text, long-form paragraphs, or JSONL into editable per-item jobs; it checkpoints partial success, shares the resource scheduler, supports pause/cancel/resume/failed-only retry, combines successful audio, and writes a portable relative-path manifest beside a private local resume sidecar.
+- [Local Voice Library and profile lifecycle](issues/07-local-voice-library-and-profile-lifecycle.md) - One Galaxy-owned profile contract unifies system, imported, cloned, and designed voices with consent, stable samples, tags/favourites, compatibility-aware pickers, safe usage deletion, project pins, and validated `.galaxyvoice` bundles.
 - Native workflow parity over engine parity - Galaxy reimplements its own
   workflows while VoiceStudio remains a comparison reference until the final
   retirement gate.
@@ -39,6 +40,8 @@ explicitly approved.
   outputs rather than relying on one shared runtime database.
 - Local-first voice ownership - Voice Library has no community gallery or
   marketplace requirement in this effort.
+- Revisioned voice selection - workflows select through one library contract;
+  project pins isolate active work from later library edits.
 - Dubbing quality boundary - timing/fit/QC is in scope; visual lip-sync is a
   separately evaluated optional capability.
 

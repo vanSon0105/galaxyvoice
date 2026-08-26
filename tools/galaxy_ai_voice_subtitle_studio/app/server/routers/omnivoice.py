@@ -91,6 +91,9 @@ class GenerateRequest(BaseModel):
     reference_text: str = ""
     profile_id: str = ""
     save_profile_name: str = ""
+    consent_confirmed: bool = False
+    consent_basis: str = ""
+    consent_statement: str = ""
     instruct: str = ""
     num_step: int = 32
     guidance_scale: float = 2.0
@@ -146,6 +149,9 @@ def _options_from(request: GenerateRequest, config: Any) -> OmniVoiceGenerationO
         reference_text=request.reference_text,
         profile_id=request.profile_id,
         save_profile_name=request.save_profile_name,
+        consent_confirmed=request.consent_confirmed,
+        consent_basis=request.consent_basis,
+        consent_statement=request.consent_statement,
         instruct=request.instruct,
         num_step=request.num_step,
         guidance_scale=request.guidance_scale,

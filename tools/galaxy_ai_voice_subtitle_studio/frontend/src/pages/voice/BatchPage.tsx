@@ -17,10 +17,11 @@ import {
   type BatchItemInput,
   type BatchRun,
 } from '../../api/batch'
-import { fetchOmniVoiceStatus, fetchProfiles } from '../../api/omnivoice'
+import { fetchOmniVoiceStatus } from '../../api/omnivoice'
 import { fetchSettings } from '../../api/settings'
 import type { StudioVoiceSource } from '../../api/studio'
 import { openPath } from '../../api/voice'
+import { fetchLibraryVoices, libraryVoiceRequest } from '../../api/voiceLibrary'
 import { WorkspaceLoading, WorkspaceState } from '../../components/WorkspaceState'
 import { pickAudioFile, pickFolder } from '../../lib/dialogs'
 import { useTasks } from '../../ws/useTasks'
@@ -66,7 +67,7 @@ export function BatchPage() {
   const { tasks } = useTasks()
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
   const statusQuery = useQuery({ queryKey: ['omnivoice-status'], queryFn: fetchOmniVoiceStatus })
-  const profilesQuery = useQuery({ queryKey: ['omnivoice-profiles'], queryFn: fetchProfiles })
+  const voicesQuery = useQuery({ queryKey: ['voice-library-picker'], queryFn: () => fetchLibraryVoices() })
   const [activeTaskId, setActiveTaskId] = useState('')
   const [selectedBatchId, setSelectedBatchId] = useState('')
   const activeTask = tasks.find((task) => task.taskId === activeTaskId)
@@ -108,6 +109,7 @@ export function BatchPage() {
   const [parsing, setParsing] = useState(false)
   const [starting, setStarting] = useState(false)
   const [formError, setFormError] = useState('')
+  const selectedLibraryVoice = (voicesQuery.data ?? []).find((voice) => voice.voice_id === profileId)
   const fileRef = useRef<HTMLInputElement>(null)
   const seeded = useRef(false)
 
@@ -172,10 +174,11 @@ export function BatchPage() {
     try {
       if (!projectId) throw new Error('Hãy chọn hoặc tạo một dự án trước khi chạy Batch.')
       if (!exportWav && !exportMp3) throw new Error('Chọn ít nhất một định dạng đầu ra.')
-      if (source === 'profile' && !profileId) throw new Error('Chọn một giọng trong thư viện.')
+      if (source === 'profile' && !selectedLibraryVoice) throw new Error('Chọn một giọng tương thích trong thư viện.')
       if (source === 'reference' && !referenceAudio) throw new Error('Chọn audio tham chiếu.')
       if (source === 'design' && !instruction.trim()) throw new Error('Nhập mô tả giọng cần thiết kế.')
       const prepared = items.length ? items : await parseBatchSource(sourceText, longForm)
+      const selectedRequest = selectedLibraryVoice ? libraryVoiceRequest(selectedLibraryVoice) : null
       const response = await startBatchRun({
         project_id: projectId,
         title: title.trim() || 'Batch mới',
@@ -184,7 +187,13 @@ export function BatchPage() {
         language,
         speed,
         formats: [exportWav ? 'wav' : null, exportMp3 ? 'mp3' : null].filter(Boolean) as ('wav' | 'mp3')[],
-        voice: { source, profile_id: profileId, reference_audio: referenceAudio, reference_text: referenceText, instruction },
+        voice: {
+          source: source === 'profile' && selectedRequest ? selectedRequest.source : source,
+          profile_id: source === 'profile' ? selectedRequest?.profile_id : profileId,
+          reference_audio: source === 'profile' ? selectedRequest?.reference_audio : referenceAudio,
+          reference_text: source === 'profile' ? selectedRequest?.reference_text : referenceText,
+          instruction: source === 'profile' ? selectedRequest?.instruction : instruction,
+        },
         combine,
         gap_ms: gapMs,
         items: prepared,
@@ -256,7 +265,7 @@ export function BatchPage() {
                     <input type="number" min={0.5} max={1.5} step={0.1} value={item.speed ?? ''} placeholder={String(speed)} onChange={(event) => updateItem(index, { speed: event.target.value ? Number(event.target.value) : null })} />
                     <select value={item.profile_id} onChange={(event) => updateItem(index, { profile_id: event.target.value, voice_source: event.target.value ? 'profile' : '' })}>
                       <option value="">Mặc định</option>
-                      {(profilesQuery.data ?? []).map((profile) => <option key={profile.profile_id} value={profile.profile_id}>{profile.display_name}</option>)}
+                      {(voicesQuery.data ?? []).filter((voice) => voice.selection.profile_id).map((voice) => <option key={voice.voice_id} value={voice.selection.profile_id}>{voice.name}</option>)}
                     </select>
                     <button className="btn danger" type="button" aria-label={`Xóa ${item.item_id}`} onClick={() => setItems((values) => values.filter((_, itemIndex) => itemIndex !== index))}>Xóa</button>
                   </div>
@@ -277,7 +286,7 @@ export function BatchPage() {
             <div className="seg-control studio-source-tabs batch-source-tabs">
               {SOURCES.map((option) => <button key={option.value} type="button" className={`seg-item${source === option.value ? ' active' : ''}`} onClick={() => setSource(option.value)}>{option.label}</button>)}
             </div>
-            {source === 'profile' && <div className="field batch-voice-field"><label>Giọng mặc định</label><select value={profileId} onChange={(event) => setProfileId(event.target.value)}><option value="">Chọn profile</option>{(profilesQuery.data ?? []).map((profile) => <option key={profile.profile_id} value={profile.profile_id}>{profile.display_name} · {profile.language}</option>)}</select></div>}
+            {source === 'profile' && <div className="field batch-voice-field"><label>Giọng mặc định</label><select value={profileId} onChange={(event) => setProfileId(event.target.value)}><option value="">Chọn giọng</option>{(voicesQuery.data ?? []).map((voice) => <option key={voice.voice_id} value={voice.voice_id} disabled={!voice.compatibility.batch}>{voice.name} · {voice.language}{voice.compatibility.batch ? '' : ' · không tương thích'}</option>)}</select></div>}
             {source === 'reference' && <div className="field-grid batch-voice-field"><div className="field field-wide"><label>Audio tham chiếu</label><div className="input-action"><input value={referenceAudio} onChange={(event) => setReferenceAudio(event.target.value)} /><button className="btn" type="button" onClick={() => void pickAudioFile().then((path) => path && setReferenceAudio(path))}>Chọn</button></div></div><div className="field field-wide"><label>Transcript audio mẫu</label><textarea rows={2} value={referenceText} onChange={(event) => setReferenceText(event.target.value)} /></div></div>}
             {source === 'design' && <div className="field batch-voice-field"><label>Mô tả giọng</label><textarea rows={2} value={instruction} onChange={(event) => setInstruction(event.target.value)} /></div>}
             <div className="batch-output-row">

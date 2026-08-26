@@ -2,7 +2,8 @@ import { useEffect, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import { fetchSettings } from '../../api/settings'
-import { fetchProfiles, fetchOmniVoiceStatus } from '../../api/omnivoice'
+import { fetchOmniVoiceStatus } from '../../api/omnivoice'
+import { fetchLibraryVoices } from '../../api/voiceLibrary'
 import { openPath } from '../../api/voice'
 import { fetchDubbingPlan, startRender } from '../../api/workspaces'
 import type { DubbingSegment, RenderResultPayload } from '../../api/workspaces'
@@ -13,7 +14,7 @@ import type { TaskState } from '../../ws/useTasks'
 /** Dubbing workspace: SRT → speaker segments → render per-segment TTS. */
 export function DubbingPage() {
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
-  const profilesQuery = useQuery({ queryKey: ['omnivoice-profiles'], queryFn: fetchProfiles })
+  const profilesQuery = useQuery({ queryKey: ['voice-library-picker'], queryFn: () => fetchLibraryVoices() })
   const statusQuery = useQuery({ queryKey: ['omnivoice-status'], queryFn: fetchOmniVoiceStatus })
 
   const [srtText, setSrtText] = useState('')
@@ -153,9 +154,9 @@ export function DubbingPage() {
                       onChange={(event) => updateSegment(segment.segment_id, { profile_id: event.target.value })}
                     >
                       <option value="">(auto)</option>
-                      {(profilesQuery.data ?? []).map((profile) => (
-                        <option key={profile.profile_id} value={profile.profile_id}>
-                          {profile.display_name}
+                      {(profilesQuery.data ?? []).map((voice) => (
+                        <option key={voice.voice_id} value={voice.selection.profile_id} disabled={!voice.compatibility.dubbing}>
+                          {voice.name}{voice.compatibility.dubbing ? '' : ' · không tương thích'}
                         </option>
                       ))}
                     </select>

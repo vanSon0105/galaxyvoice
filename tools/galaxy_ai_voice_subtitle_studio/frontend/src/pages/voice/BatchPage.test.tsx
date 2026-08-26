@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { fetchBatchRuns, parseBatchSource, startBatchRun } from '../../api/batch'
 import { fetchOmniVoiceStatus, fetchProfiles } from '../../api/omnivoice'
+import { fetchLibraryVoices } from '../../api/voiceLibrary'
 import { fetchSettings } from '../../api/settings'
 import { VoiceProjectContext } from './VoiceProjectContext'
 import { BatchPage } from './BatchPage'
@@ -11,6 +12,7 @@ import { BatchPage } from './BatchPage'
 
 vi.mock('../../api/settings', () => ({ fetchSettings: vi.fn() }))
 vi.mock('../../api/omnivoice', () => ({ fetchOmniVoiceStatus: vi.fn(), fetchProfiles: vi.fn() }))
+vi.mock('../../api/voiceLibrary', () => ({ fetchLibraryVoices: vi.fn(), libraryVoiceRequest: vi.fn() }))
 vi.mock('../../ws/useTasks', () => ({ useTasks: () => ({ tasks: [], cancelTask: vi.fn() }) }))
 vi.mock('../../api/batch', async () => {
   const actual = await vi.importActual<typeof import('../../api/batch')>('../../api/batch')
@@ -47,6 +49,7 @@ describe('native Batch', () => {
       design_options: { gender: [], age: [], pitch: [], style: [], accent: [], dialect: [] },
     })
     vi.mocked(fetchProfiles).mockResolvedValue([])
+    vi.mocked(fetchLibraryVoices).mockResolvedValue([])
     vi.mocked(fetchBatchRuns).mockResolvedValue([])
     vi.mocked(parseBatchSource).mockResolvedValue([
       { item_id: 'one', text: 'Một', language: 'vi', speed: null, duration: null, voice_source: '', profile_id: '', instruction: '', formats: [] },

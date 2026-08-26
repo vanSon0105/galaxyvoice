@@ -9,6 +9,9 @@ export interface StudioVoiceRequest {
   reference_text?: string
   save_profile_name?: string
   instruction?: string
+  consent_confirmed?: boolean
+  consent_basis?: string
+  consent_statement?: string
 }
 
 export interface StudioGenerationRequest {

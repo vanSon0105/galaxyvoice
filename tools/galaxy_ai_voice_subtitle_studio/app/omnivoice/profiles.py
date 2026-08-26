@@ -58,16 +58,20 @@ def finalize_voice_profile(
     language: str,
     reference_audio: Path | None,
     reference_text: str,
+    source: str = "cloned",
+    consent_confirmed: bool = False,
+    consent_basis: str = "",
+    consent_statement: str = "",
 ) -> VoiceProfile:
     if not pending.prompt_path.is_file():
         raise FileNotFoundError(f"Worker chưa tạo voice prompt: {pending.prompt_path}")
 
     copied_reference: Path | None = None
     if reference_audio is not None:
-        source = Path(reference_audio)
-        if source.is_file():
-            copied_reference = pending.profile_dir / f"reference{source.suffix.lower() or '.wav'}"
-            shutil.copy2(source, copied_reference)
+        reference_source = Path(reference_audio)
+        if reference_source.is_file():
+            copied_reference = pending.profile_dir / f"reference{reference_source.suffix.lower() or '.wav'}"
+            shutil.copy2(reference_source, copied_reference)
 
     created_at = datetime.now(timezone.utc).isoformat()
     payload = {
@@ -79,6 +83,14 @@ def finalize_voice_profile(
         "reference_audio_file": copied_reference.name if copied_reference else "",
         "reference_text": reference_text.strip(),
         "created_at": created_at,
+        "source": source,
+        "consent": {
+            "confirmed": bool(consent_confirmed),
+            "basis": consent_basis.strip(),
+            "statement": consent_statement.strip(),
+            "recorded_at": created_at if consent_confirmed else "",
+            "provenance": str(reference_audio) if reference_audio else "",
+        },
     }
     write_json_atomic(pending.metadata_path, payload)
     return VoiceProfile(

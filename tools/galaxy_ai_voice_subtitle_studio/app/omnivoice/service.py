@@ -63,6 +63,8 @@ def generate_omnivoice_audio(
             raise ValueError("Nhái giọng cần audio mẫu hoặc profile đã lưu.")
 
         if options.save_profile_name and not options.profile_id:
+            if not options.consent_confirmed:
+                raise ValueError("Phải xác nhận quyền sử dụng giọng nói trước khi lưu giọng nhái.")
             if profiles_dir is None:
                 raise ValueError("Chưa cấu hình thư mục thư viện giọng.")
             pending_profile = prepare_voice_profile(profiles_dir, options.save_profile_name)
@@ -120,6 +122,10 @@ def generate_omnivoice_audio(
                 language=options.language,
                 reference_audio=options.reference_audio,
                 reference_text=options.reference_text,
+                source="cloned",
+                consent_confirmed=options.consent_confirmed,
+                consent_basis=options.consent_basis,
+                consent_statement=options.consent_statement,
             )
             profile_id = profile.profile_id
             # Finalized: a later failure must NOT delete the saved profile.

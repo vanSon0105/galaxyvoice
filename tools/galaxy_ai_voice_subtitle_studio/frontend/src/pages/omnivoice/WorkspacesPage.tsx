@@ -2,7 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { fetchSettings } from '../../api/settings'
-import { fetchProfiles, fetchOmniVoiceStatus } from '../../api/omnivoice'
+import { fetchOmniVoiceStatus } from '../../api/omnivoice'
+import { fetchLibraryVoices } from '../../api/voiceLibrary'
 import { openPath } from '../../api/voice'
 import {
   createDocument,
@@ -47,7 +48,7 @@ export function WorkspacesPage() {
   const queryClient = useQueryClient()
   const [kind, setKind] = useState<Kind>('stories')
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
-  const profilesQuery = useQuery({ queryKey: ['omnivoice-profiles'], queryFn: fetchProfiles })
+  const profilesQuery = useQuery({ queryKey: ['voice-library-picker'], queryFn: () => fetchLibraryVoices() })
   const statusQuery = useQuery({ queryKey: ['omnivoice-status'], queryFn: fetchOmniVoiceStatus })
   const projectsQuery = useQuery({
     queryKey: ['workspace-projects', kind],
@@ -629,9 +630,9 @@ export function WorkspacesPage() {
                     onChange={(event) => setCastMap((current) => ({ ...current, [voice]: event.target.value }))}
                   >
                     <option value="">(auto)</option>
-                    {(profilesQuery.data ?? []).map((profile) => (
-                      <option key={profile.profile_id} value={profile.profile_id}>
-                        {profile.display_name}
+                    {(profilesQuery.data ?? []).map((voice) => (
+                      <option key={voice.voice_id} value={voice.selection.profile_id} disabled={!voice.compatibility.longform}>
+                        {voice.name}{voice.compatibility.longform ? '' : ' · không tương thích'}
                       </option>
                     ))}
                   </select>

@@ -58,6 +58,9 @@ class VoiceRequest(BaseModel):
     reference_text: str = ""
     save_profile_name: str = ""
     instruction: str = ""
+    consent_confirmed: bool = False
+    consent_basis: str = ""
+    consent_statement: str = ""
 
 
 class EngineOptionsRequest(BaseModel):

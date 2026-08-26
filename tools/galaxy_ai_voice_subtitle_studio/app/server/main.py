@@ -61,6 +61,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     from .routers import video_editor as video_editor_router
     from .routers import tasks as tasks_router
     from .routers import voice as voice_router
+    from .routers import voice_library as voice_library_router
     from .routers import voicestudio as voicestudio_router
     from .ws import router as ws_router
 
@@ -73,6 +74,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     app.include_router(subtitle_removal_router.router)
     app.include_router(video_editor_router.router)
     app.include_router(voice_router.router)
+    app.include_router(voice_library_router.router)
     app.include_router(omnivoice_router.router)
     app.include_router(workspaces_router.router)
     app.include_router(voicestudio_router.router)

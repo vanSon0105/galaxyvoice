@@ -4,7 +4,6 @@ import { useSearchParams } from 'react-router-dom'
 
 import {
   fetchOmniVoiceStatus,
-  fetchProfiles,
   installOmniVoiceRuntime,
   type OmniVoiceStatus,
 } from '../../api/omnivoice'
@@ -21,6 +20,7 @@ import {
   type StudioVoiceSource,
 } from '../../api/studio'
 import { openPath } from '../../api/voice'
+import { fetchLibraryVoices, libraryVoiceRequest } from '../../api/voiceLibrary'
 import { TaskButton } from '../../components/TaskButton'
 import { WorkspaceLoading, WorkspaceState } from '../../components/WorkspaceState'
 import { pickAudioFile, pickFolder } from '../../lib/dialogs'
@@ -67,7 +67,7 @@ export function StudioPage() {
   const [searchParams] = useSearchParams()
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
   const statusQuery = useQuery({ queryKey: ['omnivoice-status'], queryFn: fetchOmniVoiceStatus })
-  const profilesQuery = useQuery({ queryKey: ['omnivoice-profiles'], queryFn: fetchProfiles })
+  const voicesQuery = useQuery({ queryKey: ['voice-library-picker'], queryFn: () => fetchLibraryVoices() })
   const [historyQuery, setHistoryQuery] = useState('')
   const [starredOnly, setStarredOnly] = useState(false)
   const takesQuery = useQuery({
@@ -92,6 +92,7 @@ export function StudioPage() {
   const [referenceAudio, setReferenceAudio] = useState('')
   const [referenceText, setReferenceText] = useState('')
   const [saveProfileName, setSaveProfileName] = useState('')
+  const [consentConfirmed, setConsentConfirmed] = useState(false)
   const [instruction, setInstruction] = useState('')
   const [showAdvanced, setShowAdvanced] = useState(false)
   const [numStep, setNumStep] = useState(32)
@@ -101,6 +102,7 @@ export function StudioPage() {
   const [formError, setFormError] = useState('')
   const [latestTake, setLatestTake] = useState<StudioTake | null>(null)
   const [compareIds, setCompareIds] = useState<string[]>([])
+  const selectedLibraryVoice = (voicesQuery.data ?? []).find((voice) => voice.voice_id === profileId)
 
   const seeded = useRef(false)
   useEffect(() => {
@@ -170,10 +172,11 @@ export function StudioPage() {
     if (!projectId) throw new Error('Hãy chọn hoặc tạo một dự án trước khi tạo giọng.')
     if (!text.trim()) throw new Error('Nhập nội dung cần tạo giọng.')
     if (!exportWav && !exportMp3) throw new Error('Chọn ít nhất một định dạng đầu ra.')
-    if (source === 'profile' && !profileId) throw new Error('Chọn một giọng trong thư viện.')
+    if (source === 'profile' && !selectedLibraryVoice) throw new Error('Chọn một giọng tương thích trong thư viện.')
     if (source === 'reference' && !referenceAudio.trim()) throw new Error('Chọn audio tham chiếu.')
     if (source === 'design' && !instruction.trim()) throw new Error('Nhập mô tả giọng cần thiết kế.')
     try {
+      const selectedRequest = selectedLibraryVoice ? libraryVoiceRequest(selectedLibraryVoice) : null
       const response = await startStudioGeneration({
         project_id: projectId,
         title: title.trim() || 'Bản đọc mới',
@@ -187,12 +190,15 @@ export function StudioPage() {
         duration: duration ? Number(duration) : null,
         formats: [exportWav ? 'wav' : null, exportMp3 ? 'mp3' : null].filter(Boolean) as ('wav' | 'mp3')[],
         voice: {
-          source,
-          profile_id: profileId,
-          reference_audio: referenceAudio,
-          reference_text: referenceText,
+          source: source === 'profile' && selectedRequest ? selectedRequest.source : source,
+          profile_id: source === 'profile' ? selectedRequest?.profile_id : profileId,
+          reference_audio: source === 'profile' ? selectedRequest?.reference_audio : referenceAudio,
+          reference_text: source === 'profile' ? selectedRequest?.reference_text : referenceText,
           save_profile_name: saveProfileName,
-          instruction,
+          instruction: source === 'profile' ? selectedRequest?.instruction : instruction,
+          consent_confirmed: consentConfirmed,
+          consent_basis: consentConfirmed ? 'owner' : '',
+          consent_statement: consentConfirmed ? 'Đã xác nhận trong Galaxy Studio' : '',
         },
         engine_options: { num_step: numStep, guidance_scale: guidanceScale, t_shift: tShift, normalize_text: normalizeText },
       })
@@ -209,7 +215,8 @@ export function StudioPage() {
     const payload = task.result as { take?: StudioTake }
     if (payload.take) setLatestTake(payload.take)
     void refreshTakes()
-    void queryClient.invalidateQueries({ queryKey: ['omnivoice-profiles'] })
+    void queryClient.invalidateQueries({ queryKey: ['voice-library'] })
+    void queryClient.invalidateQueries({ queryKey: ['voice-library-picker'] })
   }
 
   const handleRerunDone = (task: TaskState) => {
@@ -281,9 +288,9 @@ export function StudioPage() {
                   <label>Giọng trong thư viện</label>
                   <select value={profileId} onChange={(event) => setProfileId(event.target.value)}>
                     <option value="">Chọn giọng...</option>
-                    {(profilesQuery.data ?? []).map((profile) => (
-                      <option key={profile.profile_id} value={profile.profile_id}>
-                        {profile.display_name} · {profile.language}
+                    {(voicesQuery.data ?? []).map((voice) => (
+                      <option key={voice.voice_id} value={voice.voice_id} disabled={!voice.compatibility.studio}>
+                        {voice.name} · {voice.language}{voice.compatibility.studio ? '' : ' · không tương thích'}
                       </option>
                     ))}
                   </select>
@@ -306,6 +313,7 @@ export function StudioPage() {
                     <label>Lưu vào thư viện với tên</label>
                     <input value={saveProfileName} onChange={(event) => setSaveProfileName(event.target.value)} />
                   </div>
+                  {saveProfileName.trim() && <label className="field-check field-wide"><input type="checkbox" checked={consentConfirmed} onChange={(event) => setConsentConfirmed(event.target.checked)} /> Tôi có quyền sử dụng giọng nói này</label>}
                 </>
               )}
               <div className="field field-wide">

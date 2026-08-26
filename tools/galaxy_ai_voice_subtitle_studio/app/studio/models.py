@@ -17,6 +17,9 @@ class StudioVoiceSelection:
     reference_text: str = ""
     save_profile_name: str = ""
     instruction: str = ""
+    consent_confirmed: bool = False
+    consent_basis: str = ""
+    consent_statement: str = ""
 
 
 @dataclass(frozen=True)
@@ -49,6 +52,8 @@ class StudioGenerationSpec:
             raise ValueError("Hãy chọn một profile giọng đã lưu.")
         if self.voice.source == "reference" and not self.voice.reference_audio.strip():
             raise ValueError("Hãy chọn audio tham chiếu.")
+        if self.voice.save_profile_name.strip() and not self.voice.consent_confirmed:
+            raise ValueError("Phải xác nhận quyền sử dụng giọng nói trước khi lưu giọng nhái.")
         if self.voice.source == "design" and not self.voice.instruction.strip():
             raise ValueError("Hãy mô tả giọng cần thiết kế.")
         if not self.formats or any(item not in OUTPUT_FORMATS for item in self.formats):
@@ -84,6 +89,9 @@ class StudioGenerationSpec:
                 reference_text=str(voice_payload.get("reference_text") or ""),
                 save_profile_name=str(voice_payload.get("save_profile_name") or ""),
                 instruction=str(voice_payload.get("instruction") or ""),
+                consent_confirmed=bool(voice_payload.get("consent_confirmed")),
+                consent_basis=str(voice_payload.get("consent_basis") or ""),
+                consent_statement=str(voice_payload.get("consent_statement") or ""),
             ),
             engine_options=dict(payload.get("engine_options") or {}),
         )

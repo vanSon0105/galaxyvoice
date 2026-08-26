@@ -24,6 +24,9 @@ class OmniVoiceGenerationOptions:
     reference_text: str = ""
     profile_id: str = ""
     save_profile_name: str = ""
+    consent_confirmed: bool = False
+    consent_basis: str = ""
+    consent_statement: str = ""
     profiles_dir: Path | None = None
     instruct: str = ""
     num_step: int = 32

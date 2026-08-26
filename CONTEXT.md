@@ -100,6 +100,22 @@ An immutable record of one workflow execution, identified by a stable run ID
 and linked to its inputs, effective settings, engine versions, status,
 diagnostics, and produced artifacts.
 
+### Studio Take
+
+An immutable successful output of a single-script Generation Run created by
+Studio. It records the engine-neutral request, generation run identity,
+effective engine identity, output artifacts, project association, rerun
+lineage, and warnings without storing credentials. Failed and cancelled runs
+remain runtime jobs and do not become takes. Deleting a Studio Take removes its
+history record, not its files.
+
+### Primary Studio Take
+
+The project annotation that selects one Studio Take as the preferred audio for
+an Active Project. The mutable reference is stored outside the immutable take.
+Selecting a new Primary Studio Take atomically replaces the previous selection
+for that project. Other takes remain available for comparison and reruns.
+
 ### Artifact Provenance
 
 The trace from a generated file back to its Generation Run, input asset

@@ -55,6 +55,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     from .routers import omnivoice_workspaces as workspaces_router
     from .routers import runtime as runtime_router
     from .routers import settings as settings_router
+    from .routers import studio as studio_router
     from .routers import subtitle_removal as subtitle_removal_router
     from .routers import video_editor as video_editor_router
     from .routers import tasks as tasks_router
@@ -65,6 +66,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     app.include_router(tasks_router.router)
     app.include_router(runtime_router.router)
     app.include_router(settings_router.router)
+    app.include_router(studio_router.router)
     app.include_router(audio_separation_router.router)
     app.include_router(subtitle_removal_router.router)
     app.include_router(video_editor_router.router)

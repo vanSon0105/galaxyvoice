@@ -174,6 +174,16 @@ class ServerApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("Galaxy AI Voice", response.text)
 
+    def test_direct_spa_route_serves_built_frontend(self) -> None:
+        response = self.client.get("/voice/library")
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("text/html", response.headers["content-type"])
+        self.assertIn('<div id="root"></div>', response.text)
+
+    def test_spa_fallback_does_not_hide_missing_api_or_assets(self) -> None:
+        self.assertEqual(self.client.get("/api/does-not-exist").status_code, 404)
+        self.assertEqual(self.client.get("/assets/does-not-exist.js").status_code, 404)
+
 
 if __name__ == "__main__":
     unittest.main()

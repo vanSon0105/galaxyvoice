@@ -1,5 +1,6 @@
 import { useT } from '../i18n/useT'
 import { useTasks } from '../ws/useTasks'
+import { isTaskActive } from '../ws/types'
 
 /** Bottom panel listing running/recent tasks with progress tail + cancel. */
 export function ProgressPanel() {
@@ -14,7 +15,7 @@ export function ProgressPanel() {
           <span className="task-lines" title={task.lines.join('\n')}>
             {task.lines.length > 0 ? task.lines[task.lines.length - 1] : task.error ?? ''}
           </span>
-          {task.status === 'running' && (
+          {isTaskActive(task.status) && (
             <button className="btn danger" onClick={() => void cancelTask(task.taskId)}>
               {t('task.cancel')}
             </button>

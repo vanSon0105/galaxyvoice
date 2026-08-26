@@ -40,6 +40,7 @@ from ...omnivoice.workspaces.renderer import (
 from ...omnivoice.workspaces.transcripts import TranscriptStore
 from ...voice.srt import parse_srt
 from ..event_bus import event_bus
+from ...runtime.resources import resource_keys_for_device
 from ..tasks import TaskRecord, run_task, task_registry
 
 router = APIRouter(prefix="/api/workspaces")
@@ -512,7 +513,12 @@ def render(request_body: RenderRequest) -> dict[str, Any]:
         profiles_dir=runtime.profiles_dir,
     )
     profiles = list_voice_profiles(runtime.profiles_dir)
-    record = task_registry.create("workspace-render")
+    record = task_registry.create(
+        "workspace-render",
+        capability_id="tts.omnivoice",
+        resumable=True,
+        resource_keys=resource_keys_for_device(request_body.device),
+    )
     record.on_cancel = lambda: _task_coordinator.cancel(record.task_id)
     resume_dir = (
         Path(request_body.resume_project_dir).expanduser() if request_body.resume_project_dir else None

@@ -36,6 +36,16 @@ describe('tasksReducer', () => {
     expect(state.t1.result).toEqual({ wav: 'a.wav' })
   })
 
+  it('keeps queued and paused tasks active for progress updates', () => {
+    let state = tasksReducer({}, { type: 'task', task_id: 't1', status: 'queued' })
+    state = tasksReducer(state, { type: 'progress', task_id: 't1', message: 'waiting' })
+    state = tasksReducer(state, { type: 'task', task_id: 't1', status: 'paused' })
+    state = tasksReducer(state, { type: 'progress', task_id: 't1', message: 'paused' })
+
+    expect(state.t1.status).toBe('paused')
+    expect(state.t1.lines).toEqual(['waiting', 'paused'])
+  })
+
   it('ignores terminal events for unknown tasks', () => {
     const state = tasksReducer({}, { type: 'task', task_id: 't1', status: 'done' })
     expect(state).toEqual({})

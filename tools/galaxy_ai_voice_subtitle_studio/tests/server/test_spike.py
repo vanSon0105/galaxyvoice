@@ -152,6 +152,23 @@ class ServerApiTests(unittest.TestCase):
         response = self.client.post("/api/tasks/nope_missing/cancel")
         self.assertEqual(response.status_code, 404)
 
+    def test_runtime_capabilities_are_discoverable(self) -> None:
+        response = self.client.get("/api/runtime/capabilities")
+        self.assertEqual(response.status_code, 200)
+        capability_ids = {item["capability_id"] for item in response.json()}
+        self.assertIn("tts.edge", capability_ids)
+        self.assertIn("asr.faster-whisper", capability_ids)
+        self.assertIn("audio.separation", capability_ids)
+
+    def test_unknown_runtime_preflight_is_structured(self) -> None:
+        response = self.client.post(
+            "/api/runtime/preflight",
+            json={"capability_id": "missing.runtime"},
+        )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["state"], "error")
+        self.assertFalse(response.json()["ready"])
+
     def test_root_serves_built_frontend(self) -> None:
         response = self.client.get("/")
         self.assertEqual(response.status_code, 200)

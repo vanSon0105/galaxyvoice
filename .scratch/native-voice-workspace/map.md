@@ -28,6 +28,7 @@ explicitly approved.
 
 - [VoiceStudio parity inventory and acceptance matrix](issues/01-voice-studio-parity-inventory.md) - The source-backed matrix assigns every shipped workflow to a native workspace, shared foundation, explicit extension disposition, or explicit non-goal; Wav2Lip remains roadmap-only.
 - [Project Bundle and asset contract](issues/02-project-bundle-and-asset-contract.md) - Galaxy uses a directory-based Active Project with a versioned root index, independently versioned Workflow Documents, hybrid managed/linked assets, Pinned Voice Snapshots, staged migration, verified relink, and validated `.galaxybundle` transfer archives.
+- [Native runtime, model, and job orchestration](issues/03-native-runtime-and-job-orchestration.md) - Galaxy owns lazy capability and model adapters, persistent cooperative jobs, structured preflight, and fair named-resource scheduling; engine internals remain behind adapters and GPU-heavy workflows share one accelerator queue.
 - Native workflow parity over engine parity - Galaxy reimplements its own
   workflows while VoiceStudio remains a comparison reference until the final
   retirement gate.

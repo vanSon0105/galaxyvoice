@@ -36,6 +36,7 @@ from ...voice.translator import (
 )
 from ...voice.tts import create_tts_engine, tts_engine_codes
 from ..event_bus import event_bus
+from ...runtime.resources import resource_keys_for_device
 from ..tasks import CANCELLED, DONE, FAILED, TaskRecord, run_task, task_registry
 
 router = APIRouter(prefix="/api/voice")
@@ -340,7 +341,12 @@ def transcribe(request: TranscribeRequest) -> dict[str, Any]:
         translation_batch_size=request.translation_batch_size,
         translation_workers=request.translation_workers,
     )
-    record = task_registry.create("transcribe")
+    record = task_registry.create(
+        "transcribe",
+        capability_id="asr.faster-whisper",
+        resumable=True,
+        resource_keys=resource_keys_for_device(request.processing_device),
+    )
     event_bus.emit({"type": "task", "task_id": record.task_id, "status": "running"})
 
     def run_transcribe() -> dict[str, Any]:

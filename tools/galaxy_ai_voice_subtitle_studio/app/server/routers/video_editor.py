@@ -26,6 +26,7 @@ from ...video_editor.service import (
 )
 from ...voice.srt import SubtitleCue
 from ..event_bus import event_bus
+from ...runtime.resources import resource_keys_for_device
 from ..tasks import TaskRecord, run_task, task_registry
 
 router = APIRouter(prefix="/api/editor", tags=["video-editor"])
@@ -201,7 +202,13 @@ def start_export(body: ExportRequest) -> dict[str, str]:
         subtitle_font_size=body.subtitle_font_size,
         subtitle_margin=body.subtitle_margin,
     )
-    record = task_registry.create("video-editor")
+    record = task_registry.create(
+        "video-editor",
+        capability_id="media.ffmpeg",
+        resource_keys=resource_keys_for_device(
+            "cuda" if "nvenc" in body.encoder.lower() else "cpu"
+        ),
+    )
     record.on_cancel = lambda: managed_media_processes.terminate_task(record.task_id)
 
     def run_export():

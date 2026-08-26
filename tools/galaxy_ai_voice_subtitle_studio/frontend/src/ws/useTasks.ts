@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useReducer } from 'react'
 
 import { subscribeEvents } from './hub'
-import type { ServerEvent, TaskStatus } from './types'
+import { isTaskActive, type ServerEvent, type TaskStatus } from './types'
 
 export interface TaskState {
   taskId: string
@@ -19,13 +19,13 @@ export function tasksReducer(
 ): Record<string, TaskState> {
   if (event.type === 'progress') {
     const task = state[event.task_id]
-    if (!task || task.status !== 'running') return state
+    if (!task || !isTaskActive(task.status)) return state
     const lines = [...task.lines, event.message].slice(-MAX_LINES)
     return { ...state, [event.task_id]: { ...task, lines } }
   }
   if (event.type === 'task') {
     const existing = state[event.task_id]
-    if (!existing && event.status !== 'running') return state
+    if (!existing && !isTaskActive(event.status)) return state
     const task: TaskState = {
       taskId: event.task_id,
       status: event.status,

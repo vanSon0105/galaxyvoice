@@ -29,6 +29,7 @@ from ...subtitle_removal.service import (
     probe_video_size,
 )
 from ..event_bus import event_bus
+from ...runtime.resources import resource_keys_for_device
 from ..tasks import TaskRecord, run_task, task_registry
 
 router = APIRouter(prefix="/api/removal", tags=["subtitle-removal"])
@@ -216,7 +217,17 @@ def start_removal(body: RemoveRequest) -> dict[str, str]:
         blur_strength=body.blur_strength,
         processing_device=body.processing_device,
     )
-    record = task_registry.create("subtitle-removal")
+    record = task_registry.create(
+        "subtitle-removal",
+        capability_id=(
+            "video.inpainting.propainter" if body.mode in AI_INPAINT_MODES else "media.ffmpeg"
+        ),
+        resource_keys=(
+            resource_keys_for_device(body.processing_device)
+            if body.mode in AI_INPAINT_MODES
+            else ()
+        ),
+    )
     record.on_cancel = lambda: managed_media_processes.terminate_task(record.task_id)
 
     def run_removal():

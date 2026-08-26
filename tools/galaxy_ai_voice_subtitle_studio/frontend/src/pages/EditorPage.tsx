@@ -22,6 +22,7 @@ import {
 } from '../components/timeline/segments'
 import { hasNativeDialogs, pickAudioFile, pickFolder, pickSrtFile, pickVideoFile } from '../lib/dialogs'
 import { useTasks } from '../ws/useTasks'
+import { isTaskActive } from '../ws/types'
 
 type EditorMediaAsset<K extends 'video' | 'audio'> = Omit<EditorMedia, 'kind'> & {
   id: string
@@ -106,7 +107,7 @@ export function EditorPage() {
   const [result, setResult] = useState<EditorExportResult | null>(null)
 
   const task = taskId ? tasks.find((item) => item.taskId === taskId) : undefined
-  const running = task?.status === 'running'
+  const running = isTaskActive(task?.status)
   const sourceDurationMs = Math.round((video?.duration_seconds ?? 0) * 1000)
   const durationMs = projectDuration(videoSegments)
   const activeCue = selectedCue === null ? null : cues[selectedCue] ?? null
@@ -135,7 +136,7 @@ export function EditorPage() {
   }, [settingsQuery.data])
 
   useEffect(() => {
-    if (!task || task.status === 'running') return
+    if (!task || isTaskActive(task.status)) return
     if (task.status === 'done' && task.result) {
       setResult(task.result as EditorExportResult)
       setMessage('Xuất video hoàn tất.')

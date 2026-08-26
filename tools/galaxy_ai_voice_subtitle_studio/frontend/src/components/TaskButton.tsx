@@ -3,6 +3,7 @@ import { useEffect, useRef, useState } from 'react'
 import { useT } from '../i18n/useT'
 import { useTasks } from '../ws/useTasks'
 import type { TaskState } from '../ws/useTasks'
+import { isTaskActive } from '../ws/types'
 
 interface TaskButtonProps {
   label: string
@@ -31,10 +32,10 @@ export function TaskButton({
   const finishedRef = useRef<string | null>(null)
 
   const task = taskId ? tasks.find((candidate) => candidate.taskId === taskId) : undefined
-  const running = task?.status === 'running'
+  const running = isTaskActive(task?.status)
 
   useEffect(() => {
-    if (!task || task.status === 'running') return
+    if (!task || isTaskActive(task.status)) return
     const key = `${task.taskId}:${task.status}`
     if (finishedRef.current === key) return
     finishedRef.current = key
@@ -60,7 +61,7 @@ export function TaskButton({
         onClick={() => void handleClick()}
         disabled={disabled || running}
       >
-        {running ? t('task.running') : label}
+        {running && task ? t(`task.${task.status}`) : label}
       </button>
       {error && (
         <span style={{ color: 'var(--color-danger)', fontSize: 12 }} title={error}>

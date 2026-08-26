@@ -18,6 +18,7 @@ import uvicorn
 
 from ..common.processes import managed_media_processes
 from ..omnivoice.worker_pool import shutdown_shared_worker_client
+from ..runtime.jobs import JobStore, default_job_store_path
 from .main import create_app, health_ping_age
 from .routers.voicestudio import shutdown_voicestudio
 from .tasks import task_registry
@@ -59,6 +60,7 @@ class GalaxyWebServer:
 
     def start(self) -> None:
         """Start uvicorn in a daemon thread, retrying the next port on bind failure."""
+        task_registry.configure_store(JobStore(default_job_store_path()))
         app = create_app()
         port = self.port
         while port <= PORT_RETRY_LIMIT:

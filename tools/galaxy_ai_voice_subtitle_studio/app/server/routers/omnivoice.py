@@ -52,6 +52,7 @@ from ...omnivoice.service import generate_omnivoice_audio
 from ...omnivoice.task_runner import shared_omnivoice_task_coordinator
 from ...omnivoice.worker_pool import get_shared_worker_client
 from ..event_bus import event_bus
+from ...runtime.resources import resource_keys_for_device
 from ..tasks import TaskRecord, run_task, task_registry
 
 router = APIRouter(prefix="/api/omnivoice")
@@ -269,7 +270,11 @@ def generate(request: GenerateRequest) -> dict[str, Any]:
     if not request.text.strip():
         raise HTTPException(status_code=422, detail="Hãy nhập nội dung cần tạo giọng.")
     options = _options_from(request, _config())
-    record = task_registry.create("omnivoice-generate")
+    record = task_registry.create(
+        "omnivoice-generate",
+        capability_id="tts.omnivoice",
+        resource_keys=resource_keys_for_device(request.device),
+    )
     record.on_cancel = lambda: _task_coordinator.cancel(record.task_id)
     run_task(
         record,
@@ -312,7 +317,12 @@ def batch(request: BatchRequest) -> dict[str, Any]:
         ),
         config,
     )
-    record = task_registry.create("omnivoice-batch")
+    record = task_registry.create(
+        "omnivoice-batch",
+        capability_id="tts.omnivoice",
+        resumable=True,
+        resource_keys=resource_keys_for_device(request.device),
+    )
     record.on_cancel = lambda: _task_coordinator.cancel(record.task_id)
     run_task(
         record,

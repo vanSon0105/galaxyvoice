@@ -39,6 +39,7 @@ from ...common.config import default_config_path
 from ...common.paths import studio_root
 from ...common.processes import managed_media_processes
 from ..event_bus import event_bus
+from ...runtime.resources import resource_keys_for_device
 from ..tasks import TaskRecord, run_task, task_registry
 
 router = APIRouter(prefix="/api/audio", tags=["audio-separation"])
@@ -435,7 +436,11 @@ def start_separation(body: SeparateRequest) -> dict[str, str]:
         instrumental_only=body.instrumental_only,
         sample_mode=body.sample_mode,
     )
-    record = task_registry.create("audio-separation")
+    record = task_registry.create(
+        "audio-separation",
+        capability_id="audio.separation",
+        resource_keys=resource_keys_for_device(processing_device),
+    )
     record.on_cancel = lambda: managed_media_processes.terminate_task(record.task_id)
 
     def run_separation():

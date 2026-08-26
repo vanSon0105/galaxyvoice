@@ -197,7 +197,7 @@ def run_web_app(
 
         def choose_video_file(self) -> tuple[str] | None:
             result = window.create_file_dialog(
-                webview.OPEN_DIALOG,
+                webview.FileDialog.OPEN,
                 allow_multiple=False,
                 file_types=self._VIDEO_FILE_TYPES,
             )
@@ -205,7 +205,7 @@ def run_web_app(
 
         def choose_srt_file(self) -> tuple[str] | None:
             result = window.create_file_dialog(
-                webview.OPEN_DIALOG,
+                webview.FileDialog.OPEN,
                 allow_multiple=False,
                 file_types=self._SRT_FILE_TYPES,
             )
@@ -213,7 +213,7 @@ def run_web_app(
 
         def choose_audio_file(self) -> tuple[str] | None:
             result = window.create_file_dialog(
-                webview.OPEN_DIALOG,
+                webview.FileDialog.OPEN,
                 allow_multiple=False,
                 file_types=(
                     "Audio files (*.wav;*.mp3;*.flac;*.m4a;*.ogg)",
@@ -224,7 +224,7 @@ def run_web_app(
 
         def choose_media_file(self) -> tuple[str] | None:
             return window.create_file_dialog(
-                webview.OPEN_DIALOG,
+                webview.FileDialog.OPEN,
                 allow_multiple=False,
                 file_types=(
                     "Media files (*.wav;*.mp3;*.flac;*.m4a;*.ogg;*.aac;*.wma;*.mp4;*.mov;*.mkv;*.avi;*.webm;*.m4v)",
@@ -234,7 +234,7 @@ def run_web_app(
 
         def choose_book_file(self) -> tuple[str] | None:
             result = window.create_file_dialog(
-                webview.OPEN_DIALOG,
+                webview.FileDialog.OPEN,
                 allow_multiple=False,
                 file_types=self._BOOK_FILE_TYPES,
             )
@@ -242,7 +242,7 @@ def run_web_app(
 
         def choose_voice_bundle_file(self) -> tuple[str] | None:
             return window.create_file_dialog(
-                webview.OPEN_DIALOG,
+                webview.FileDialog.OPEN,
                 allow_multiple=False,
                 file_types=(
                     "Galaxy voice bundles (*.galaxyvoice)",
@@ -251,7 +251,10 @@ def run_web_app(
             )
 
         def choose_folder(self) -> tuple[str] | None:
-            result = window.create_file_dialog(webview.FOLDER_DIALOG, allow_multiple=False)
+            result = window.create_file_dialog(
+                webview.FileDialog.FOLDER,
+                allow_multiple=False,
+            )
             return result
 
     window = webview.create_window(

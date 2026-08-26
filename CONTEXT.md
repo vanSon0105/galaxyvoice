@@ -116,6 +116,22 @@ an Active Project. The mutable reference is stored outside the immutable take.
 Selecting a new Primary Studio Take atomically replaces the previous selection
 for that project. Other takes remain available for comparison and reruns.
 
+### Batch Run
+
+A persistent ordered execution of multiple synthesis items under one Active
+Project and one shared default voice configuration. A Batch Run records item
+attempts and outcomes independently, can preserve partial success, and may be
+continued without regenerating completed items. Its portable manifest contains
+relative artifact references; machine-local resume data lives in a separate
+sidecar.
+
+### Batch Item
+
+One synthesis request inside a Batch Run. It inherits language, voice, speed,
+duration, and formats from the run unless it declares an override. Its state is
+`pending`, `running`, `done`, or `failed`; retry increments its attempt count
+without changing successful sibling items.
+
 ### Artifact Provenance
 
 The trace from a generated file back to its Generation Run, input asset

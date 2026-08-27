@@ -72,6 +72,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
 
     from .files import router as files_router
     from .routers import audio_separation as audio_separation_router
+    from .routers import audio_postproduction as audio_postproduction_router
     from .routers import batch as batch_router
     from .routers import omnivoice as omnivoice_router
     from .routers import omnivoice_workspaces as workspaces_router
@@ -93,6 +94,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     app.include_router(batch_router.router)
     app.include_router(studio_router.router)
     app.include_router(audio_separation_router.router)
+    app.include_router(audio_postproduction_router.router)
     app.include_router(subtitle_removal_router.router)
     app.include_router(video_editor_router.router)
     app.include_router(voice_router.router)

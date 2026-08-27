@@ -22,6 +22,7 @@ import { fetchSettings } from '../../api/settings'
 import type { StudioVoiceSource } from '../../api/studio'
 import { openPath } from '../../api/voice'
 import { fetchLibraryVoices, libraryVoiceRequest } from '../../api/voiceLibrary'
+import { AudioPostPanel } from '../../components/audio/AudioPostPanel'
 import { WorkspaceLoading, WorkspaceState } from '../../components/WorkspaceState'
 import { pickAudioFile, pickFolder } from '../../lib/dialogs'
 import { useTasks } from '../../ws/useTasks'
@@ -329,6 +330,17 @@ export function BatchPage() {
           </section>
 
           {selectedRun && <section className="section-card batch-item-results"><h2 className="section-title">Kết quả từng mục</h2><div className="batch-result-list">{selectedRun.items.map((item) => <article key={item.item_id} className={`batch-result-item ${item.status}`}><div><strong>{item.item_id}</strong><span>{item.status} · lần {item.attempts}</span></div><p>{item.text}</p>{item.error && <small>{item.error}</small>}{item.audio_url && <div><audio controls preload="none" src={batchItemAudioUrl(item)} /><a className="btn" href={batchItemAudioUrl(item, true)}>Tải</a></div>}</article>)}</div></section>}
+
+          {selectedRun?.combined_wav_path && (
+            <AudioPostPanel
+              key={selectedRun.batch_id}
+              projectId={selectedRun.project_id || selectedRun.batch_id}
+              workspace="batch"
+              projectDir={selectedRun.root_dir}
+              title={selectedRun.title}
+              sources={[{ source_id: `${selectedRun.batch_id}-combined`, label: 'Bản Batch đã ghép', path: `${selectedRun.root_dir.replace(/[\\/]+$/, '')}/${selectedRun.combined_wav_path}`, role: 'voice', preview_url: batchCombinedAudioUrl(selectedRun, 'wav') }]}
+            />
+          )}
 
           <section className="section-card batch-history">
             <div className="section-header compact"><h2 className="section-title">Lịch sử Batch</h2><span className="studio-counter">{runsQuery.data?.length ?? 0}</span></div>

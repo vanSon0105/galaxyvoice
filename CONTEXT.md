@@ -184,3 +184,23 @@ vendored VoiceStudio service.
 Fitting synthesized speech to a source speech interval using accurate timing,
 bounded rate adjustment that preserves pitch, and quality checks. It does not
 mean altering a face or mouth in video frames.
+
+### Audio Post Chain
+
+The engine-neutral ordered settings applied after synthesis or separation:
+source and segment gain, trim, silence removal, fades, tonal preset, loudness
+normalization, sample rate, and channel layout. Workspaces submit the contract;
+the source engine does not define export behavior.
+
+### Audio Export
+
+An immutable Project Bundle artifact produced from selected voice, mix,
+background, or stem sources through an Audio Post Chain. Its manifest records
+source hashes and ownership, effective settings, metadata, formats, and
+project-relative outputs without credentials.
+
+### Waveform Cache
+
+A bounded set of display peaks derived from an audio artifact and cached under
+the owning project. It is keyed by source identity and requested resolution,
+may be deleted safely, and is never the authoritative audio source.

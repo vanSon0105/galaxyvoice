@@ -22,6 +22,7 @@ import {
 import { openPath } from '../../api/voice'
 import { fetchLibraryVoices, libraryVoiceRequest } from '../../api/voiceLibrary'
 import { TaskButton } from '../../components/TaskButton'
+import { AudioPostPanel } from '../../components/audio/AudioPostPanel'
 import { WorkspaceLoading, WorkspaceState } from '../../components/WorkspaceState'
 import { pickAudioFile, pickFolder } from '../../lib/dialogs'
 import type { TaskState } from '../../ws/useTasks'
@@ -409,6 +410,17 @@ export function StudioPage() {
             )}
           </section>
 
+          {latestTake && (
+            <AudioPostPanel
+              key={latestTake.take_id}
+              projectId={latestTake.project_id || projectId}
+              workspace="studio"
+              projectDir={latestTake.project_dir}
+              title={latestTake.title}
+              sources={[{ source_id: latestTake.take_id, label: latestTake.title, path: latestTake.wav_path, role: 'voice', preview_url: studioTakeAudioUrl(latestTake, 'wav') }]}
+            />
+          )}
+
           {compareTakes.length > 0 && (
             <section className="section-card studio-compare">
               <div className="section-header compact">
@@ -481,6 +493,7 @@ export function StudioPage() {
                         {take.primary ? 'Bỏ bản chính' : 'Chọn bản chính'}
                       </button>
                       <TaskButton label="Chạy lại" onStart={() => rerunStudioTake(take.take_id).then((value) => value.task_id)} onFinish={handleRerunDone} />
+                      <button className="btn" type="button" onClick={() => setLatestTake(take)}>Hậu kỳ</button>
                       <button className="btn" type="button" onClick={() => void openPath(take.project_dir)}>Mở</button>
                       <button className="btn danger" type="button" onClick={() => deleteMutation.mutate(take.take_id)}>Xóa</button>
                     </div>

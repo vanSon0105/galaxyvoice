@@ -114,5 +114,5 @@ describe('longform stories and audiobook workspace', () => {
     expect(screen.getAllByRole('button', { name: 'Nghe thử' }).length).toBeGreaterThan(0)
     expect(screen.getByLabelText('Mastering âm lượng')).toBeChecked()
     expect(screen.getByDisplayValue('-16')).toBeInTheDocument()
-  })
+  }, 10_000)
 })

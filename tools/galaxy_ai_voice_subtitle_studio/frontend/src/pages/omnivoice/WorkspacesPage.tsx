@@ -29,6 +29,7 @@ import type {
   ResumeJob,
 } from '../../api/workspaces'
 import { TaskButton } from '../../components/TaskButton'
+import { AudioPostPanel } from '../../components/audio/AudioPostPanel'
 import { pickBookFile, pickFolder } from '../../lib/dialogs'
 import type { TaskState } from '../../ws/useTasks'
 import { fetchTranscriptHandoff, type TranscriptHandoff } from '../../api/transcripts'
@@ -1091,6 +1092,7 @@ export function WorkspacesPage() {
               </div>
             </div>
           )}
+          {result && resultAudioUrl && (activeRenderProject.current || selectedProjectId) && <AudioPostPanel key={result.manifest_path} projectId={activeRenderProject.current || selectedProjectId} workspace="longform" projectDir={result.project_dir} title={projectName || 'Truyện và sách nói'} sources={[{ source_id: 'longform-master', label: 'Bản đọc hoàn chỉnh', path: result.wav_path, role: 'voice', preview_url: resultAudioUrl }]} />}
         </section>
       )}
     </div>

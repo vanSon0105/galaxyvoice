@@ -11,6 +11,7 @@ import threading
 from typing import Callable, Mapping
 
 from ...common.cache import read_json, stable_digest, write_json_atomic
+from ...audio_postproduction.service import AudioPostproductionService
 from ...common.errors import TaskCancelledError
 from ...common.ffmpeg import find_ffmpeg
 from ...common.paths import slugify, unique_project_dir
@@ -640,41 +641,19 @@ def _master_longform_wav(
     true_peak_db: float,
     stop_event: threading.Event | None = None,
 ) -> tuple[bool, str]:
-    """Apply a conservative one-pass loudness master without risking the raw render."""
+    """Compatibility wrapper over the shared postproduction contract."""
 
     ffmpeg = find_ffmpeg()
-    if not ffmpeg:
-        return False, "Không tìm thấy ffmpeg; đã giữ nguyên WAV chưa mastering."
-    target = _clamp_target_lufs(target_lufs)
-    peak = _clamp_true_peak(true_peak_db)
-    temporary = wav_path.with_name(f"{wav_path.stem}.mastered.wav")
-    try:
-        _run_ffmpeg(
-            [
-                ffmpeg,
-                "-y",
-                "-hide_banner",
-                "-loglevel",
-                "error",
-                "-i",
-                str(wav_path),
-                "-af",
-                f"loudnorm=I={target:.1f}:TP={peak:.1f}:LRA=11",
-                "-c:a",
-                "pcm_s16le",
-                str(temporary),
-            ],
-            _run_command,
-            stop_event=stop_event,
-        )
-    except TaskCancelledError:
-        temporary.unlink(missing_ok=True)
-        raise
-    except RuntimeError as error:
-        temporary.unlink(missing_ok=True)
-        return False, f"Mastering thất bại; đã giữ nguyên WAV: {error}"
-    temporary.replace(wav_path)
-    return True, "Mastering completed."
+
+    def run(command: list[str]) -> subprocess.CompletedProcess[str]:
+        _run_ffmpeg(command, _run_command, stop_event=stop_event)
+        return subprocess.CompletedProcess(command, 0, "", "")
+
+    return AudioPostproductionService(ffmpeg=ffmpeg, runner=run).master_wav_in_place(
+        wav_path,
+        target_lufs=target_lufs,
+        true_peak_db=true_peak_db,
+    )
 
 
 def _clamp_target_lufs(value: float) -> float:

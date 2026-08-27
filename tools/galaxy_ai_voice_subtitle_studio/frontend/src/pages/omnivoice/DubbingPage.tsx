@@ -24,6 +24,7 @@ import {
 import { fetchOmniVoiceStatus } from '../../api/omnivoice'
 import { fetchTranscriptHandoff, type TranscriptHandoff } from '../../api/transcripts'
 import { TaskButton } from '../../components/TaskButton'
+import { AudioPostPanel } from '../../components/audio/AudioPostPanel'
 import { pickAudioFile, pickFolder, pickVideoFile } from '../../lib/dialogs'
 import type { TaskState } from '../../ws/useTasks'
 
@@ -442,6 +443,7 @@ export function DubbingPage() {
     </>}
 
     {result && <section className="section-card dubbing-result"><div><span className="workspace-kicker">RESULT</span><h2 className="section-title">Bản lồng tiếng hoàn chỉnh</h2></div>{resultVideoUrl && <video controls preload="metadata" src={resultVideoUrl} />}{resultAudioUrl && <audio controls preload="metadata" src={resultAudioUrl} />}<div className="dubbing-result-files">{result.video_path && <p>Video: {result.video_path}</p>}<p>WAV: {result.wav_path}</p><p>SRT: {result.srt_path}</p></div></section>}
+    {result && (activeRenderProject.current || projectId) && <AudioPostPanel key={result.manifest_path} projectId={activeRenderProject.current || projectId} workspace="dubbing" projectDir={result.project_dir} title={projectName || 'Bản lồng tiếng'} sources={[...(result.mixed_audio_path ? [{ source_id: 'mixed', label: 'Bản đã trộn', path: result.mixed_audio_path, role: 'mix', preview_url: resultAudioUrl, selected: true }] : []), { source_id: 'voice', label: 'Voice lồng tiếng', path: result.wav_path, role: 'voice', preview_url: result.mixed_audio_path ? undefined : resultAudioUrl, selected: !result.mixed_audio_path }, ...(sourceAudio ? [{ source_id: 'source-audio', label: 'Audio/stem nguồn', path: sourceAudio, role: 'background', selected: false }] : [])]} />}
   </div>
 }
 

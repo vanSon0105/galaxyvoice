@@ -30,6 +30,7 @@ class LongformSpan:
     duration: float | None = None
     chapter: str = ""
     source_index: int | None = None
+    segment_id: str = ""
 
 
 @dataclass(frozen=True)

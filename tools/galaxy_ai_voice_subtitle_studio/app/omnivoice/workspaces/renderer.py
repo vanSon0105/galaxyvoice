@@ -15,11 +15,13 @@ from ...common.errors import TaskCancelledError
 from ...common.ffmpeg import find_ffmpeg
 from ...common.paths import slugify, unique_project_dir
 from ...voice.audio import concatenate_wavs, try_convert_to_mp3
+from ...voice.media import _run_command, _run_ffmpeg
 from ...voice.srt import SubtitleCue, render_srt
 from ..models import AUTO_MODE, CLONE_MODE, OmniVoiceGenerationOptions, OmniVoiceResult
 from ..profiles import VoiceProfile
 from ..service import WorkerClient, generate_omnivoice_audio
 from .longform import LongformPlan, LongformSpan, PAUSE_SPAN, SPEECH_SPAN
+from .dubbing.model import DubbingFitPolicy, DubbingSegmentMeasurement
 
 
 WorkspaceProgress = Callable[[str], None]
@@ -36,6 +38,10 @@ class LongformWorkspaceResult:
     m4b_path: Path | None = None
     stems_dir: Path | None = None
     warnings: tuple[str, ...] = ()
+    fit_measurements: tuple[DubbingSegmentMeasurement, ...] = ()
+    quality_report_path: Path | None = None
+    mixed_audio_path: Path | None = None
+    video_path: Path | None = None
 
     @property
     def preview_path(self) -> Path:
@@ -70,6 +76,8 @@ def render_longform_plan(
     progress: WorkspaceProgress | None = None,
     resume_project_dir: Path | None = None,
     stop_event: threading.Event | None = None,
+    smart_fit: bool = False,
+    fit_policy: DubbingFitPolicy | None = None,
 ) -> LongformWorkspaceResult:
     report = progress or (lambda _message: None)
     speech_spans = [span for span in plan.spans if span.kind == SPEECH_SPAN]
@@ -92,7 +100,15 @@ def render_longform_plan(
         for span in plan.spans
         if span.voice_name and not span.profile_id
     }
-    plan_signature = _plan_signature(base_options, plan, used_cast, gap_ms)
+    resolved_fit_policy = fit_policy or DubbingFitPolicy()
+    plan_signature = _plan_signature(
+        base_options,
+        plan,
+        used_cast,
+        gap_ms,
+        smart_fit=smart_fit,
+        fit_policy=resolved_fit_policy,
+    )
     job = _load_or_create_job(
         job_path,
         project_name=base_options.project_name,
@@ -107,6 +123,7 @@ def render_longform_plan(
     speech_paths: dict[int, Path] = {}
     speech_total = len(speech_spans)
     speech_index = 0
+    fit_measurements: list[DubbingSegmentMeasurement] = []
     try:
         for span_index, span in enumerate(plan.spans):
             if span.kind != SPEECH_SPAN:
@@ -126,6 +143,9 @@ def render_longform_plan(
             if reused is not None:
                 report(f"Dùng lại đoạn {speech_index}/{speech_total}: {span.voice_name or 'Auto'}")
                 result = reused
+                cached_measurement = _cached_measurement(cached)
+                if cached_measurement is not None:
+                    fit_measurements.append(cached_measurement)
             else:
                 report(f"Đang tạo đoạn {speech_index}/{speech_total}: {span.voice_name or 'Auto'}")
                 mode = CLONE_MODE if profile_id else AUTO_MODE
@@ -144,8 +164,19 @@ def render_longform_plan(
                     export_mp3=False,
                 )
                 result = generate_omnivoice_audio(options, client, progress=report)
+                measurement: DubbingSegmentMeasurement | None = None
                 if span.duration is not None:
-                    _fit_wav_duration(result.wav_path, round(span.duration * 1000))
+                    target_ms = round(span.duration * 1000)
+                    if smart_fit:
+                        measurement = _smart_fit_wav_duration(
+                            result.wav_path,
+                            target_ms,
+                            segment_id=span.segment_id or str(span.source_index or speech_index),
+                            policy=resolved_fit_policy,
+                            stop_event=stop_event,
+                        )
+                    else:
+                        _fit_wav_duration(result.wav_path, target_ms)
                 if abs(span.volume - 1.0) > 0.001:
                     _scale_wav_volume(result.wav_path, span.volume)
                 cached_items[item_key] = {
@@ -154,7 +185,10 @@ def render_longform_plan(
                     "wav_path": str(result.wav_path),
                     "manifest_path": str(result.manifest_path),
                     "warnings": list(result.warnings),
+                    "fit_measurement": asdict(measurement) if measurement is not None else None,
                 }
+                if measurement is not None:
+                    fit_measurements.append(measurement)
                 job["items"] = cached_items
                 job["completed_spans"] = len(cached_items)
                 _save_job(job_path, job)
@@ -287,6 +321,7 @@ def render_longform_plan(
                 "stems": str(stems_dir) if stems_dir else None,
             },
             "warnings": warnings,
+            "fit_measurements": [asdict(item) for item in fit_measurements],
         },
     )
     job["status"] = "completed"
@@ -309,6 +344,7 @@ def render_longform_plan(
         m4b_path=m4b_path,
         stems_dir=stems_dir,
         warnings=tuple(warnings),
+        fit_measurements=tuple(fit_measurements),
     )
 
 
@@ -348,6 +384,9 @@ def _plan_signature(
     plan: LongformPlan,
     cast_map: Mapping[str, str],
     gap_ms: int,
+    *,
+    smart_fit: bool = False,
+    fit_policy: DubbingFitPolicy | None = None,
 ) -> str:
     return stable_digest(
         {
@@ -359,6 +398,8 @@ def _plan_signature(
             "gap_ms": max(0, int(gap_ms)),
             "cast": dict(sorted(cast_map.items())),
             "spans": [asdict(span) for span in plan.spans],
+            "smart_fit": smart_fit,
+            "fit_policy": asdict(fit_policy or DubbingFitPolicy()),
         }
     )
 
@@ -428,6 +469,15 @@ def _cached_result(payload: object, signature: str) -> OmniVoiceResult | None:
     )
 
 
+def _cached_measurement(payload: object) -> DubbingSegmentMeasurement | None:
+    if not isinstance(payload, dict) or not isinstance(payload.get("fit_measurement"), dict):
+        return None
+    try:
+        return DubbingSegmentMeasurement(**payload["fit_measurement"])
+    except (TypeError, ValueError):
+        return None
+
+
 def _profile_lookup(
     profiles: tuple[VoiceProfile, ...],
     cast_map: Mapping[str, str],
@@ -452,6 +502,71 @@ def _fit_wav_duration(path: Path, target_ms: int) -> None:
         output.setparams(params)
         output.writeframes(fitted)
     temporary.replace(path)
+
+
+def _wav_duration_ms(path: Path) -> int:
+    with wave.open(str(path), "rb") as source:
+        return max(1, round(source.getnframes() * 1000 / source.getframerate()))
+
+
+def _smart_fit_wav_duration(
+    path: Path,
+    target_ms: int,
+    *,
+    segment_id: str,
+    policy: DubbingFitPolicy,
+    stop_event: threading.Event | None = None,
+) -> DubbingSegmentMeasurement:
+    """Fit speech to a cue with bounded FFmpeg atempo, then exact pad/trim."""
+
+    target = max(1, int(target_ms))
+    raw_duration = _wav_duration_ms(path)
+    required_tempo = raw_duration / target
+    tempo = max(policy.min_tempo, min(policy.max_tempo, required_tempo))
+    method = "exact-pad-trim"
+    tempo_duration = raw_duration
+    ffmpeg = find_ffmpeg()
+    if ffmpeg and abs(tempo - 1.0) > 0.005:
+        temporary = path.with_suffix(".smart-fit.wav")
+        try:
+            _run_ffmpeg(
+                [
+                    ffmpeg,
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-i",
+                    str(path),
+                    "-filter:a",
+                    f"atempo={tempo:.6f}",
+                    str(temporary),
+                ],
+                _run_command,
+                stop_event=stop_event,
+            )
+        except TaskCancelledError:
+            temporary.unlink(missing_ok=True)
+            raise
+        except RuntimeError:
+            temporary.unlink(missing_ok=True)
+        else:
+            temporary.replace(path)
+            tempo_duration = _wav_duration_ms(path)
+            method = "ffmpeg-atempo"
+    clipped_ms = max(0, tempo_duration - target)
+    padded_ms = max(0, target - tempo_duration)
+    _fit_wav_duration(path, target)
+    return DubbingSegmentMeasurement(
+        segment_id=segment_id,
+        raw_duration_ms=raw_duration,
+        tempo=round(tempo, 6),
+        tempo_duration_ms=tempo_duration,
+        fitted_duration_ms=_wav_duration_ms(path),
+        method=method,
+        clipped_ms=clipped_ms,
+        padded_ms=padded_ms,
+    )
 
 
 def _scale_wav_volume(path: Path, volume: float) -> None:

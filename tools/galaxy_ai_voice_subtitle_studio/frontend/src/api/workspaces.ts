@@ -82,6 +82,58 @@ export interface DubbingSegment {
   profile_id: string
   speed: number
   volume: number
+  preview_path?: string
+  source_speaker_id?: string
+}
+
+export interface DubbingIssue {
+  code: string
+  segment_id: string
+  message: string
+  severity: 'error' | 'warning' | string
+}
+
+export interface DubbingMeasurement {
+  segment_id: string
+  raw_duration_ms: number
+  tempo: number
+  tempo_duration_ms: number
+  fitted_duration_ms: number
+  method: string
+  clipped_ms: number
+  padded_ms: number
+}
+
+export interface DubbingQualityReport {
+  report_id: string
+  score: number
+  segment_count: number
+  error_count: number
+  warning_count: number
+  issues: DubbingIssue[]
+  measurements: DubbingMeasurement[]
+}
+
+export interface DubbingProjectSummary {
+  project_id: string
+  name: string
+  stage: string
+  revision: number
+  segment_count: number
+  language: string
+  updated_at: string
+}
+
+export interface DubbingProject extends DubbingProjectSummary {
+  source_srt: string
+  translated_srt: string
+  source_video: string
+  source_audio: string
+  segments: DubbingSegment[]
+  options: Record<string, unknown>
+  quality: Partial<DubbingQualityReport>
+  last_result: Record<string, unknown>
+  created_at: string
 }
 
 export interface RenderResultPayload {
@@ -94,6 +146,15 @@ export interface RenderResultPayload {
   manifest_path: string
   span_count: number
   warnings: string[]
+  quality_report_path?: string | null
+  mixed_audio_path?: string | null
+  video_path?: string | null
+  fit_measurements?: DubbingMeasurement[]
+  quality?: DubbingQualityReport | null
+  preview_files?: string[]
+  wav_file?: string | null
+  mixed_audio_file?: string | null
+  video_file?: string | null
 }
 
 export interface ResumeJob {
@@ -222,13 +283,68 @@ export const documentOp = (
   })
 
 // Dubbing
-export const fetchDubbingPlan = (srtText: string) =>
-  apiJson<{ segments: DubbingSegment[]; issues: { code: string; segment_id: string; message: string; severity: string }[] }>(
-    `/api/workspaces/dubbing/plan?srt_text=${encodeURIComponent(srtText)}`,
+export const fetchDubbingPlan = (sourceSrt: string, translatedSrt = '') =>
+  apiJson<{ segments: DubbingSegment[]; issues: DubbingIssue[]; quality: DubbingQualityReport }>(
+    '/api/workspaces/dubbing/plan',
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ source_srt: sourceSrt, translated_srt: translatedSrt }),
+    },
   )
+
+export const fetchDubbingQuality = (segments: DubbingSegment[], options: Record<string, number> = {}) =>
+  apiJson<DubbingQualityReport>('/api/workspaces/dubbing/qc', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ segments, ...options }),
+  })
+
+export const startDubbingTranslation = (body: {
+  source_srt: string
+  source_language?: string
+  target_language?: string
+  provider?: string
+  model?: string
+  base_url?: string
+  api_key?: string
+  batch_size?: number
+  max_workers?: number
+}) => apiJson<{ task_id: string }>('/api/workspaces/dubbing/translate', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+export const fetchDubbingProjects = () =>
+  apiJson<DubbingProjectSummary[]>('/api/workspaces/dubbing/projects')
+
+export const fetchDubbingProject = (projectId: string) =>
+  apiJson<DubbingProject>(`/api/workspaces/dubbing/projects/${encodeURIComponent(projectId)}`)
+
+export const dubbingProjectMediaUrl = (projectId: string, kind: 'video' | 'mixed' | 'voice') =>
+  `/api/workspaces/dubbing/projects/${encodeURIComponent(projectId)}/media/${kind}`
+
+export const saveDubbingProject = (body: Partial<DubbingProject> & {
+  name: string
+  stage: string
+  source_srt: string
+  segments: DubbingSegment[]
+  expected_revision: number
+}) => apiJson<DubbingProject>('/api/workspaces/dubbing/projects', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+export const deleteDubbingProject = (projectId: string) =>
+  apiJson<{ ok: boolean }>(`/api/workspaces/dubbing/projects/${encodeURIComponent(projectId)}`, {
+    method: 'DELETE',
+  })
 
 // Render + resume
 export const startRender = (body: {
+  project_id?: string
   doc_id?: string
   kind: 'stories' | 'audiobook' | 'dubbing'
   segments?: DubbingSegment[]
@@ -248,6 +364,15 @@ export const startRender = (body: {
   author?: string
   cover_path?: string
   resume_project_dir?: string
+  source_video?: string
+  source_audio?: string
+  mix_mode?: 'replace' | 'mix' | 'duck'
+  source_volume?: number
+  dub_volume?: number
+  fit_min_tempo?: number
+  fit_max_tempo?: number
+  fit_tolerance_ms?: number
+  min_gap_ms?: number
 }) =>
   apiJson<{ task_id: string }>('/api/workspaces/render', {
     method: 'POST',

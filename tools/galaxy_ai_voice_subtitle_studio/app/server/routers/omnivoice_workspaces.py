@@ -7,6 +7,7 @@ uses, so the two UIs can never diverge on editing semantics.
 """
 from __future__ import annotations
 
+import mimetypes
 import threading
 import time
 import uuid
@@ -14,8 +15,10 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
-from pydantic import BaseModel
+from fastapi.responses import FileResponse
+from pydantic import BaseModel, Field
 
+from ...common.cache import read_json
 from ...common.errors import TaskCancelledError
 from ...omnivoice.client import OmniVoiceWorkerClient
 from ...omnivoice.models import AUTO_MODE, DEFAULT_MODEL_ID, OmniVoiceGenerationOptions
@@ -25,11 +28,18 @@ from ...omnivoice.task_runner import shared_omnivoice_task_coordinator
 from ...omnivoice.worker_pool import get_shared_worker_client
 from ...omnivoice.workspaces.common.repository import WorkspaceRepository
 from ...omnivoice.workspaces.dubbing.model import (
+    DubbingFitPolicy,
     DubbingSegment,
     build_dubbing_segments,
-    plan_dubbing_segments,
+    build_dubbing_quality_report,
     validate_dubbing_segments,
 )
+from ...omnivoice.workspaces.dubbing.project import (
+    DubbingProject,
+    DubbingProjectRepository,
+    DubbingRevisionConflict,
+)
+from ...omnivoice.workspaces.dubbing.service import render_dubbing_project
 from ...omnivoice.workspaces.editable import EditableLongformDocument
 from ...omnivoice.workspaces.gallery import list_voice_archetypes, voice_archetype_categories
 from ...omnivoice.workspaces.imports import load_audiobook_source
@@ -38,7 +48,17 @@ from ...omnivoice.workspaces.renderer import (
     render_longform_plan,
 )
 from ...omnivoice.workspaces.transcripts import TranscriptStore
-from ...voice.srt import parse_srt
+from ...voice.srt import parse_srt, render_srt
+from ...voice.translator import (
+    AITranslationOptions,
+    default_translation_api_key,
+    default_translation_base_url,
+    default_translation_model,
+    normalize_translation_provider,
+    translate_cues,
+    translation_checkpoint_path,
+    validate_translation_options,
+)
 from ..event_bus import event_bus
 from ...runtime.resources import resource_keys_for_device
 from ..tasks import TaskRecord, run_task, task_registry
@@ -80,6 +100,10 @@ def _repository(request: Request) -> WorkspaceRepository:
 
 def _transcripts(request: Request) -> TranscriptStore:
     return TranscriptStore(_settings_path(request).with_name("transcriptions.json"))
+
+
+def _dubbing_repository(request: Request) -> DubbingProjectRepository:
+    return DubbingProjectRepository(_settings_path(request).with_name("dubbing_projects.json"))
 
 
 def _progress(record: TaskRecord):
@@ -441,7 +465,248 @@ def _document_dict(doc_id: str, kind: str, document: EditableLongformDocument) -
 # ---------- Render (stories / audiobook / dubbing) ----------
 
 
+def _parse_dubbing_segments(items: list[dict[str, Any]] | None) -> tuple[DubbingSegment, ...]:
+    return tuple(
+        DubbingSegment(
+            segment_id=str(item.get("segment_id") or ""),
+            start_ms=int(item.get("start_ms") or 0),
+            end_ms=int(item.get("end_ms") or 0),
+            source_text=str(item.get("source_text") or ""),
+            text=str(item.get("text") or ""),
+            speaker_id=str(item.get("speaker_id") or "Default"),
+            profile_id=str(item.get("profile_id") or ""),
+            speed=float(item.get("speed") or 1.0),
+            volume=float(item.get("volume") or 1.0),
+            preview_path=str(item.get("preview_path") or ""),
+            source_speaker_id=str(item.get("source_speaker_id") or ""),
+        )
+        for item in items or ()
+    )
+
+
+def _dubbing_project_dict(project: DubbingProject) -> dict[str, Any]:
+    return project.to_dict()
+
+
+class DubbingProjectRequest(BaseModel):
+    project_id: str = ""
+    expected_revision: int = 0
+    name: str = "Dubbing"
+    stage: str = "ingest"
+    source_srt: str = ""
+    translated_srt: str = ""
+    source_video: str = ""
+    source_audio: str = ""
+    language: str = "vi"
+    segments: list[dict[str, Any]] = Field(default_factory=list)
+    options: dict[str, Any] = Field(default_factory=dict)
+    quality: dict[str, Any] = Field(default_factory=dict)
+    last_result: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.get("/dubbing/projects")
+def list_dubbing_projects(request: Request) -> list[dict[str, Any]]:
+    return [item.__dict__ for item in _dubbing_repository(request).list()]
+
+
+@router.get("/dubbing/projects/{project_id}")
+def get_dubbing_project(project_id: str, request: Request) -> dict[str, Any]:
+    project = _dubbing_repository(request).get(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy Dubbing project.")
+    return _dubbing_project_dict(project)
+
+
+@router.get("/dubbing/projects/{project_id}/media/{kind}")
+def get_dubbing_project_media(project_id: str, kind: str, request: Request) -> FileResponse:
+    project = _dubbing_repository(request).get(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy Dubbing project.")
+    field = {"video": "video_path", "mixed": "mixed_audio_path", "voice": "wav_path"}.get(kind)
+    if field is None:
+        raise HTTPException(status_code=404, detail="Loại media không hợp lệ.")
+    root_value = str(project.last_result.get("project_dir") or "")
+    path_value = str(project.last_result.get(field) or "")
+    if not root_value or not path_value:
+        raise HTTPException(status_code=404, detail="Project chưa có media này.")
+    root = Path(root_value).expanduser().resolve()
+    path = Path(path_value).expanduser().resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as error:
+        raise HTTPException(status_code=403, detail="Media nằm ngoài thư mục render.") from error
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="File media không còn tồn tại.")
+    return FileResponse(
+        path,
+        media_type=mimetypes.guess_type(path.name)[0] or "application/octet-stream",
+        filename=None,
+        content_disposition_type="inline",
+    )
+
+
+@router.post("/dubbing/projects")
+def save_dubbing_project(body: DubbingProjectRequest, request: Request) -> dict[str, Any]:
+    repository = _dubbing_repository(request)
+    try:
+        segments = _parse_dubbing_segments(body.segments)
+        if body.project_id:
+            existing = repository.get(body.project_id)
+            if existing is None:
+                raise HTTPException(status_code=404, detail="Không tìm thấy Dubbing project.")
+            project = existing.evolved(
+                name=body.name.strip() or existing.name,
+                stage=body.stage,
+                source_srt=body.source_srt,
+                translated_srt=body.translated_srt,
+                source_video=body.source_video.strip(),
+                source_audio=body.source_audio.strip(),
+                language=body.language.strip() or "vi",
+                segments=segments,
+                options=body.options,
+                quality=body.quality,
+                # Render artifacts are server-owned because the media endpoint
+                # trusts these paths after constraining them to project_dir.
+                last_result=existing.last_result,
+            )
+        else:
+            project = DubbingProject.create(
+                name=body.name,
+                source_srt=body.source_srt,
+                translated_srt=body.translated_srt,
+                source_video=body.source_video,
+                source_audio=body.source_audio,
+                language=body.language,
+                segments=segments,
+                options=body.options,
+            )
+            if body.stage != project.stage:
+                project = project.evolved(stage=body.stage)
+        saved = repository.save(project, expected_revision=body.expected_revision)
+    except DubbingRevisionConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return _dubbing_project_dict(saved)
+
+
+@router.delete("/dubbing/projects/{project_id}")
+def delete_dubbing_project(project_id: str, request: Request) -> dict[str, bool]:
+    _dubbing_repository(request).delete(project_id)
+    return {"ok": True}
+
+
+class DubbingPlanRequest(BaseModel):
+    source_srt: str
+    translated_srt: str = ""
+
+
+@router.post("/dubbing/plan")
+def create_dubbing_plan(body: DubbingPlanRequest) -> dict[str, Any]:
+    try:
+        source = parse_srt(body.source_srt)
+        translated = parse_srt(body.translated_srt) if body.translated_srt.strip() else None
+        if translated is not None and [cue.index for cue in source] != [cue.index for cue in translated]:
+            raise ValueError("Sub gốc và bản dịch phải có cùng danh sách cue.")
+        segments = build_dubbing_segments(source, translated)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return _dubbing_plan_dict(segments)
+
+
+class DubbingQualityRequest(BaseModel):
+    segments: list[dict[str, Any]]
+    min_tempo: float = 0.8
+    max_tempo: float = 1.25
+    tolerance_ms: int = 120
+    min_gap_ms: int = 80
+    max_chars_per_second: float = 22.0
+
+
+@router.post("/dubbing/qc")
+def dubbing_quality(body: DubbingQualityRequest) -> dict[str, Any]:
+    try:
+        segments = _parse_dubbing_segments(body.segments)
+        policy = DubbingFitPolicy(
+            min_tempo=max(0.5, min(1.0, body.min_tempo)),
+            max_tempo=max(1.0, min(2.0, body.max_tempo)),
+            tolerance_ms=max(0, body.tolerance_ms),
+            min_gap_ms=max(0, body.min_gap_ms),
+            max_chars_per_second=max(1.0, body.max_chars_per_second),
+        )
+        return build_dubbing_quality_report(segments, policy=policy).to_dict()
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+class DubbingTranslateRequest(BaseModel):
+    source_srt: str
+    source_language: str = "auto"
+    target_language: str = "vi"
+    provider: str = ""
+    model: str = ""
+    base_url: str = ""
+    api_key: str = ""
+    batch_size: int = 10
+    max_workers: int = 2
+
+
+@router.post("/dubbing/translate")
+def translate_dubbing(body: DubbingTranslateRequest, request: Request) -> dict[str, Any]:
+    try:
+        source = parse_srt(body.source_srt)
+        provider = normalize_translation_provider(body.provider)
+        options = AITranslationOptions(
+            source_language=body.source_language,
+            target_language=body.target_language,
+            provider=provider,
+            model=body.model or default_translation_model(provider),
+            base_url=body.base_url or default_translation_base_url(provider),
+            api_key=body.api_key or default_translation_api_key(provider),
+            batch_size=body.batch_size,
+            max_workers=body.max_workers,
+        )
+        validate_translation_options(options)
+    except (TypeError, ValueError, RuntimeError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    # Re-running the request resumes from the deterministic translation checkpoint.
+    # The in-memory task itself cannot be restored safely after an app restart.
+    record = task_registry.create("dubbing-translate", resumable=False)
+    checkpoint_path = translation_checkpoint_path(
+        _settings_path(request).with_name("cache") / "dubbing",
+        source,
+        options,
+    )
+
+    def operation() -> dict[str, Any]:
+        translated = translate_cues(
+            source,
+            options,
+            checkpoint_path=checkpoint_path,
+            progress=lambda done, total: _progress(record)(f"Da dich {done}/{total} cue..."),
+            stop_event=record.stop_event,
+        )
+        segments = build_dubbing_segments(source, translated)
+        return {
+            "translated_srt": render_srt(translated),
+            **_dubbing_plan_dict(segments),
+        }
+
+    run_task(record, operation, lambda result: result)
+    return {"task_id": record.task_id}
+
+
+def _dubbing_plan_dict(segments: tuple[DubbingSegment, ...]) -> dict[str, Any]:
+    quality = build_dubbing_quality_report(segments)
+    return {
+        "segments": [item.__dict__ for item in segments],
+        "issues": [item.__dict__ for item in quality.issues],
+        "quality": quality.to_dict(),
+    }
+
+
 class RenderRequest(BaseModel):
+    project_id: str = ""
     doc_id: str = ""
     kind: str = "stories"
     segments: list[dict[str, Any]] | None = None
@@ -452,7 +717,7 @@ class RenderRequest(BaseModel):
     device: str = "auto"
     language: str = "vi"
     speed: float = 1.0
-    cast_map: dict[str, str] = {}
+    cast_map: dict[str, str] = Field(default_factory=dict)
     gap_ms: int = 250
     export_mp3: bool = True
     export_m4b: bool = False
@@ -461,36 +726,31 @@ class RenderRequest(BaseModel):
     author: str = ""
     cover_path: str = ""
     resume_project_dir: str = ""
+    source_video: str = ""
+    source_audio: str = ""
+    mix_mode: str = "replace"
+    source_volume: float = 0.25
+    dub_volume: float = 1.0
+    fit_min_tempo: float = 0.8
+    fit_max_tempo: float = 1.25
+    fit_tolerance_ms: int = 120
+    min_gap_ms: int = 80
 
 
 @router.post("/render")
-def render(request_body: RenderRequest) -> dict[str, Any]:
+def render(request_body: RenderRequest, request: Request) -> dict[str, Any]:
     runtime = _runtime()
     if request_body.kind == "dubbing":
         if not request_body.segments:
             raise HTTPException(status_code=422, detail="Chưa có đoạn lồng tiếng.")
         try:
-            segments = tuple(
-                DubbingSegment(
-                    segment_id=str(item.get("segment_id") or ""),
-                    start_ms=int(item.get("start_ms") or 0),
-                    end_ms=int(item.get("end_ms") or 0),
-                    source_text=str(item.get("source_text") or ""),
-                    text=str(item.get("text") or ""),
-                    speaker_id=str(item.get("speaker_id") or "Default"),
-                    profile_id=str(item.get("profile_id") or ""),
-                    speed=float(item.get("speed") or 1.0),
-                    volume=float(item.get("volume") or 1.0),
-                )
-                for item in request_body.segments
-            )
+            segments = _parse_dubbing_segments(request_body.segments)
             issues = validate_dubbing_segments(segments)
             if any(issue.severity == "error" for issue in issues):
                 raise HTTPException(
                     status_code=422,
                     detail="; ".join(issue.message for issue in issues if issue.severity == "error"),
                 )
-            plan = plan_dubbing_segments(segments)
         except (KeyError, TypeError, ValueError) as error:
             raise HTTPException(status_code=422, detail=f"Đoạn lồng tiếng không hợp lệ: {error}")
     else:
@@ -518,36 +778,81 @@ def render(request_body: RenderRequest) -> dict[str, Any]:
         capability_id="tts.omnivoice",
         resumable=True,
         resource_keys=resource_keys_for_device(request_body.device),
+        project_id=request_body.project_id,
+        workflow_id="dubbing" if request_body.kind == "dubbing" else request_body.kind,
     )
     record.on_cancel = lambda: _task_coordinator.cancel(record.task_id)
     resume_dir = (
         Path(request_body.resume_project_dir).expanduser() if request_body.resume_project_dir else None
     )
+    def render_with_client(client):
+        if request_body.kind == "dubbing":
+            return render_dubbing_project(
+                base_options,
+                segments,
+                client,
+                profiles=profiles,
+                cast_map=request_body.cast_map or None,
+                fit_policy=DubbingFitPolicy(
+                    min_tempo=max(0.5, min(1.0, request_body.fit_min_tempo)),
+                    max_tempo=max(1.0, min(2.0, request_body.fit_max_tempo)),
+                    tolerance_ms=max(0, request_body.fit_tolerance_ms),
+                    min_gap_ms=max(0, request_body.min_gap_ms),
+                ),
+                export_mp3=request_body.export_mp3,
+                export_stems=request_body.export_stems,
+                source_video=Path(request_body.source_video).expanduser() if request_body.source_video else None,
+                source_audio=Path(request_body.source_audio).expanduser() if request_body.source_audio else None,
+                mix_mode=request_body.mix_mode,
+                source_volume=request_body.source_volume,
+                dub_volume=request_body.dub_volume,
+                progress=_progress(record),
+                resume_project_dir=resume_dir,
+                stop_event=record.stop_event,
+            )
+        return render_longform_plan(
+            base_options,
+            plan,
+            client,
+            profiles=profiles,
+            cast_map=request_body.cast_map or None,
+            gap_ms=request_body.gap_ms,
+            export_mp3=request_body.export_mp3,
+            export_m4b=request_body.export_m4b,
+            export_stems=request_body.export_stems,
+            title=request_body.title,
+            author=request_body.author,
+            cover_path=Path(request_body.cover_path).expanduser() if request_body.cover_path else None,
+            progress=_progress(record),
+            resume_project_dir=resume_dir,
+            stop_event=record.stop_event,
+        )
+
+    def serialize(result: Any) -> dict[str, Any]:
+        payload = _render_result_dict(result)
+        if request_body.kind == "dubbing" and request_body.project_id:
+            repository = _dubbing_repository(request)
+            project = repository.get(request_body.project_id)
+            if project is not None:
+                try:
+                    quality = read_json(result.quality_report_path) if result.quality_report_path else {}
+                    repository.save(
+                        project.evolved(stage="export", quality=quality or {}, last_result=payload),
+                        expected_revision=project.revision,
+                    )
+                except (DubbingRevisionConflict, ValueError):
+                    pass
+        return payload
+
     run_task(
         record,
         lambda: _task_coordinator.run(
             record.task_id,
             record.stop_event,
-            lambda client: render_longform_plan(
-                base_options,
-                plan,
-                client,
-                profiles=profiles,
-                cast_map=request_body.cast_map or None,
-                gap_ms=request_body.gap_ms,
-                export_mp3=request_body.export_mp3,
-                export_m4b=request_body.export_m4b,
-                export_stems=request_body.export_stems,
-                title=request_body.title,
-                author=request_body.author,
-                cover_path=Path(request_body.cover_path).expanduser() if request_body.cover_path else None,
-                progress=_progress(record),
-                resume_project_dir=resume_dir,
-                stop_event=record.stop_event,
-            ),
+            render_with_client,
             client_factory=_worker_client,
         ),
-        _render_result_dict,
+        serialize,
     )
     return {"task_id": record.task_id}
 
@@ -585,30 +890,26 @@ def dubbing_plan(srt_text: str) -> dict[str, Any]:
         segments = build_dubbing_segments(cues)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
-    issues = validate_dubbing_segments(segments)
-    return {
-        "segments": [
-            {
-                "segment_id": segment.segment_id,
-                "start_ms": segment.start_ms,
-                "end_ms": segment.end_ms,
-                "source_text": segment.source_text,
-                "text": segment.text,
-                "speaker_id": segment.speaker_id,
-                "profile_id": segment.profile_id,
-                "speed": segment.speed,
-                "volume": segment.volume,
-            }
-            for segment in segments
-        ],
-        "issues": [
-            {"code": issue.code, "segment_id": issue.segment_id, "message": issue.message, "severity": issue.severity}
-            for issue in issues
-        ],
-    }
+    return _dubbing_plan_dict(segments)
 
 
 def _render_result_dict(result: Any) -> dict[str, Any]:
+    project_dir = Path(result.project_dir).resolve()
+
+    def relative_file(path: Any) -> str | None:
+        if not path:
+            return None
+        try:
+            return str(Path(path).resolve().relative_to(project_dir)).replace("\\", "/")
+        except ValueError:
+            return None
+
+    previews: list[str] = []
+    for item in result.item_results:
+        preview = relative_file(item.wav_path)
+        if preview:
+            previews.append(preview)
+    quality = read_json(result.quality_report_path) if result.quality_report_path else None
     return {
         "project_dir": str(result.project_dir),
         "wav_path": str(result.wav_path),
@@ -619,4 +920,13 @@ def _render_result_dict(result: Any) -> dict[str, Any]:
         "manifest_path": str(result.manifest_path),
         "span_count": len(result.item_results),
         "warnings": list(result.warnings),
+        "quality_report_path": str(result.quality_report_path) if result.quality_report_path else None,
+        "mixed_audio_path": str(result.mixed_audio_path) if result.mixed_audio_path else None,
+        "video_path": str(result.video_path) if result.video_path else None,
+        "fit_measurements": [item.__dict__ for item in result.fit_measurements],
+        "quality": quality if isinstance(quality, dict) else None,
+        "preview_files": previews,
+        "wav_file": relative_file(result.wav_path),
+        "mixed_audio_file": relative_file(result.mixed_audio_path),
+        "video_file": relative_file(result.video_path),
     }

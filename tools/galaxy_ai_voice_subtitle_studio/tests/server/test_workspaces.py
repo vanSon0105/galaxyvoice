@@ -205,6 +205,120 @@ class WorkspacesApiTests(unittest.TestCase):
         self.assertEqual(body["segments"][0]["text"], "Chào bạn")
         self.assertEqual(body["segments"][0]["end_ms"], 2000)
 
+    def test_dubbing_plan_accepts_external_translation_and_runs_qc(self) -> None:
+        source = "1\n00:00:00,000 --> 00:00:01,000\nLan: Hello\n"
+        translated = "1\n00:00:00,000 --> 00:00:01,000\nXin chao\n"
+        response = self.client.post(
+            "/api/workspaces/dubbing/plan",
+            json={"source_srt": source, "translated_srt": translated},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        segment = response.json()["segments"][0]
+        self.assertEqual(segment["source_text"], "Hello")
+        self.assertEqual(segment["text"], "Xin chao")
+        self.assertEqual(segment["speaker_id"], "Lan")
+        quality = self.client.post(
+            "/api/workspaces/dubbing/qc",
+            json={"segments": [{**segment, "profile_id": "lan"}]},
+        )
+        self.assertEqual(quality.status_code, 200, quality.text)
+        self.assertEqual(quality.json()["segment_count"], 1)
+
+        mismatched = self.client.post(
+            "/api/workspaces/dubbing/plan",
+            json={
+                "source_srt": source,
+                "translated_srt": "2\n00:00:00,000 --> 00:00:01,000\nXin chao\n",
+            },
+        )
+        self.assertEqual(mismatched.status_code, 422)
+
+    def test_dubbing_project_is_revisioned_and_persistent(self) -> None:
+        body = {
+            "name": "Dub 1",
+            "stage": "cast",
+            "source_srt": "source",
+            "segments": [
+                {
+                    "segment_id": "a",
+                    "start_ms": 0,
+                    "end_ms": 1000,
+                    "source_text": "Hello",
+                    "text": "Xin chao",
+                    "speaker_id": "Lan",
+                    "profile_id": "lan",
+                }
+            ],
+        }
+        created = self.client.post("/api/workspaces/dubbing/projects", json=body)
+        self.assertEqual(created.status_code, 200, created.text)
+        project = created.json()
+        self.assertEqual(project["revision"], 1)
+        listed = self.client.get("/api/workspaces/dubbing/projects").json()
+        self.assertEqual(listed[0]["segment_count"], 1)
+        render_dir = self.tmp / "dub-render"
+        render_dir.mkdir()
+        voice_path = render_dir / "combined.wav"
+        voice_path.write_bytes(b"RIFF-test")
+        updated = self.client.post(
+            "/api/workspaces/dubbing/projects",
+            json={
+                **body,
+                "project_id": project["project_id"],
+                "expected_revision": 1,
+                "stage": "qc",
+                "last_result": {
+                    "project_dir": str(render_dir),
+                    "wav_path": str(voice_path),
+                },
+            },
+        )
+        self.assertEqual(updated.status_code, 200, updated.text)
+        self.assertEqual(updated.json()["revision"], 2)
+        self.assertEqual(updated.json()["last_result"], {})
+
+        # Artifact paths are attached by the render task, never accepted from
+        # a browser payload used to save editable project state.
+        repository = workspaces_router.DubbingProjectRepository(self.tmp / "dubbing_projects.json")
+        stored = repository.get(project["project_id"])
+        self.assertIsNotNone(stored)
+        repository.save(
+            stored.evolved(
+                last_result={
+                    "project_dir": str(render_dir),
+                    "wav_path": str(voice_path),
+                }
+            ),
+            expected_revision=stored.revision,
+        )
+        media = self.client.get(
+            f"/api/workspaces/dubbing/projects/{project['project_id']}/media/voice"
+        )
+        self.assertEqual(media.status_code, 200, media.text)
+        self.assertEqual(media.content, b"RIFF-test")
+        stale = self.client.post(
+            "/api/workspaces/dubbing/projects",
+            json={**body, "project_id": project["project_id"], "expected_revision": 1},
+        )
+        self.assertEqual(stale.status_code, 409)
+
+    def test_dubbing_ai_translation_returns_task_payload(self) -> None:
+        source = "1\n00:00:00,000 --> 00:00:01,000\nHello\n"
+        translated = [workspaces_router.parse_srt("1\n00:00:00,000 --> 00:00:01,000\nXin chao\n")[0]]
+        with (
+            mock.patch.object(workspaces_router, "validate_translation_options"),
+            mock.patch.object(workspaces_router, "translate_cues", return_value=translated),
+        ):
+            response = self.client.post(
+                "/api/workspaces/dubbing/translate",
+                json={"source_srt": source, "provider": "deepseek", "api_key": "test", "target_language": "vi"},
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            task_id = response.json()["task_id"]
+            self.assertEqual(_wait_status(task_id), DONE)
+            payload = task_registry.get(task_id).result
+            self.assertEqual(payload["segments"][0]["text"], "Xin chao")
+
     def test_import_source_missing_file_returns_404(self) -> None:
         response = self.client.post(
             "/api/workspaces/import-source",

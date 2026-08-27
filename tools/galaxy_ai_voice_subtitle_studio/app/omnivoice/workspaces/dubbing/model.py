@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
+from typing import Iterable
 from uuid import uuid4
 
+from ....common.cache import stable_digest
 from ....voice.srt import SubtitleCue
 from ..longform import LongformPlan, LongformSpan, PAUSE_SPAN, SPEECH_SPAN
 
@@ -25,6 +27,7 @@ class DubbingSegment:
     speed: float = 1.0
     volume: float = 1.0
     preview_path: str = ""
+    source_speaker_id: str = ""
 
     @property
     def duration_ms(self) -> int:
@@ -37,6 +40,51 @@ class DubbingIssue:
     segment_id: str
     message: str
     severity: str = "warning"
+
+
+@dataclass(frozen=True)
+class DubbingFitPolicy:
+    """Quality limits for pitch-preserving duration fitting."""
+
+    min_tempo: float = 0.80
+    max_tempo: float = 1.25
+    tolerance_ms: int = 120
+    min_gap_ms: int = 80
+    max_chars_per_second: float = 22.0
+
+
+@dataclass(frozen=True)
+class DubbingSegmentMeasurement:
+    segment_id: str
+    raw_duration_ms: int
+    tempo: float
+    tempo_duration_ms: int
+    fitted_duration_ms: int
+    method: str
+    clipped_ms: int = 0
+    padded_ms: int = 0
+
+
+@dataclass(frozen=True)
+class DubbingQualityReport:
+    report_id: str
+    score: int
+    segment_count: int
+    error_count: int
+    warning_count: int
+    issues: tuple[DubbingIssue, ...]
+    measurements: tuple[DubbingSegmentMeasurement, ...]
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "report_id": self.report_id,
+            "score": self.score,
+            "segment_count": self.segment_count,
+            "error_count": self.error_count,
+            "warning_count": self.warning_count,
+            "issues": [asdict(issue) for issue in self.issues],
+            "measurements": [asdict(item) for item in self.measurements],
+        }
 
 
 def build_dubbing_segments(
@@ -127,6 +175,7 @@ def plan_dubbing_segments(segments: tuple[DubbingSegment, ...]) -> LongformPlan:
                 duration=segment.duration_ms / 1000,
                 chapter="Video Dubbing",
                 source_index=index,
+                segment_id=segment.segment_id,
             )
         )
         cursor = max(cursor, segment.end_ms)
@@ -140,8 +189,30 @@ def validate_dubbing_segments(
 ) -> tuple[DubbingIssue, ...]:
     issues: list[DubbingIssue] = []
     ordered = tuple(sorted(segments, key=lambda item: (item.start_ms, item.end_ms)))
+    seen_ids: set[str] = set()
     previous: DubbingSegment | None = None
     for segment in ordered:
+        if not segment.segment_id.strip():
+            issues.append(DubbingIssue("missing-id", "", "Segment chưa có mã định danh.", "error"))
+        elif segment.segment_id in seen_ids:
+            issues.append(
+                DubbingIssue(
+                    "duplicate-id",
+                    segment.segment_id,
+                    "Mã segment bị trùng; checkpoint và preview sẽ không ổn định.",
+                    "error",
+                )
+            )
+        seen_ids.add(segment.segment_id)
+        if segment.end_ms <= segment.start_ms:
+            issues.append(
+                DubbingIssue(
+                    "invalid-timing",
+                    segment.segment_id,
+                    "Thời điểm kết thúc phải lớn hơn thời điểm bắt đầu.",
+                    "error",
+                )
+            )
         if not segment.text.strip():
             issues.append(DubbingIssue("empty", segment.segment_id, "Segment chưa có lời dịch.", "error"))
         if previous is not None and segment.start_ms < previous.end_ms:
@@ -157,6 +228,84 @@ def validate_dubbing_segments(
             )
         previous = segment
     return tuple(issues)
+
+
+def build_dubbing_quality_report(
+    segments: Iterable[DubbingSegment],
+    *,
+    measurements: Iterable[DubbingSegmentMeasurement] = (),
+    policy: DubbingFitPolicy | None = None,
+) -> DubbingQualityReport:
+    """Build a deterministic preflight or post-render quality report."""
+
+    resolved_policy = policy or DubbingFitPolicy()
+    ordered = tuple(sorted(segments, key=lambda item: (item.start_ms, item.end_ms)))
+    measured = tuple(measurements)
+    measured_by_id = {item.segment_id: item for item in measured}
+    issues = list(
+        validate_dubbing_segments(
+            ordered,
+            max_chars_per_second=resolved_policy.max_chars_per_second,
+        )
+    )
+    previous: DubbingSegment | None = None
+    for segment in ordered:
+        if previous is not None:
+            gap_ms = segment.start_ms - previous.end_ms
+            if 0 <= gap_ms < resolved_policy.min_gap_ms:
+                issues.append(
+                    DubbingIssue(
+                        "tight-gap",
+                        segment.segment_id,
+                        f"Khoảng nghỉ {gap_ms} ms quá ngắn; dễ nghe dính vào câu trước.",
+                    )
+                )
+        if not segment.profile_id.strip():
+            issues.append(
+                DubbingIssue(
+                    "unmapped-speaker",
+                    segment.segment_id,
+                    f"Người nói {segment.speaker_id or 'Default'} chưa được gán voice.",
+                )
+            )
+        measurement = measured_by_id.get(segment.segment_id)
+        if measurement is not None:
+            if measurement.clipped_ms > resolved_policy.tolerance_ms:
+                issues.append(
+                    DubbingIssue(
+                        "fit-limit",
+                        segment.segment_id,
+                        f"Voice vượt khung {measurement.clipped_ms} ms sau khi đã chạm giới hạn Smart Fit.",
+                        "error",
+                    )
+                )
+            elif measurement.padded_ms > max(resolved_policy.tolerance_ms, segment.duration_ms // 3):
+                issues.append(
+                    DubbingIssue(
+                        "underfill",
+                        segment.segment_id,
+                        f"Voice ngắn hơn khung {measurement.padded_ms} ms; nên nghe lại nhịp câu.",
+                    )
+                )
+        previous = segment
+
+    errors = sum(issue.severity == "error" for issue in issues)
+    warnings = len(issues) - errors
+    score = max(0, 100 - errors * 20 - warnings * 5)
+    identity = {
+        "segments": [asdict(segment) for segment in ordered],
+        "measurements": [asdict(item) for item in measured],
+        "policy": asdict(resolved_policy),
+    }
+    return DubbingQualityReport(
+        report_id=stable_digest(identity)[:16],
+        score=score,
+        segment_count=len(ordered),
+        error_count=errors,
+        warning_count=warnings,
+        issues=tuple(issues),
+        measurements=measured,
+    )
 
 
 def _extract_speaker(text: str) -> tuple[str, str]:

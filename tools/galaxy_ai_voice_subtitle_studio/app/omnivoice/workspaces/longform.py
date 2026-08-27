@@ -2,20 +2,22 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
+from typing import Iterable
 
 from ...voice.srt import SubtitleCue
+from .expressive import (
+    PAUSE_DIRECTIVE,
+    ExpressiveIssue,
+    PronunciationRule,
+    compile_expressive_text,
+)
 
 
 SPEECH_SPAN = "speech"
 PAUSE_SPAN = "pause"
 _HEADING_RE = re.compile(r"^\s*#\s+(.+?)\s*$")
 _CHARACTER_RE = re.compile(r"^\s*([^:\[\]\n]{1,48}):\s+(.+)$")
-_TOKEN_RE = re.compile(
-    r"\[voice:([^\[\]]*)\]"
-    r"|\[pause(?:\s+(\d+(?:\.\d+)?)(?:\s*(ms|s))?)?\]"
-    r"|\[(/?)(slow|fast|emphasis|spell)\]",
-    re.IGNORECASE,
-)
+_VOICE_RE = re.compile(r"\[voice:([^\[\]]*)\]", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -31,12 +33,18 @@ class LongformSpan:
     chapter: str = ""
     source_index: int | None = None
     segment_id: str = ""
+    display_text: str = ""
+    instruction: str = ""
+    emotion: str = ""
+    emphasis: bool = False
+    spell: bool = False
 
 
 @dataclass(frozen=True)
 class LongformPlan:
     spans: tuple[LongformSpan, ...]
     chapters: tuple[str, ...]
+    issues: tuple[ExpressiveIssue, ...] = ()
 
     @property
     def voice_names(self) -> tuple[str, ...]:
@@ -45,12 +53,34 @@ class LongformPlan:
         )
 
 
-def parse_story_script(source: str) -> LongformPlan:
-    return _parse_script(source, character_prefixes=True, default_chapter="Câu chuyện")
+def parse_story_script(
+    source: str,
+    *,
+    language: str = "auto",
+    pronunciation_rules: Iterable[PronunciationRule] = (),
+) -> LongformPlan:
+    return _parse_script(
+        source,
+        character_prefixes=True,
+        default_chapter="Câu chuyện",
+        language=language,
+        pronunciation_rules=tuple(pronunciation_rules),
+    )
 
 
-def parse_audiobook_script(source: str) -> LongformPlan:
-    return _parse_script(source, character_prefixes=False, default_chapter="Nội dung")
+def parse_audiobook_script(
+    source: str,
+    *,
+    language: str = "auto",
+    pronunciation_rules: Iterable[PronunciationRule] = (),
+) -> LongformPlan:
+    return _parse_script(
+        source,
+        character_prefixes=False,
+        default_chapter="Nội dung",
+        language=language,
+        pronunciation_rules=tuple(pronunciation_rules),
+    )
 
 
 def detect_longform_workspace_kind(source: str) -> str:
@@ -90,16 +120,17 @@ def _parse_script(
     *,
     character_prefixes: bool,
     default_chapter: str,
+    language: str,
+    pronunciation_rules: tuple[PronunciationRule, ...],
 ) -> LongformPlan:
     normalized = source.replace("\r\n", "\n").replace("\r", "\n").strip()
     if not normalized:
         raise ValueError("Nội dung không được để trống.")
     spans: list[LongformSpan] = []
     chapters: list[str] = []
+    issues: list[ExpressiveIssue] = []
     chapter = default_chapter
     voice = ""
-    speed = 1.0
-    spell = False
     for raw_line in normalized.splitlines():
         line = raw_line.strip()
         if not line:
@@ -117,73 +148,91 @@ def _parse_script(
             if character:
                 voice = character.group(1).strip()
                 line = character.group(2).strip()
-        line_spans, voice, speed, spell = _parse_markup(
+        line_spans, voice, line_issues = _parse_markup(
             line,
             voice=voice,
-            speed=speed,
-            spell=spell,
             chapter=chapter,
+            language=language,
+            pronunciation_rules=pronunciation_rules,
         )
         spans.extend(line_spans)
+        issues.extend(line_issues)
     if not any(span.kind == SPEECH_SPAN for span in spans):
         raise ValueError("Nội dung không có đoạn thoại nào để tạo giọng.")
-    return LongformPlan(spans=tuple(spans), chapters=tuple(chapters))
+    return LongformPlan(spans=tuple(spans), chapters=tuple(chapters), issues=tuple(issues))
 
 
 def _parse_markup(
     text: str,
     *,
     voice: str,
-    speed: float,
-    spell: bool,
     chapter: str,
-) -> tuple[list[LongformSpan], str, float, bool]:
+    language: str,
+    pronunciation_rules: tuple[PronunciationRule, ...],
+) -> tuple[list[LongformSpan], str, list[ExpressiveIssue]]:
     spans: list[LongformSpan] = []
+    issues: list[ExpressiveIssue] = []
     cursor = 0
-    for match in _TOKEN_RE.finditer(text):
+    for match in _VOICE_RE.finditer(text):
         if match.start() > cursor:
-            _append_speech(spans, text[cursor : match.start()], voice, speed, spell, chapter)
-        if match.group(1) is not None:
-            selected = match.group(1).strip()
-            voice = "" if selected.casefold() in {"", "default"} else selected
-        elif match.group(2) is not None or match.group(0).lower().startswith("[pause"):
-            value = float(match.group(2) or 500)
-            pause_ms = round(value * 1000 if (match.group(3) or "").lower() == "s" else value)
-            spans.append(LongformSpan(kind=PAUSE_SPAN, pause_ms=max(0, min(10_000, pause_ms)), chapter=chapter))
-        else:
-            closing = bool(match.group(4))
-            tag = (match.group(5) or "").lower()
-            if tag == "slow":
-                speed = 1.0 if closing else 0.85
-            elif tag == "fast":
-                speed = 1.0 if closing else 1.15
-            elif tag == "spell":
-                spell = not closing
+            _append_compiled(
+                spans,
+                issues,
+                text[cursor:match.start()],
+                voice=voice,
+                chapter=chapter,
+                language=language,
+                pronunciation_rules=pronunciation_rules,
+            )
+        selected = match.group(1).strip()
+        voice = "" if selected.casefold() in {"", "default"} else selected
         cursor = match.end()
     if cursor < len(text):
-        _append_speech(spans, text[cursor:], voice, speed, spell, chapter)
-    return spans, voice, speed, spell
-
-
-def _append_speech(
-    spans: list[LongformSpan],
-    text: str,
-    voice: str,
-    speed: float,
-    spell: bool,
-    chapter: str,
-) -> None:
-    cleaned = text.strip()
-    if not cleaned:
-        return
-    if spell:
-        cleaned = " ".join(character for character in cleaned if not character.isspace())
-    spans.append(
-        LongformSpan(
-            kind=SPEECH_SPAN,
-            text=cleaned,
-            voice_name=voice,
-            speed=speed,
+        _append_compiled(
+            spans,
+            issues,
+            text[cursor:],
+            voice=voice,
             chapter=chapter,
+            language=language,
+            pronunciation_rules=pronunciation_rules,
         )
+    return spans, voice, issues
+
+
+def _append_compiled(
+    spans: list[LongformSpan],
+    issues: list[ExpressiveIssue],
+    text: str,
+    *,
+    voice: str,
+    chapter: str,
+    language: str,
+    pronunciation_rules: tuple[PronunciationRule, ...],
+) -> None:
+    compiled = compile_expressive_text(
+        text,
+        language=language,
+        pronunciation_rules=pronunciation_rules,
     )
+    issues.extend(compiled.issues)
+    for directive in compiled.directives:
+        if directive.kind == PAUSE_DIRECTIVE:
+            spans.append(
+                LongformSpan(kind=PAUSE_SPAN, pause_ms=directive.pause_ms, chapter=chapter)
+            )
+            continue
+        spans.append(
+            LongformSpan(
+                kind=SPEECH_SPAN,
+                text=directive.spoken_text,
+                display_text=directive.display_text,
+                voice_name=voice,
+                speed=directive.rate,
+                chapter=chapter,
+                instruction=directive.instruction,
+                emotion=directive.emotion,
+                emphasis=directive.emphasis,
+                spell=directive.spell,
+            )
+        )

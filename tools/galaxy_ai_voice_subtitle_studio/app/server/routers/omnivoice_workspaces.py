@@ -12,7 +12,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Any
+from typing import Any, Mapping
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
@@ -43,6 +43,18 @@ from ...omnivoice.workspaces.dubbing.service import render_dubbing_project
 from ...omnivoice.workspaces.editable import EditableLongformDocument
 from ...omnivoice.workspaces.gallery import list_voice_archetypes, voice_archetype_categories
 from ...omnivoice.workspaces.imports import load_audiobook_source
+from ...omnivoice.workspaces.longform_project import (
+    LongformProject,
+    LongformProjectRepository,
+    LongformRevisionConflict,
+)
+from ...omnivoice.workspaces.longform_service import (
+    attach_longform_result,
+    create_longform_document,
+    document_from_project,
+    preview_plan,
+    save_longform_project as save_longform_project_service,
+)
 from ...omnivoice.workspaces.renderer import (
     find_resumable_workspace_jobs,
     render_longform_plan,
@@ -104,6 +116,10 @@ def _transcripts(request: Request) -> TranscriptStore:
 
 def _dubbing_repository(request: Request) -> DubbingProjectRepository:
     return DubbingProjectRepository(_settings_path(request).with_name("dubbing_projects.json"))
+
+
+def _longform_repository(request: Request) -> LongformProjectRepository:
+    return LongformProjectRepository(_settings_path(request).with_name("longform_projects.json"))
 
 
 def _progress(record: TaskRecord):
@@ -359,6 +375,82 @@ def _transcript_dict(item: Any) -> dict[str, Any]:
     }
 
 
+# ---------- Longform projects ----------
+
+
+class LongformProjectRequest(BaseModel):
+    project_id: str = ""
+    expected_revision: int = 0
+    name: str = "longform"
+    kind: str = "stories"
+    stage: str = "source"
+    source: str = ""
+    document: dict[str, Any] = Field(default_factory=dict)
+    language: str = "vi"
+    options: dict[str, Any] = Field(default_factory=dict)
+    metadata: dict[str, Any] = Field(default_factory=dict)
+    last_result: dict[str, Any] = Field(default_factory=dict)
+
+
+@router.get("/longform/projects")
+def list_longform_projects(request: Request, kind: str = "") -> list[dict[str, Any]]:
+    return [item.__dict__ for item in _longform_repository(request).list(kind)]
+
+
+@router.get("/longform/projects/{project_id}")
+def get_longform_project(project_id: str, request: Request) -> dict[str, Any]:
+    project = _longform_repository(request).get(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy project Truyện & Sách nói.")
+    return project.to_dict()
+
+
+@router.get("/longform/projects/{project_id}/media/{kind}")
+def get_longform_project_media(project_id: str, kind: str, request: Request) -> FileResponse:
+    project = _longform_repository(request).get(project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy project Truyện & Sách nói.")
+    field = {"wav": "wav_path", "mp3": "mp3_path", "m4b": "m4b_path"}.get(kind)
+    if field is None:
+        raise HTTPException(status_code=404, detail="Loại media Longform không hợp lệ.")
+    return _project_media_response(project.last_result, field)
+
+
+@router.post("/longform/projects")
+def save_longform_project(body: LongformProjectRequest, request: Request) -> dict[str, Any]:
+    repository = _longform_repository(request)
+    try:
+        saved = save_longform_project_service(
+            repository,
+            project_id=body.project_id,
+            expected_revision=body.expected_revision,
+            name=body.name,
+            kind=body.kind,
+            stage=body.stage,
+            source=body.source,
+            document=body.document,
+            language=body.language,
+            options=body.options,
+            metadata=body.metadata,
+        )
+    except KeyError as error:
+        raise HTTPException(
+            status_code=404,
+            detail="Không tìm thấy project Truyện & Sách nói.",
+        ) from error
+    except LongformRevisionConflict as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except (TypeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+    return saved.to_dict()
+
+
+@router.delete("/longform/projects/{project_id}")
+def delete_longform_project(project_id: str, request: Request) -> dict[str, bool]:
+    _longform_repository(request).delete(project_id)
+    return {"ok": True}
+
+
 # ---------- Source import ----------
 
 
@@ -383,7 +475,9 @@ def import_source(request_body: ImportSourceRequest) -> dict[str, Any]:
 
 class CreateDocumentRequest(BaseModel):
     kind: str
-    source: str
+    source: str = ""
+    document: dict[str, Any] = Field(default_factory=dict)
+    language: str = "auto"
 
 
 @router.post("/document")
@@ -392,10 +486,11 @@ def create_document(request_body: CreateDocumentRequest) -> dict[str, Any]:
     if kind not in ("stories", "audiobook"):
         raise HTTPException(status_code=422, detail=f"Loại workspace không hợp lệ: {kind}")
     try:
-        document = (
-            EditableLongformDocument.from_story(request_body.source)
-            if kind == "stories"
-            else EditableLongformDocument.from_audiobook(request_body.source)
+        document = create_longform_document(
+            kind=kind,
+            source=request_body.source,
+            payload=request_body.document,
+            language=request_body.language,
         )
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error))
@@ -419,10 +514,12 @@ class DocumentOpRequest(BaseModel):
     item_id: str = ""
     after_id: str = ""
     chapter: str = ""
+    name: str = ""
     changes: dict[str, Any] = {}
     position: int | None = None
     delta: int = 0
     second_id: str = ""
+    document: dict[str, Any] = Field(default_factory=dict)
 
 
 @router.post("/document/{doc_id}/ops")
@@ -431,6 +528,13 @@ def document_ops(doc_id: str, request_body: DocumentOpRequest, kind: str = "stor
         document = _documents.get(doc_id)
     if document is None:
         raise HTTPException(status_code=404, detail="Không tìm thấy bản nháp kế hoạch")
+    if request_body.document:
+        try:
+            document = EditableLongformDocument.from_payload(request_body.document)
+        except (TypeError, ValueError) as error:
+            raise HTTPException(status_code=422, detail=str(error)) from error
+        with _documents_lock:
+            _documents[doc_id] = document
     op = request_body.op
     try:
         if op == "update":
@@ -445,6 +549,12 @@ def document_ops(doc_id: str, request_body: DocumentOpRequest, kind: str = "stor
             document.split(request_body.item_id, request_body.position)
         elif op == "merge":
             document.merge(request_body.item_id, request_body.second_id)
+        elif op == "add_chapter":
+            document.add_chapter(request_body.name, after=request_body.chapter)
+        elif op == "rename_chapter":
+            document.rename_chapter(request_body.chapter, request_body.name)
+        elif op == "move_chapter":
+            document.move_chapter(request_body.chapter, request_body.delta)
         else:
             raise HTTPException(status_code=422, detail=f"Thao tác không hợp lệ: {op}")
     except (KeyError, ValueError) as error:
@@ -453,12 +563,14 @@ def document_ops(doc_id: str, request_body: DocumentOpRequest, kind: str = "stor
 
 
 def _document_dict(doc_id: str, kind: str, document: EditableLongformDocument) -> dict[str, Any]:
+    plan = document.to_plan()
     return {
         "doc_id": doc_id,
         "kind": kind,
         "document": document.to_payload(),
         "script": document.to_script(kind),
-        "voice_names": [name for name in document.to_plan().voice_names],
+        "voice_names": [name for name in plan.voice_names],
+        "issues": [issue.__dict__ for issue in plan.issues],
     }
 
 
@@ -525,8 +637,12 @@ def get_dubbing_project_media(project_id: str, kind: str, request: Request) -> F
     field = {"video": "video_path", "mixed": "mixed_audio_path", "voice": "wav_path"}.get(kind)
     if field is None:
         raise HTTPException(status_code=404, detail="Loại media không hợp lệ.")
-    root_value = str(project.last_result.get("project_dir") or "")
-    path_value = str(project.last_result.get(field) or "")
+    return _project_media_response(project.last_result, field)
+
+
+def _project_media_response(last_result: Mapping[str, Any], field: str) -> FileResponse:
+    root_value = str(last_result.get("project_dir") or "")
+    path_value = str(last_result.get(field) or "")
     if not root_value or not path_value:
         raise HTTPException(status_code=404, detail="Project chưa có media này.")
     root = Path(root_value).expanduser().resolve()
@@ -722,6 +838,10 @@ class RenderRequest(BaseModel):
     export_mp3: bool = True
     export_m4b: bool = False
     export_stems: bool = False
+    mastering: bool = False
+    target_lufs: float = -16.0
+    true_peak_db: float = -1.0
+    preview_item_index: int | None = None
     title: str = ""
     author: str = ""
     cover_path: str = ""
@@ -740,6 +860,10 @@ class RenderRequest(BaseModel):
 @router.post("/render")
 def render(request_body: RenderRequest, request: Request) -> dict[str, Any]:
     runtime = _runtime()
+    is_longform_preview = (
+        request_body.kind != "dubbing" and request_body.preview_item_index is not None
+    )
+    longform_project: LongformProject | None = None
     if request_body.kind == "dubbing":
         if not request_body.segments:
             raise HTTPException(status_code=422, detail="Chưa có đoạn lồng tiếng.")
@@ -754,17 +878,41 @@ def render(request_body: RenderRequest, request: Request) -> dict[str, Any]:
         except (KeyError, TypeError, ValueError) as error:
             raise HTTPException(status_code=422, detail=f"Đoạn lồng tiếng không hợp lệ: {error}")
     else:
-        with _documents_lock:
-            document = _documents.get(request_body.doc_id)
-        if document is None:
-            raise HTTPException(status_code=404, detail="Không tìm thấy bản nháp kế hoạch")
+        if request_body.project_id:
+            longform_project = _longform_repository(request).get(request_body.project_id)
+            if longform_project is None:
+                raise HTTPException(status_code=404, detail="Không tìm thấy project Truyện & Sách nói.")
+            if request_body.kind != longform_project.kind:
+                raise HTTPException(status_code=422, detail="Loại render không khớp project Longform.")
+            try:
+                document = document_from_project(longform_project)
+            except (TypeError, ValueError) as error:
+                raise HTTPException(status_code=422, detail=str(error)) from error
+        else:
+            with _documents_lock:
+                document = _documents.get(request_body.doc_id)
+            if document is None:
+                raise HTTPException(status_code=404, detail="Không tìm thấy bản nháp kế hoạch")
         plan = document.to_plan()
+        if request_body.preview_item_index is not None:
+            try:
+                plan = preview_plan(plan, request_body.preview_item_index)
+            except KeyError:
+                raise HTTPException(status_code=404, detail="Không tìm thấy dòng cần nghe thử.")
 
     base_options = OmniVoiceGenerationOptions(
         mode=request_body.mode,
         text="",
-        output_dir=Path(request_body.output_dir or ".").expanduser(),
-        project_name=request_body.project_name or "longform",
+        output_dir=(
+            runtime.cache_dir / "longform_previews"
+            if is_longform_preview
+            else Path(request_body.output_dir or ".").expanduser()
+        ),
+        project_name=(
+            f"preview-{request_body.project_name or 'longform'}"
+            if is_longform_preview
+            else request_body.project_name or "longform"
+        ),
         model_id=request_body.model_id,
         device=request_body.device,
         language=request_body.language,
@@ -776,7 +924,7 @@ def render(request_body: RenderRequest, request: Request) -> dict[str, Any]:
     record = task_registry.create(
         "workspace-render",
         capability_id="tts.omnivoice",
-        resumable=True,
+        resumable=not is_longform_preview,
         resource_keys=resource_keys_for_device(request_body.device),
         project_id=request_body.project_id,
         workflow_id="dubbing" if request_body.kind == "dubbing" else request_body.kind,
@@ -820,9 +968,13 @@ def render(request_body: RenderRequest, request: Request) -> dict[str, Any]:
             export_mp3=request_body.export_mp3,
             export_m4b=request_body.export_m4b,
             export_stems=request_body.export_stems,
+            mastering=request_body.mastering,
+            target_lufs=request_body.target_lufs,
+            true_peak_db=request_body.true_peak_db,
             title=request_body.title,
             author=request_body.author,
             cover_path=Path(request_body.cover_path).expanduser() if request_body.cover_path else None,
+            project_document=document.to_payload(),
             progress=_progress(record),
             resume_project_dir=resume_dir,
             stop_event=record.stop_event,
@@ -842,6 +994,12 @@ def render(request_body: RenderRequest, request: Request) -> dict[str, Any]:
                     )
                 except (DubbingRevisionConflict, ValueError):
                     pass
+        elif longform_project is not None and request_body.preview_item_index is None:
+            repository = _longform_repository(request)
+            try:
+                attach_longform_result(repository, longform_project.project_id, payload)
+            except (LongformRevisionConflict, ValueError):
+                pass
         return payload
 
     run_task(

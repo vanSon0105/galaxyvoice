@@ -10,6 +10,8 @@ from unittest import mock
 
 from app.omnivoice.workspaces.gallery import list_voice_archetypes
 from app.omnivoice.workspaces.longform import (
+    LongformPlan,
+    LongformSpan,
     PAUSE_SPAN,
     SPEECH_SPAN,
     detect_longform_workspace_kind,
@@ -17,9 +19,12 @@ from app.omnivoice.workspaces.longform import (
     parse_story_script,
     plan_dubbing_cues,
 )
+from app.omnivoice.workspaces.longform_service import preview_plan
 from app.omnivoice.models import AUTO_MODE, OmniVoiceGenerationOptions
 from app.omnivoice.workspaces.renderer import (
+    _convert_to_mp3,
     _convert_to_m4b,
+    _master_longform_wav,
     find_resumable_workspace_jobs,
     render_longform_plan,
 )
@@ -32,7 +37,7 @@ from app.omnivoice.workspaces.dubbing.service import (
     render_dubbing_project,
 )
 from app.omnivoice.workspaces.transcripts import TranscriptStore
-from app.voice.srt import SubtitleCue
+from app.voice.srt import SubtitleCue, parse_srt
 
 
 class _WorkspaceClient:
@@ -71,6 +76,78 @@ class _LongAudioWorkspaceClient(_WorkspaceClient):
 
 
 class LongformWorkspaceTests(unittest.TestCase):
+    def test_mp3_export_embeds_title_author_and_cover(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            wav_path = root / "book.wav"
+            cover_path = root / "cover.jpg"
+            wav_path.write_bytes(b"wav")
+            cover_path.write_bytes(b"jpg")
+            with (
+                mock.patch(
+                    "app.omnivoice.workspaces.renderer.find_ffmpeg",
+                    return_value="ffmpeg",
+                ),
+                mock.patch(
+                    "app.omnivoice.workspaces.renderer.subprocess.run",
+                    return_value=SimpleNamespace(returncode=0, stderr=""),
+                ) as run,
+            ):
+                converted, _message = _convert_to_mp3(
+                    wav_path,
+                    root / "book.mp3",
+                    title="Book",
+                    author="Author",
+                    cover_path=cover_path,
+                )
+
+            command = run.call_args.args[0]
+            self.assertTrue(converted)
+            self.assertIn("title=Book", command)
+            self.assertIn("artist=Author", command)
+            self.assertIn("attached_pic", command)
+
+    def test_inline_spans_have_no_implicit_gap_and_use_sequential_srt_indices(self) -> None:
+        plan = LongformPlan(
+            spans=(
+                LongformSpan(SPEECH_SPAN, "One", source_index=1, display_text="One"),
+                LongformSpan(SPEECH_SPAN, "Two", source_index=1, display_text="Two"),
+                LongformSpan(PAUSE_SPAN, pause_ms=200, source_index=1),
+                LongformSpan(SPEECH_SPAN, "Three", source_index=1, display_text="Three"),
+            ),
+            chapters=(),
+        )
+        selected = preview_plan(plan, 0)
+        self.assertEqual(len(selected.spans), 4)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            result = render_longform_plan(
+                OmniVoiceGenerationOptions(
+                    mode=AUTO_MODE,
+                    text="unused",
+                    output_dir=Path(temp_dir),
+                    project_name="inline",
+                ),
+                selected,
+                _WorkspaceClient(),
+                gap_ms=500,
+                export_mp3=False,
+                project_document={
+                    "chapters": [],
+                    "language": "en",
+                    "items": [],
+                    "pronunciation_rules": [{"source": "AI", "replacement": "A I"}],
+                },
+            )
+
+            cues = parse_srt(result.srt_path.read_text(encoding="utf-8"))
+            self.assertEqual([cue.index for cue in cues], [1, 2, 3])
+            with wave.open(str(result.wav_path), "rb") as rendered:
+                duration_ms = round(rendered.getnframes() * 1000 / rendered.getframerate())
+            self.assertLess(duration_ms, 1_000)
+            manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["document"]["pronunciation_rules"][0]["source"], "AI")
+
     def test_detects_story_dialogue_and_chaptered_audiobook(self) -> None:
         self.assertEqual(
             detect_longform_workspace_kind("# Mở đầu\nLan: Xin chào.\nMinh: Đi thôi."),
@@ -114,6 +191,30 @@ class LongformWorkspaceTests(unittest.TestCase):
             self.assertIn(str(cover_path), command)
             self.assertIn("attached_pic", command)
             self.assertLess(command.index(str(cover_path)), command.index("-map_metadata"))
+
+    def test_mastering_uses_bounded_loudnorm_and_atomically_replaces_wav(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            wav_path = Path(temp_dir) / "combined.wav"
+            wav_path.write_bytes(b"raw")
+
+            def run(command: list[str], **_kwargs: object) -> SimpleNamespace:
+                Path(command[-1]).write_bytes(b"mastered")
+                return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+            with (
+                mock.patch("app.omnivoice.workspaces.renderer.find_ffmpeg", return_value="ffmpeg"),
+                mock.patch("app.omnivoice.workspaces.renderer._run_command", side_effect=run) as runner,
+            ):
+                mastered, message = _master_longform_wav(
+                    wav_path,
+                    target_lufs=-40,
+                    true_peak_db=0,
+                )
+
+            command = runner.call_args.args[0]
+            self.assertTrue(mastered, message)
+            self.assertEqual(wav_path.read_bytes(), b"mastered")
+            self.assertIn("loudnorm=I=-24.0:TP=-0.1:LRA=11", command)
 
     def test_story_parser_supports_characters_pauses_and_prosody(self) -> None:
         plan = parse_story_script(

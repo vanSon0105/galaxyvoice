@@ -5,24 +5,28 @@ import { useLocation, useSearchParams } from 'react-router-dom'
 import { fetchSettings } from '../../api/settings'
 import { fetchOmniVoiceStatus } from '../../api/omnivoice'
 import { fetchLibraryVoices } from '../../api/voiceLibrary'
-import { openPath } from '../../api/voice'
+import { openPath, taskFileUrl } from '../../api/voice'
 import {
   createDocument,
+  deleteLongformProject,
   documentOp,
   addHistory,
   fetchHistory,
-  fetchProjects,
+  fetchLongformProject,
+  fetchLongformProjects,
   fetchResumeJobs,
   importSource,
-  saveProject,
+  longformProjectMediaUrl,
+  saveLongformProject,
   startRender,
 } from '../../api/workspaces'
 import type {
   DocumentItem,
   LongformDocument,
+  LongformProject,
+  PronunciationRule,
   RenderResultPayload,
   ResumeJob,
-  WorkspaceProject,
 } from '../../api/workspaces'
 import { TaskButton } from '../../components/TaskButton'
 import { pickBookFile, pickFolder } from '../../lib/dialogs'
@@ -30,6 +34,8 @@ import type { TaskState } from '../../ws/useTasks'
 import { fetchTranscriptHandoff, type TranscriptHandoff } from '../../api/transcripts'
 
 type Kind = 'stories' | 'audiobook'
+const LONGFORM_ROW_HEIGHT = 142
+const LONGFORM_VIEWPORT_HEIGHT = 620
 
 const STORY_SAMPLE = `# Mở đầu
 Người kể: Một buổi sáng yên tĩnh bắt đầu. [pause 500ms]
@@ -50,14 +56,15 @@ export function WorkspacesPage() {
   const location = useLocation()
   const [searchParams] = useSearchParams()
   const handoffApplied = useRef('')
+  const activeRenderProject = useRef('')
   const queryClient = useQueryClient()
   const [kind, setKind] = useState<Kind>('stories')
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
   const profilesQuery = useQuery({ queryKey: ['voice-library-picker'], queryFn: () => fetchLibraryVoices() })
   const statusQuery = useQuery({ queryKey: ['omnivoice-status'], queryFn: fetchOmniVoiceStatus })
   const projectsQuery = useQuery({
-    queryKey: ['workspace-projects', kind],
-    queryFn: () => fetchProjects(kind),
+    queryKey: ['longform-projects', kind],
+    queryFn: () => fetchLongformProjects(kind),
   })
   const historyQuery = useQuery({
     queryKey: ['workspace-history', kind],
@@ -68,6 +75,8 @@ export function WorkspacesPage() {
   const [outputDir, setOutputDir] = useState('')
   const [projectName, setProjectName] = useState('')
   const [selectedProjectId, setSelectedProjectId] = useState('')
+  const [revision, setRevision] = useState(0)
+  const [dirty, setDirty] = useState(false)
   const [device, setDevice] = useState('auto')
   const [language, setLanguage] = useState('vi')
   const [speed, setSpeed] = useState(1.0)
@@ -76,13 +85,24 @@ export function WorkspacesPage() {
   const [exportMp3, setExportMp3] = useState(true)
   const [exportM4b, setExportM4b] = useState(false)
   const [exportStems, setExportStems] = useState(false)
+  const [mastering, setMastering] = useState(true)
+  const [targetLufs, setTargetLufs] = useState(-16)
+  const [truePeakDb, setTruePeakDb] = useState(-1)
   const [title, setTitle] = useState('')
   const [author, setAuthor] = useState('')
   const [coverPath, setCoverPath] = useState('')
   const [resumeJobs, setResumeJobs] = useState<ResumeJob[]>([])
   const [result, setResult] = useState<RenderResultPayload | null>(null)
+  const [resultTaskId, setResultTaskId] = useState('')
   const [error, setError] = useState('')
+  const [planScrollTop, setPlanScrollTop] = useState(0)
   const sourceRef = useRef<HTMLTextAreaElement | null>(null)
+  const dirtyGeneration = useRef(0)
+
+  const markDirty = () => {
+    dirtyGeneration.current += 1
+    setDirty(true)
+  }
 
   /** Insert markup at the cursor; wrap the selection for paired tokens. */
   const insertToken = (before: string, after = '') => {
@@ -94,6 +114,7 @@ export function WorkspacesPage() {
     const next =
       source.slice(0, start) + before + (selected || (after ? '' : ' ')) + after + source.slice(end)
     setSource(next)
+    markDirty()
     requestAnimationFrame(() => {
       textarea.focus()
       const cursor = selected
@@ -118,7 +139,9 @@ export function WorkspacesPage() {
   useEffect(() => {
     const settings = settingsQuery.data
     if (!settings) return
-    setOutputDir(String(settings.omnivoice_output_dir ?? settings.output_dir ?? ''))
+    const configuredOutput = String(settings.omnivoice_output_dir ?? settings.output_dir ?? '')
+    setOutputDir(configuredOutput)
+    void refreshResumeJobs(configuredOutput)
     setDevice(String(settings.omnivoice_device ?? 'auto'))
     if (!handoffApplied.current) setLanguage(String(settings.omnivoice_language ?? 'vi'))
     setSpeed(Number(settings.omnivoice_speed ?? 1))
@@ -135,6 +158,9 @@ export function WorkspacesPage() {
       if (handoff.language) setLanguage(handoff.language)
       setDoc(null)
       setResult(null)
+      setSelectedProjectId('')
+      setRevision(0)
+      markDirty()
     }
     const stateHandoff = (location.state as { transcriptHandoff?: TranscriptHandoff } | null)
       ?.transcriptHandoff
@@ -169,9 +195,10 @@ export function WorkspacesPage() {
       return
     }
     try {
-      const created = await createDocument(kind, source)
+      const created = await createDocument(kind, source, undefined, language)
       setDoc(created)
       setResult(null)
+      markDirty()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     }
@@ -183,6 +210,7 @@ export function WorkspacesPage() {
     try {
       const imported = await importSource(path)
       setSource(imported.text)
+      markDirty()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     }
@@ -191,8 +219,9 @@ export function WorkspacesPage() {
   const runOp = async (op: Parameters<typeof documentOp>[2]) => {
     if (!doc) return
     try {
-      const updated = await documentOp(doc.doc_id, doc.kind, op)
+      const updated = await documentOp(doc.doc_id, doc.kind, { ...op, document: doc.document })
       setDoc(updated)
+      markDirty()
       return updated
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -206,7 +235,11 @@ export function WorkspacesPage() {
       setError('Tạo kế hoạch trước khi render.')
       throw new Error('Tạo kế hoạch trước khi render.')
     }
+    const projectId = selectedProjectId && !dirty
+      ? selectedProjectId
+      : (await saveLongformCheckpoint()).project_id
     const response = await startRender({
+      project_id: projectId,
       doc_id: doc.doc_id,
       kind: doc.kind,
       output_dir: outputDir,
@@ -219,11 +252,15 @@ export function WorkspacesPage() {
       export_mp3: exportMp3,
       export_m4b: exportM4b,
       export_stems: exportStems,
+      mastering,
+      target_lufs: targetLufs,
+      true_peak_db: truePeakDb,
       title,
       author,
       cover_path: coverPath,
       resume_project_dir: resumeProjectDir,
     })
+    activeRenderProject.current = projectId
     return response.task_id
   }
 
@@ -231,6 +268,7 @@ export function WorkspacesPage() {
     if (task.status !== 'done' || !task.result) return
     const completed = task.result as unknown as RenderResultPayload
     setResult(completed)
+    setResultTaskId(task.taskId)
     try {
       await addHistory({
         workspace: kind,
@@ -243,76 +281,129 @@ export function WorkspacesPage() {
     } catch {
       // History is optional; the rendered artifact remains valid if persistence fails.
     }
+    const renderedProjectId = activeRenderProject.current
+    if (renderedProjectId) {
+      void fetchLongformProject(renderedProjectId).then((project) => {
+        setRevision(project.revision)
+        void queryClient.invalidateQueries({ queryKey: ['longform-projects', kind] })
+      }).catch((cause) => setError(cause instanceof Error ? cause.message : String(cause)))
+    }
     void refreshResumeJobs(outputDir)
   }
 
+  const saveLongformCheckpoint = async () => {
+    if (!doc) throw new Error('Hãy tạo kế hoạch trước khi lưu project.')
+    const savingGeneration = dirtyGeneration.current
+    const saved = await saveLongformProject({
+      project_id: selectedProjectId || undefined,
+      expected_revision: revision,
+      name: projectName || 'longform',
+      kind,
+      stage: doc.voice_names.length && doc.voice_names.every((voice) => castMap[voice]) ? 'cast' : 'plan',
+      source,
+      document: {
+        ...doc.document,
+        items: doc.document.items.map((item) => ({ ...item, preview_path: '' })),
+      },
+      language,
+      options: {
+        output_dir: outputDir,
+        device,
+        speed,
+        cast_map: castMap,
+        gap_ms: gapMs,
+        export_mp3: exportMp3,
+        export_m4b: exportM4b,
+        export_stems: exportStems,
+        mastering,
+        target_lufs: targetLufs,
+        true_peak_db: truePeakDb,
+      },
+      metadata: { title, author, cover_path: coverPath },
+    })
+    setSelectedProjectId(saved.project_id)
+    setRevision(saved.revision)
+    setProjectName(saved.name)
+    if (dirtyGeneration.current === savingGeneration) setDirty(false)
+    await queryClient.invalidateQueries({ queryKey: ['longform-projects', kind] })
+    return saved
+  }
+
   const handleSaveProject = async () => {
-    if (!source.trim() && !doc) {
-      setError('Chưa có nội dung để lưu project.')
-      return
-    }
+    setError('')
     try {
-      const saved = await saveProject({
-        workspace: kind,
-        name: projectName || 'longform',
-        project_id: selectedProjectId,
-        payload: {
-          source: doc?.script || source,
-          output_dir: outputDir,
-          device,
-          language,
-          speed,
-          cast_map: castMap,
-          gap_ms: gapMs,
-          export_mp3: exportMp3,
-          export_m4b: exportM4b,
-          export_stems: exportStems,
-          title,
-          author,
-          cover_path: coverPath,
-        },
-      })
-      setSelectedProjectId(saved.project_id)
-      setProjectName(saved.name)
-      await queryClient.invalidateQueries({ queryKey: ['workspace-projects', kind] })
+      await saveLongformCheckpoint()
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     }
   }
 
-  const handleLoadProject = async (project: WorkspaceProject) => {
-    const payload = project.payload
-    const loadedSource = String(payload.source ?? '')
-    setSelectedProjectId(project.project_id)
-    setProjectName(project.name)
-    setSource(loadedSource)
-    setOutputDir(String(payload.output_dir ?? outputDir))
-    setDevice(String(payload.device ?? device))
-    setLanguage(String(payload.language ?? language))
-    setSpeed(Number(payload.speed ?? speed))
-    setCastMap(
-      payload.cast_map && typeof payload.cast_map === 'object'
-        ? (payload.cast_map as Record<string, string>)
-        : {},
+  const applyProject = async (project: LongformProject) => {
+    const options = project.options
+    const metadata = project.metadata
+    const loaded = await createDocument(
+      project.kind,
+      project.source,
+      project.document,
+      project.language,
     )
-    setGapMs(Number(payload.gap_ms ?? gapMs))
-    setExportMp3(Boolean(payload.export_mp3 ?? exportMp3))
-    setExportM4b(Boolean(payload.export_m4b ?? exportM4b))
-    setExportStems(Boolean(payload.export_stems ?? exportStems))
-    setTitle(String(payload.title ?? ''))
-    setAuthor(String(payload.author ?? ''))
-    setCoverPath(String(payload.cover_path ?? ''))
-    if (loadedSource.trim()) {
-      try {
-        setDoc(await createDocument(kind, loadedSource))
-      } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause))
-      }
+    setKind(project.kind)
+    setSelectedProjectId(project.project_id)
+    setRevision(project.revision)
+    setProjectName(project.name)
+    setSource(project.source)
+    setDoc(loaded)
+    setOutputDir(String(options.output_dir ?? outputDir))
+    setDevice(String(options.device ?? device))
+    setLanguage(project.language || language)
+    setSpeed(Number(options.speed ?? speed))
+    setCastMap(options.cast_map && typeof options.cast_map === 'object' ? options.cast_map as Record<string, string> : {})
+    setGapMs(Number(options.gap_ms ?? gapMs))
+    setExportMp3(Boolean(options.export_mp3 ?? exportMp3))
+    setExportM4b(Boolean(options.export_m4b ?? exportM4b))
+    setExportStems(Boolean(options.export_stems ?? exportStems))
+    setMastering(Boolean(options.mastering ?? true))
+    setTargetLufs(Number(options.target_lufs ?? -16))
+    setTruePeakDb(Number(options.true_peak_db ?? -1))
+    setTitle(String(metadata.title ?? ''))
+    setAuthor(String(metadata.author ?? ''))
+    setCoverPath(String(metadata.cover_path ?? ''))
+    setResult(project.last_result?.project_dir ? project.last_result as unknown as RenderResultPayload : null)
+    setResultTaskId('')
+    setDirty(false)
+  }
+
+  const handleLoadProject = async (projectId: string) => {
+    if (!projectId) return
+    setError('')
+    try {
+      await applyProject(await fetchLongformProject(projectId))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
+  const handleDeleteProject = async () => {
+    if (!selectedProjectId || !window.confirm('Xóa project Truyện & Sách nói này?')) return
+    setError('')
+    try {
+      await deleteLongformProject(selectedProjectId)
+      setSelectedProjectId('')
+      setRevision(0)
+      setProjectName('')
+      setSource('')
+      setDoc(null)
+      setResult(null)
+      setDirty(false)
+      await queryClient.invalidateQueries({ queryKey: ['longform-projects', kind] })
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
     }
   }
 
   const updateItemLocal = (itemId: string, changes: Record<string, unknown>) => {
     if (!doc) return
+    markDirty()
     setDoc({
       ...doc,
       document: {
@@ -338,22 +429,120 @@ export function WorkspacesPage() {
         speed: Number(item.speed),
         volume: Number(item.volume),
         pause_after_ms: Number(item.pause_after_ms),
+        spoken_text: item.spoken_text,
+        emotion: item.emotion,
+        emphasis: item.emphasis,
+        spell: item.spell,
       },
     })
   }
 
+  const updatePronunciationRules = (rules: PronunciationRule[]) => {
+    if (!doc) return
+    setDoc({ ...doc, document: { ...doc.document, pronunciation_rules: rules } })
+    markDirty()
+  }
+
+  const addPronunciationRule = () => {
+    if (!doc) return
+    updatePronunciationRules([
+      ...doc.document.pronunciation_rules,
+      {
+        rule_id: `pron-${Date.now().toString(36)}`,
+        source: '',
+        replacement: '',
+        language,
+        case_sensitive: false,
+        whole_word: true,
+      },
+    ])
+  }
+
+  const addChapter = () => {
+    const name = window.prompt('Tên chương mới')?.trim()
+    if (!name) return
+    const after = doc?.document.chapters.at(-1) ?? ''
+    void runOp({ op: 'add_chapter', chapter: after, name })
+  }
+
+  const renameChapter = (chapter: string) => {
+    const name = window.prompt('Đổi tên chương', chapter)?.trim()
+    if (!name || name === chapter) return
+    void runOp({ op: 'rename_chapter', chapter, name })
+  }
+
+  const resultAudioUrl = result
+    ? resultTaskId && result.wav_file
+      ? taskFileUrl(resultTaskId, result.wav_file)
+      : selectedProjectId
+        ? longformProjectMediaUrl(selectedProjectId, result.mp3_path ? 'mp3' : 'wav')
+        : ''
+    : ''
+
+  const handlePreviewStart = async (itemIndex: number): Promise<string> => {
+    if (!doc) throw new Error('Chưa có dòng để nghe thử.')
+    const projectId = selectedProjectId && !dirty
+      ? selectedProjectId
+      : (await saveLongformCheckpoint()).project_id
+    const response = await startRender({
+      project_id: projectId,
+      kind: doc.kind,
+      output_dir: outputDir,
+      project_name: `${projectName || 'longform'}-preview-${itemIndex + 1}`,
+      device,
+      language,
+      speed,
+      cast_map: castMap,
+      gap_ms: 0,
+      export_mp3: false,
+      export_m4b: false,
+      export_stems: false,
+      mastering: false,
+      preview_item_index: itemIndex,
+    })
+    return response.task_id
+  }
+
+  const handlePreviewDone = (itemId: string, task: TaskState) => {
+    if (task.status !== 'done' || !task.result) return
+    const payload = task.result as unknown as RenderResultPayload
+    const preview = payload.wav_file
+    if (!preview) return
+    setDoc((current) => current ? {
+      ...current,
+      document: {
+        ...current.document,
+        items: current.document.items.map((item) => item.item_id === itemId
+          ? { ...item, preview_path: taskFileUrl(task.taskId, preview) }
+          : item),
+      },
+    } : current)
+  }
+
+  const longformStage = result && !dirty ? 4 : doc?.voice_names.length && doc.voice_names.every((voice) => castMap[voice]) ? 3 : doc ? 2 : 1
+  const planStartIndex = Math.max(0, Math.floor(planScrollTop / LONGFORM_ROW_HEIGHT) - 2)
+  const planEndIndex = Math.min(
+    doc?.document.items.length ?? 0,
+    planStartIndex + Math.ceil(LONGFORM_VIEWPORT_HEIGHT / LONGFORM_ROW_HEIGHT) + 5,
+  )
+  const visiblePlanItems = doc?.document.items.slice(planStartIndex, planEndIndex) ?? []
+
   return (
-    <div>
+    <div className="longform-page">
+      <div className="longform-stage-rail" aria-label="Tiến trình project">
+        {['Nguồn', 'Kế hoạch', 'Phân vai', 'Xuất bản'].map((label, index) => (
+          <span key={label} className={index + 1 === longformStage ? 'active' : index + 1 < longformStage ? 'done' : ''}>
+            <b>{index + 1}</b>{label}
+          </span>
+        ))}
+      </div>
       <section className="section-card">
         <h2 className="section-title">Project &amp; lịch sử</h2>
         <div className="toolbar-row">
           <select
             value={selectedProjectId}
             onChange={(event) => {
-              const project = (projectsQuery.data ?? []).find(
-                (item) => item.project_id === event.target.value,
-              )
-              if (project) void handleLoadProject(project)
+              if (event.target.value) void handleLoadProject(event.target.value)
             }}
           >
             <option value="">Project mới</option>
@@ -364,7 +553,10 @@ export function WorkspacesPage() {
             ))}
           </select>
           <button className="btn" onClick={() => void handleSaveProject()}>
-            Lưu project
+            {dirty ? 'Lưu thay đổi' : 'Đã lưu'}
+          </button>
+          <button className="btn danger" disabled={!selectedProjectId} onClick={() => void handleDeleteProject()}>
+            Xóa project
           </button>
           {(historyQuery.data ?? []).slice(0, 4).map((item) => (
             <button
@@ -386,8 +578,10 @@ export function WorkspacesPage() {
             onClick={() => {
               setKind('stories')
               setSelectedProjectId('')
+              setRevision(0)
               setDoc(null)
               setResult(null)
+              setDirty(false)
             }}
           >
             Truyện nhiều vai
@@ -397,8 +591,10 @@ export function WorkspacesPage() {
             onClick={() => {
               setKind('audiobook')
               setSelectedProjectId('')
+              setRevision(0)
               setDoc(null)
               setResult(null)
+              setDirty(false)
             }}
           >
             Sách nói
@@ -457,7 +653,7 @@ export function WorkspacesPage() {
               : '# Chương 1\n[voice:Người kể] Mỗi hành trình đều bắt đầu bằng một lựa chọn.\n[pause 700ms]'
           }
           value={source}
-          onChange={(event) => setSource(event.target.value)}
+          onChange={(event) => { setSource(event.target.value); markDirty() }}
         />
         <div style={{ display: 'flex', gap: 10, marginTop: 10, alignItems: 'center' }}>
           <button className="btn accent" onClick={() => void handleCreate()}>
@@ -471,23 +667,114 @@ export function WorkspacesPage() {
       </section>
 
       {doc && (
+        <section className="section-card longform-pronunciation">
+          <div className="longform-section-head">
+            <div>
+              <span className="workspace-kicker">PRONUNCIATION</span>
+              <h2 className="section-title">Từ điển cách đọc</h2>
+            </div>
+            <button className="btn" onClick={addPronunciationRule}>Thêm quy tắc</button>
+          </div>
+          {doc.document.pronunciation_rules.length === 0 ? (
+            <div className="longform-empty-row">Chưa có quy tắc phát âm riêng.</div>
+          ) : (
+            <div className="longform-rule-list">
+              {doc.document.pronunciation_rules.map((rule, index) => (
+                <div className="longform-rule-row" key={rule.rule_id}>
+                  <input
+                    aria-label={`Từ gốc ${index + 1}`}
+                    placeholder="Từ gốc"
+                    value={rule.source}
+                    onChange={(event) => updatePronunciationRules(doc.document.pronunciation_rules.map((item) => item.rule_id === rule.rule_id ? { ...item, source: event.target.value } : item))}
+                  />
+                  <input
+                    aria-label={`Cách đọc ${index + 1}`}
+                    placeholder="Cách đọc"
+                    value={rule.replacement}
+                    onChange={(event) => updatePronunciationRules(doc.document.pronunciation_rules.map((item) => item.rule_id === rule.rule_id ? { ...item, replacement: event.target.value } : item))}
+                  />
+                  <select
+                    aria-label={`Ngôn ngữ quy tắc ${index + 1}`}
+                    value={rule.language}
+                    onChange={(event) => updatePronunciationRules(doc.document.pronunciation_rules.map((item) => item.rule_id === rule.rule_id ? { ...item, language: event.target.value } : item))}
+                  >
+                    <option value="">Mọi ngôn ngữ</option>
+                    {(statusQuery.data?.languages ?? []).map((code) => <option key={code} value={code}>{code}</option>)}
+                  </select>
+                  <label className="field-check compact"><input type="checkbox" checked={rule.case_sensitive} onChange={(event) => updatePronunciationRules(doc.document.pronunciation_rules.map((item) => item.rule_id === rule.rule_id ? { ...item, case_sensitive: event.target.checked } : item))} />Phân biệt hoa/thường</label>
+                  <label className="field-check compact"><input type="checkbox" checked={rule.whole_word} onChange={(event) => updatePronunciationRules(doc.document.pronunciation_rules.map((item) => item.rule_id === rule.rule_id ? { ...item, whole_word: event.target.checked } : item))} />Nguyên từ</label>
+                  <button className="btn danger" onClick={() => updatePronunciationRules(doc.document.pronunciation_rules.filter((item) => item.rule_id !== rule.rule_id))}>Xóa</button>
+                </div>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {doc && (
         <section className="section-card">
-          <h2 className="section-title">Kế hoạch ({doc.document.items.length} đoạn)</h2>
-          <table className="data-table">
+          <div className="longform-section-head">
+            <div>
+              <span className="workspace-kicker">EDITOR</span>
+              <h2 className="section-title">Kế hoạch ({doc.document.items.length} đoạn)</h2>
+            </div>
+            <span className="longform-editor-note">Nghe thử dùng đúng giọng, cách đọc và biểu cảm của từng dòng.</span>
+          </div>
+          {doc.issues.length > 0 && (
+            <div className="longform-issues">
+              {doc.issues.map((issue, index) => (
+                <span key={`${issue.code}-${index}`} className={issue.severity}>{issue.message}</span>
+              ))}
+            </div>
+          )}
+          <div className="longform-chapter-bar">
+            {doc.document.chapters.map((chapter, index) => (
+              <div className="longform-chapter-item" key={chapter}>
+                <button className="btn" onClick={() => renameChapter(chapter)}>{chapter}</button>
+                <button
+                  className="icon-btn"
+                  title="Đưa chương lên"
+                  disabled={index === 0}
+                  onClick={() => void runOp({ op: 'move_chapter', chapter, delta: -1 })}
+                >
+                  ↑
+                </button>
+                <button
+                  className="icon-btn"
+                  title="Đưa chương xuống"
+                  disabled={index === doc.document.chapters.length - 1}
+                  onClick={() => void runOp({ op: 'move_chapter', chapter, delta: 1 })}
+                >
+                  ↓
+                </button>
+              </div>
+            ))}
+            <button className="btn accent" onClick={addChapter}>+ Chương</button>
+          </div>
+          <div
+            className="longform-plan-scroll"
+            style={{ height: LONGFORM_VIEWPORT_HEIGHT }}
+            onScroll={(event) => setPlanScrollTop(event.currentTarget.scrollTop)}
+          >
+          <table className="data-table longform-plan-table">
             <thead>
               <tr>
                 <th style={{ width: 110 }}>Chương</th>
                 <th style={{ width: 120 }}>Giọng</th>
                 <th>Lời thoại</th>
+                <th style={{ width: 170 }}>Biểu cảm</th>
                 <th style={{ width: 70 }}>Tốc độ</th>
                 <th style={{ width: 70 }}>Âm lượng</th>
                 <th style={{ width: 70 }}>Nghỉ (ms)</th>
-                <th style={{ width: 190 }}></th>
+                <th style={{ width: 270 }}></th>
               </tr>
             </thead>
             <tbody>
-              {doc.document.items.map((item: DocumentItem, index: number) => (
-                <tr key={item.item_id}>
+              {planStartIndex > 0 && <tr aria-hidden="true"><td colSpan={8} style={{ height: planStartIndex * LONGFORM_ROW_HEIGHT, padding: 0, border: 0 }} /></tr>}
+              {visiblePlanItems.map((item: DocumentItem, visibleIndex: number) => {
+                const index = planStartIndex + visibleIndex
+                return (
+                <tr key={item.item_id} style={{ height: LONGFORM_ROW_HEIGHT }}>
                   <td>
                     <select
                       value={item.chapter}
@@ -510,13 +797,42 @@ export function WorkspacesPage() {
                     />
                   </td>
                   <td>
-                    <input
-                      type="text"
-                      style={{ width: '100%' }}
-                      value={item.text}
-                      onChange={(event) => updateItemLocal(item.item_id, { text: event.target.value })}
-                      onBlur={() => commitItem(item.item_id)}
-                    />
+                    <div className="longform-copy-fields">
+                      <input
+                        type="text"
+                        value={item.text}
+                        placeholder="Nội dung hiển thị"
+                        onChange={(event) => updateItemLocal(item.item_id, { text: event.target.value })}
+                        onBlur={() => commitItem(item.item_id)}
+                      />
+                      <input
+                        type="text"
+                        value={item.spoken_text}
+                        placeholder="Cách đọc riêng (tùy chọn)"
+                        onChange={(event) => updateItemLocal(item.item_id, { spoken_text: event.target.value })}
+                        onBlur={() => commitItem(item.item_id)}
+                      />
+                      {item.preview_path && <audio controls preload="none" src={item.preview_path} />}
+                    </div>
+                  </td>
+                  <td>
+                    <div className="longform-expression-controls">
+                      <select
+                        value={item.emotion}
+                        onChange={(event) => updateItemLocal(item.item_id, { emotion: event.target.value })}
+                        onBlur={() => commitItem(item.item_id)}
+                      >
+                        <option value="">Tự nhiên</option>
+                        <option value="calm">Bình tĩnh</option>
+                        <option value="happy">Vui</option>
+                        <option value="sad">Buồn</option>
+                        <option value="angry">Giận dữ</option>
+                        <option value="excited">Hào hứng</option>
+                        <option value="whisper">Thì thầm</option>
+                      </select>
+                      <label><input type="checkbox" checked={item.emphasis} onChange={(event) => void runOp({ op: 'update', item_id: item.item_id, changes: { emphasis: event.target.checked } })} />Nhấn mạnh</label>
+                      <label><input type="checkbox" checked={item.spell} onChange={(event) => void runOp({ op: 'update', item_id: item.item_id, changes: { spell: event.target.checked } })} />Đọc từng ký tự</label>
+                    </div>
                   </td>
                   <td>
                     <input
@@ -552,7 +868,12 @@ export function WorkspacesPage() {
                     />
                   </td>
                   <td>
-                    <div style={{ display: 'flex', gap: 4 }}>
+                    <div className="longform-row-actions">
+                      <TaskButton
+                        label="Nghe thử"
+                        onStart={() => handlePreviewStart(index)}
+                        onFinish={(task) => handlePreviewDone(item.item_id, task)}
+                      />
                       <button className="btn" title="Lên" onClick={() => void runOp({ op: 'move', item_id: item.item_id, delta: -1 })}>
                         ↑
                       </button>
@@ -582,9 +903,12 @@ export function WorkspacesPage() {
                     </div>
                   </td>
                 </tr>
-              ))}
+                )
+              })}
+              {planEndIndex < doc.document.items.length && <tr aria-hidden="true"><td colSpan={8} style={{ height: (doc.document.items.length - planEndIndex) * LONGFORM_ROW_HEIGHT, padding: 0, border: 0 }} /></tr>}
             </tbody>
           </table>
+          </div>
           <button
             className="btn"
             style={{ marginTop: 10 }}
@@ -614,21 +938,22 @@ export function WorkspacesPage() {
                   value={outputDir}
                   onChange={(event) => {
                     setOutputDir(event.target.value)
+                    markDirty()
                     void refreshResumeJobs(event.target.value)
                   }}
                 />
-                <button className="btn" onClick={() => void pickFolder().then((path) => path && setOutputDir(path))}>
+                <button className="btn" onClick={() => void pickFolder().then((path) => { if (path) { setOutputDir(path); markDirty() } })}>
                   Chọn…
                 </button>
               </div>
             </div>
             <div className="field">
               <label>Tên project</label>
-              <input type="text" value={projectName} onChange={(event) => setProjectName(event.target.value)} />
+              <input type="text" value={projectName} onChange={(event) => { setProjectName(event.target.value); markDirty() }} />
             </div>
             <div className="field">
               <label>Thiết bị</label>
-              <select value={device} onChange={(event) => setDevice(event.target.value)}>
+              <select value={device} onChange={(event) => { setDevice(event.target.value); markDirty() }}>
                 {(statusQuery.data?.devices ?? []).map((option) => (
                   <option key={option.code} value={option.code}>
                     {option.label}
@@ -638,7 +963,7 @@ export function WorkspacesPage() {
             </div>
             <div className="field">
               <label>Ngôn ngữ</label>
-              <select value={language} onChange={(event) => setLanguage(event.target.value)}>
+              <select value={language} onChange={(event) => { setLanguage(event.target.value); markDirty() }}>
                 {(statusQuery.data?.languages ?? []).map((code) => (
                   <option key={code} value={code}>
                     {code}
@@ -648,7 +973,7 @@ export function WorkspacesPage() {
             </div>
             <div className="field">
               <label>Khoảng nghỉ giữa đoạn (ms)</label>
-              <input type="number" min={0} value={gapMs} onChange={(event) => setGapMs(Number(event.target.value))} />
+              <input type="number" min={0} value={gapMs} onChange={(event) => { setGapMs(Number(event.target.value)); markDirty() }} />
             </div>
           </div>
           {doc.voice_names.length > 0 && (
@@ -658,7 +983,7 @@ export function WorkspacesPage() {
                   <label>Giọng cho "{voice}"</label>
                   <select
                     value={castMap[voice] ?? ''}
-                    onChange={(event) => setCastMap((current) => ({ ...current, [voice]: event.target.value }))}
+                    onChange={(event) => { setCastMap((current) => ({ ...current, [voice]: event.target.value })); markDirty() }}
                   >
                     <option value="">(auto)</option>
                     {(profilesQuery.data ?? []).map((voice) => (
@@ -671,29 +996,29 @@ export function WorkspacesPage() {
               ))}
             </div>
           )}
-          {exportM4b && (
+          {(exportMp3 || exportM4b) && (
             <div className="field-grid" style={{ marginTop: 10 }}>
               <div className="field">
                 <label>Tiêu đề sách</label>
-                <input type="text" value={title} onChange={(event) => setTitle(event.target.value)} />
+                <input type="text" value={title} onChange={(event) => { setTitle(event.target.value); markDirty() }} />
               </div>
               <div className="field">
                 <label>Tác giả</label>
-                <input type="text" value={author} onChange={(event) => setAuthor(event.target.value)} />
+                <input type="text" value={author} onChange={(event) => { setAuthor(event.target.value); markDirty() }} />
               </div>
               <div className="field">
                 <label>Ảnh bìa (đường dẫn)</label>
-                <input type="text" value={coverPath} onChange={(event) => setCoverPath(event.target.value)} />
+                <input type="text" value={coverPath} onChange={(event) => { setCoverPath(event.target.value); markDirty() }} />
               </div>
             </div>
           )}
           <div className="field-grid" style={{ marginTop: 10 }}>
             <div className="field-check">
-              <input type="checkbox" id="ws-mp3" checked={exportMp3} onChange={(event) => setExportMp3(event.target.checked)} />
+              <input type="checkbox" id="ws-mp3" checked={exportMp3} onChange={(event) => { setExportMp3(event.target.checked); markDirty() }} />
               <label htmlFor="ws-mp3">Xuất MP3</label>
             </div>
             <div className="field-check">
-              <input type="checkbox" id="ws-m4b" checked={exportM4b} onChange={(event) => setExportM4b(event.target.checked)} />
+              <input type="checkbox" id="ws-m4b" checked={exportM4b} onChange={(event) => { setExportM4b(event.target.checked); markDirty() }} />
               <label htmlFor="ws-m4b">Xuất M4B (audiobook)</label>
             </div>
             <div className="field-check">
@@ -701,11 +1026,27 @@ export function WorkspacesPage() {
                 type="checkbox"
                 id="ws-stems"
                 checked={exportStems}
-                onChange={(event) => setExportStems(event.target.checked)}
+                onChange={(event) => { setExportStems(event.target.checked); markDirty() }}
               />
               <label htmlFor="ws-stems">Giữ stems riêng từng đoạn</label>
             </div>
+            <div className="field-check">
+              <input type="checkbox" id="ws-mastering" checked={mastering} onChange={(event) => { setMastering(event.target.checked); markDirty() }} />
+              <label htmlFor="ws-mastering">Mastering âm lượng</label>
+            </div>
           </div>
+          {mastering && (
+            <div className="field-grid longform-mastering" style={{ marginTop: 10 }}>
+              <div className="field">
+                <label>Âm lượng mục tiêu (LUFS)</label>
+                <input type="number" min={-24} max={-9} step={1} value={targetLufs} onChange={(event) => { setTargetLufs(Number(event.target.value)); markDirty() }} />
+              </div>
+              <div className="field">
+                <label>True peak tối đa (dB)</label>
+                <input type="number" min={-6} max={-0.1} step={0.1} value={truePeakDb} onChange={(event) => { setTruePeakDb(Number(event.target.value)); markDirty() }} />
+              </div>
+            </div>
+          )}
           {resumeJobs.length > 0 && (
             <div style={{ marginTop: 10 }}>
               <div style={{ color: 'var(--color-fg-subtle)', fontSize: 12, marginBottom: 6 }}>
@@ -741,6 +1082,15 @@ export function WorkspacesPage() {
               </button>
             )}
           </div>
+          {result && resultAudioUrl && (
+            <div className="longform-result">
+              <audio controls preload="metadata" src={resultAudioUrl} />
+              <div>
+                <strong>Hoàn tất {result.span_count} đoạn</strong>
+                <span>{result.mp3_path ? 'MP3' : 'WAV'}{result.m4b_path ? ' · M4B' : ''}</span>
+              </div>
+            </div>
+          )}
         </section>
       )}
     </div>

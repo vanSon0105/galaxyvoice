@@ -6,6 +6,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from fastapi.testclient import TestClient
@@ -165,6 +166,114 @@ class WorkspacesApiTests(unittest.TestCase):
             self.client.get(f"/api/workspaces/document/{doc['doc_id']}").status_code,
             200,
         )
+
+    def test_document_op_hydrates_current_pronunciation_rules(self) -> None:
+        created = self.client.post(
+            "/api/workspaces/document",
+            json={"kind": "stories", "source": "Lan: Galaxy bắt đầu.\n"},
+        ).json()
+        document = created["document"]
+        document["pronunciation_rules"] = [
+            {
+                "rule_id": "pron-galaxy",
+                "source": "Galaxy",
+                "replacement": "Ga la xi",
+                "language": "vi",
+                "case_sensitive": False,
+                "whole_word": True,
+            }
+        ]
+        response = self.client.post(
+            f"/api/workspaces/document/{created['doc_id']}/ops",
+            params={"kind": "stories"},
+            json={
+                "op": "update",
+                "item_id": document["items"][0]["item_id"],
+                "changes": {"emphasis": True},
+                "document": document,
+            },
+        )
+
+        self.assertEqual(response.status_code, 200, response.text)
+        body = response.json()
+        self.assertEqual(body["document"]["pronunciation_rules"][0]["replacement"], "Ga la xi")
+        self.assertTrue(body["document"]["items"][0]["emphasis"])
+
+    def test_longform_project_is_revisioned_and_preview_does_not_replace_final_result(self) -> None:
+        source = "# Mở đầu\nLan: Chào bạn.\nMinh: Tạm biệt.\n"
+        document = self.client.post(
+            "/api/workspaces/document",
+            json={"kind": "stories", "source": source},
+        ).json()["document"]
+        created = self.client.post(
+            "/api/workspaces/longform/projects",
+            json={
+                "name": "Truyện dài",
+                "kind": "stories",
+                "stage": "plan",
+                "source": source,
+                "document": document,
+                "language": "vi",
+                "last_result": {"project_dir": "untrusted"},
+            },
+        )
+        self.assertEqual(created.status_code, 200, created.text)
+        project = created.json()
+        self.assertEqual(project["revision"], 1)
+        self.assertEqual(project["last_result"], {})
+        self.assertEqual(
+            self.client.get("/api/workspaces/longform/projects", params={"kind": "stories"}).json()[0]["item_count"],
+            2,
+        )
+
+        stale = self.client.post(
+            "/api/workspaces/longform/projects",
+            json={
+                "project_id": project["project_id"],
+                "expected_revision": 0,
+                "name": "Bản cũ",
+                "kind": "stories",
+                "source": source,
+                "document": document,
+            },
+        )
+        self.assertEqual(stale.status_code, 409)
+
+        render_dir = self.tmp / "preview-render"
+        render_dir.mkdir()
+        wav_path = render_dir / "combined.wav"
+        wav_path.write_bytes(b"RIFF-preview")
+        from app.omnivoice.workspaces.renderer import LongformWorkspaceResult
+
+        fake_result = LongformWorkspaceResult(
+            project_dir=render_dir,
+            wav_path=wav_path,
+            srt_path=render_dir / "combined.srt",
+            manifest_path=render_dir / "workspace_manifest.json",
+            item_results=(SimpleNamespace(wav_path=wav_path),),
+        )
+        with mock.patch.object(
+            workspaces_router, "render_longform_plan", return_value=fake_result
+        ) as render:
+            preview = self.client.post(
+                "/api/workspaces/render",
+                json={
+                    "project_id": project["project_id"],
+                    "kind": "stories",
+                    "output_dir": str(self.tmp),
+                    "preview_item_index": 1,
+                },
+            )
+            self.assertEqual(preview.status_code, 200, preview.text)
+            self.assertEqual(_wait_status(preview.json()["task_id"]), DONE)
+
+        preview_plan = render.call_args.args[1]
+        self.assertEqual(len(preview_plan.spans), 1)
+        self.assertEqual(preview_plan.spans[0].display_text, "Tạm biệt.")
+        stored = self.client.get(
+            f"/api/workspaces/longform/projects/{project['project_id']}"
+        ).json()
+        self.assertEqual(stored["last_result"], {})
 
     def test_render_uses_document_and_serializes_result(self) -> None:
         created = self.client.post(

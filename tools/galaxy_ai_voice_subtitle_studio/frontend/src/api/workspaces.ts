@@ -62,14 +62,61 @@ export interface DocumentItem {
   volume: number
   pause_after_ms: number
   preview_path: string
+  spoken_text: string
+  emotion: string
+  emphasis: boolean
+  spell: boolean
+}
+
+export interface PronunciationRule {
+  rule_id: string
+  source: string
+  replacement: string
+  language: string
+  case_sensitive: boolean
+  whole_word: boolean
+}
+
+export interface ExpressiveIssue {
+  code: string
+  message: string
+  severity: string
+  offset: number
 }
 
 export interface LongformDocument {
   doc_id: string
   kind: 'stories' | 'audiobook'
-  document: { chapters: string[]; items: DocumentItem[] }
+  document: {
+    chapters: string[]
+    language: string
+    items: DocumentItem[]
+    pronunciation_rules: PronunciationRule[]
+  }
   script: string
   voice_names: string[]
+  issues: ExpressiveIssue[]
+}
+
+export interface LongformProjectSummary {
+  project_id: string
+  name: string
+  kind: 'stories' | 'audiobook'
+  stage: string
+  revision: number
+  item_count: number
+  chapter_count: number
+  updated_at: string
+}
+
+export interface LongformProject extends LongformProjectSummary {
+  source: string
+  document: LongformDocument['document']
+  language: string
+  options: Record<string, unknown>
+  metadata: Record<string, unknown>
+  last_result: Record<string, unknown>
+  created_at: string
 }
 
 export interface DubbingSegment {
@@ -254,11 +301,16 @@ export const clearTranscripts = () =>
   apiJson<{ ok: boolean }>('/api/workspaces/transcripts', { method: 'DELETE' })
 
 // Documents
-export const createDocument = (kind: 'stories' | 'audiobook', source: string) =>
+export const createDocument = (
+  kind: 'stories' | 'audiobook',
+  source: string,
+  document?: LongformDocument['document'],
+  language = 'auto',
+) =>
   apiJson<LongformDocument>('/api/workspaces/document', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ kind, source }),
+    body: JSON.stringify({ kind, source, document, language }),
   })
 export const fetchDocument = (docId: string, kind: 'stories' | 'audiobook') =>
   apiJson<LongformDocument>(`/api/workspaces/document/${encodeURIComponent(docId)}?kind=${kind}`)
@@ -266,14 +318,16 @@ export const documentOp = (
   docId: string,
   kind: 'stories' | 'audiobook',
   op: {
-    op: 'update' | 'add' | 'delete' | 'move' | 'split' | 'merge'
+    op: 'update' | 'add' | 'delete' | 'move' | 'split' | 'merge' | 'add_chapter' | 'rename_chapter' | 'move_chapter'
     item_id?: string
     after_id?: string
     chapter?: string
+    name?: string
     changes?: Record<string, unknown>
     position?: number
     delta?: number
     second_id?: string
+    document?: LongformDocument['document']
   },
 ) =>
   apiJson<LongformDocument>(`/api/workspaces/document/${encodeURIComponent(docId)}/ops?kind=${kind}`, {
@@ -281,6 +335,33 @@ export const documentOp = (
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(op),
   })
+
+export const fetchLongformProjects = (kind: 'stories' | 'audiobook') =>
+  apiJson<LongformProjectSummary[]>(`/api/workspaces/longform/projects?kind=${kind}`)
+
+export const fetchLongformProject = (projectId: string) =>
+  apiJson<LongformProject>(`/api/workspaces/longform/projects/${encodeURIComponent(projectId)}`)
+
+export const saveLongformProject = (body: Partial<LongformProject> & {
+  name: string
+  kind: 'stories' | 'audiobook'
+  stage: string
+  source: string
+  document: LongformDocument['document']
+  expected_revision: number
+}) => apiJson<LongformProject>('/api/workspaces/longform/projects', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+export const deleteLongformProject = (projectId: string) =>
+  apiJson<{ ok: boolean }>(`/api/workspaces/longform/projects/${encodeURIComponent(projectId)}`, {
+    method: 'DELETE',
+  })
+
+export const longformProjectMediaUrl = (projectId: string, kind: 'wav' | 'mp3' | 'm4b') =>
+  `/api/workspaces/longform/projects/${encodeURIComponent(projectId)}/media/${kind}`
 
 // Dubbing
 export const fetchDubbingPlan = (sourceSrt: string, translatedSrt = '') =>
@@ -360,6 +441,10 @@ export const startRender = (body: {
   export_mp3?: boolean
   export_m4b?: boolean
   export_stems?: boolean
+  mastering?: boolean
+  target_lufs?: number
+  true_peak_db?: number
+  preview_item_index?: number
   title?: string
   author?: string
   cover_path?: string

@@ -16,6 +16,7 @@ class LongformProjectTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             repository = LongformProjectRepository(Path(directory) / "longform_projects.json")
             project = LongformProject.create(
+                galaxy_project_id="active-project-1",
                 name="Truyện thử",
                 kind="stories",
                 source="Lan: Xin chào",
@@ -25,6 +26,12 @@ class LongformProjectTests(unittest.TestCase):
             saved = repository.save(project, expected_revision=0)
 
             self.assertEqual(saved.revision, 1)
+            self.assertEqual(saved.galaxy_project_id, "active-project-1")
+            self.assertEqual(
+                repository.list("stories", galaxy_project_id="active-project-1")[0].project_id,
+                saved.project_id,
+            )
+            self.assertEqual(repository.list(galaxy_project_id="other-project"), ())
             self.assertEqual(repository.list("stories")[0].item_count, 1)
             self.assertNotIn("api_key", repository.get(saved.project_id).options)
 

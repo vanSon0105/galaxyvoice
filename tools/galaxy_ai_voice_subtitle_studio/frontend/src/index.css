@@ -155,6 +155,236 @@ body {
   white-space: nowrap;
 }
 
+.project-graph-control {
+  position: relative;
+}
+
+.project-graph-trigger {
+  min-height: 27px;
+  padding: 4px 9px;
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-control);
+  background: var(--color-surface-raised);
+  color: var(--color-fg-muted);
+  font: inherit;
+  cursor: pointer;
+}
+
+.project-graph-trigger:hover,
+.project-graph-trigger[aria-expanded='true'] {
+  border-color: color-mix(in srgb, var(--color-accent) 55%, var(--border-soft));
+  color: var(--color-fg);
+}
+
+.project-graph-panel {
+  position: fixed;
+  z-index: 80;
+  top: 39px;
+  right: 12px;
+  width: min(520px, calc(100vw - 24px));
+  max-height: calc(100vh - 54px);
+  overflow: auto;
+  box-sizing: border-box;
+  padding: var(--space-3);
+  border: 1px solid var(--color-border-strong);
+  border-radius: 5px;
+  background: var(--color-surface);
+  box-shadow: 0 18px 50px rgb(0 0 0 / 38%);
+  color: var(--color-fg);
+  text-align: left;
+  user-select: text;
+  white-space: normal;
+}
+
+.project-graph-heading,
+.project-graph-heading > div,
+.project-graph-section,
+.project-node-list,
+.project-handoff-list {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.project-graph-heading {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: start;
+  padding-bottom: var(--space-3);
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.project-graph-heading h2 {
+  margin: 0;
+  font-size: 17px;
+  letter-spacing: 0;
+}
+
+.project-graph-section {
+  margin-top: var(--space-3);
+}
+
+.project-graph-section .section-header {
+  align-items: center;
+}
+
+.project-graph-section .section-header span {
+  color: var(--color-fg-subtle);
+  font-family: var(--font-mono);
+  font-size: 10px;
+}
+
+.project-ownership-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.project-ownership-summary span {
+  padding: 3px 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  background: var(--color-surface-raised);
+  color: var(--color-fg-subtle);
+  font-family: var(--font-mono);
+  font-size: 9px;
+}
+
+.project-ownership-summary strong {
+  color: var(--color-fg);
+}
+
+.project-node-list {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.project-node {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  padding: 9px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 4px;
+  background: var(--color-surface-raised);
+  color: var(--color-fg-muted);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.project-node:hover,
+.project-node.selected {
+  border-color: color-mix(in srgb, var(--color-accent) 65%, var(--border-soft));
+  color: var(--color-fg);
+}
+
+.project-node.selected {
+  box-shadow: inset 2px 0 0 var(--color-accent);
+}
+
+.project-node span,
+.project-node small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.project-node small,
+.project-handoff small {
+  color: var(--color-fg-subtle);
+  font-size: 10px;
+}
+
+.project-handoff-create {
+  display: grid;
+  gap: 6px;
+  margin-top: var(--space-3);
+  padding: 10px;
+  border-left: 2px solid var(--color-accent);
+  background: var(--color-surface-raised);
+}
+
+.project-handoff-create > label {
+  color: var(--color-fg-muted);
+  font-size: 11px;
+}
+
+.project-handoff-create-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+}
+
+.project-handoff-create-row select {
+  min-width: 0;
+}
+
+.project-handoff {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: var(--space-2);
+  align-items: center;
+  padding: 9px 0;
+  border-top: 1px solid var(--border-soft);
+}
+
+.project-handoff > div:first-child {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 5px 8px;
+  min-width: 0;
+}
+
+.project-handoff strong {
+  font-size: 11.5px;
+}
+
+.project-handoff small {
+  flex-basis: 100%;
+}
+
+.handoff-status {
+  padding: 2px 5px;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  color: var(--color-fg-subtle);
+  font-size: 9px;
+  text-transform: uppercase;
+}
+
+.handoff-status.opened {
+  border-color: var(--color-warning);
+  color: var(--color-warning);
+}
+
+.handoff-status.returned {
+  border-color: var(--color-success);
+  color: var(--color-success);
+}
+
+.project-handoff-actions {
+  display: flex;
+  gap: 5px;
+}
+
+.project-handoff-actions .btn {
+  min-height: 28px;
+  padding: 4px 8px;
+  font-size: 10px;
+}
+
+.project-graph-empty {
+  margin: var(--space-3) 0 0;
+  color: var(--color-fg-subtle);
+  font-size: 11px;
+}
+
+@media (max-width: 720px) {
+  .project-node-list,
+  .project-handoff {
+    grid-template-columns: 1fr;
+  }
+}
+
 .status-dot {
   width: 7px;
   height: 7px;

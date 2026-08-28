@@ -10,13 +10,15 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.background import BackgroundTasks
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from ...common.paths import studio_root
 from ...common.processes import managed_media_processes
+from ...project_graph.integrations import register_media_result
+from ...project_graph.runtime import project_graph_service
 from ...subtitle_removal.constants import REMOVAL_MODE_LABELS
 from ...subtitle_removal.propainter import resolve_propainter_runtime
 from ...subtitle_removal.service import (
@@ -63,6 +65,7 @@ class PreviewRequest(BaseModel):
 
 
 class RemoveRequest(BaseModel):
+    galaxy_project_id: str = ""
     video_path: str
     output_dir: str
     project_name: str = ""
@@ -189,7 +192,7 @@ def install_propainter(body: dict[str, Any]) -> dict[str, bool]:
 
 
 @router.post("/remove")
-def start_removal(body: RemoveRequest) -> dict[str, str]:
+def start_removal(body: RemoveRequest, request: Request) -> dict[str, str]:
     video_path = _video_path(body.video_path)
     if body.mode not in SUBTITLE_REMOVAL_MODES:
         raise HTTPException(status_code=422, detail="Chế độ xóa phụ đề không hợp lệ.")
@@ -229,6 +232,8 @@ def start_removal(body: RemoveRequest) -> dict[str, str]:
         ),
     )
     record.on_cancel = lambda: managed_media_processes.terminate_task(record.task_id)
+    configured = getattr(request.app.state, "settings_path", None)
+    graph_service = project_graph_service(Path(configured) if configured is not None else None)
 
     def run_removal():
         from ...subtitle_removal.service import remove_subtitles_from_video
@@ -241,6 +246,19 @@ def start_removal(body: RemoveRequest) -> dict[str, str]:
         )
 
     def serialize(result: Any) -> dict[str, Any]:
+        register_media_result(
+            graph_service,
+            project_id=body.galaxy_project_id,
+            workspace="subtitle_removal",
+            owner_id=record.task_id,
+            label=body.project_name or video_path.stem,
+            sources=(("source_video", str(video_path)),),
+            outputs=(
+                ("clean_video", str(result.video_path)),
+                ("manifest", str(result.manifest_path)),
+            ),
+            metadata={"mode": result.mode},
+        )
         return {
             "project_dir": str(result.project_dir),
             "video_path": str(result.video_path),

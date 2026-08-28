@@ -23,6 +23,8 @@ import {
 } from '../../api/workspaces'
 import { fetchOmniVoiceStatus } from '../../api/omnivoice'
 import { fetchTranscriptHandoff, type TranscriptHandoff } from '../../api/transcripts'
+import { openProjectHandoff } from '../../api/projectGraph'
+import { useVoiceProject } from '../voice/VoiceProjectContext'
 import { TaskButton } from '../../components/TaskButton'
 import { AudioPostPanel } from '../../components/audio/AudioPostPanel'
 import { pickAudioFile, pickFolder, pickVideoFile } from '../../lib/dialogs'
@@ -33,6 +35,7 @@ const ROW_HEIGHT = 142
 const VIEWPORT_HEIGHT = 620
 
 export function DubbingPage() {
+  const { projectId: galaxyProjectId } = useVoiceProject()
   const location = useLocation()
   const [searchParams] = useSearchParams()
   const queryClient = useQueryClient()
@@ -42,7 +45,10 @@ export function DubbingPage() {
   const metaQuery = useQuery({ queryKey: ['settings-meta'], queryFn: fetchSettingsMeta })
   const profilesQuery = useQuery({ queryKey: ['voice-library-picker'], queryFn: () => fetchLibraryVoices() })
   const statusQuery = useQuery({ queryKey: ['omnivoice-status'], queryFn: fetchOmniVoiceStatus })
-  const projectsQuery = useQuery({ queryKey: ['dubbing-projects'], queryFn: fetchDubbingProjects })
+  const projectsQuery = useQuery({
+    queryKey: ['dubbing-projects', galaxyProjectId],
+    queryFn: () => fetchDubbingProjects(galaxyProjectId),
+  })
 
   const [projectId, setProjectId] = useState('')
   const [revision, setRevision] = useState(0)
@@ -81,6 +87,18 @@ export function DubbingPage() {
   }
 
   useEffect(() => {
+    setProjectId('')
+    setRevision(0)
+    setSourceSrt('')
+    setTranslatedSrt('')
+    setSegments([])
+    setQuality(null)
+    setResult(null)
+    setDirty(false)
+    handoffApplied.current = ''
+  }, [galaxyProjectId])
+
+  useEffect(() => {
     const settings = settingsQuery.data
     const meta = metaQuery.data
     if (!settings || !meta) return
@@ -108,6 +126,7 @@ export function DubbingPage() {
       setRevision(0)
       setQuality(null)
       setDirty(true)
+      if (handoff.handoff_id) void openProjectHandoff(handoff.handoff_id).catch(showError)
     }
     const stateHandoff = (location.state as { transcriptHandoff?: TranscriptHandoff } | null)?.transcriptHandoff
     if (stateHandoff) applyHandoff(stateHandoff)
@@ -233,6 +252,7 @@ export function DubbingPage() {
   const saveProject = async () => {
     if (!segments.length) throw new Error('Hãy tạo kế hoạch trước khi lưu project.')
     const saved = await saveDubbingProject({
+      galaxy_project_id: galaxyProjectId,
       project_id: projectId || undefined,
       expected_revision: revision,
       name: projectName || 'dubbing',

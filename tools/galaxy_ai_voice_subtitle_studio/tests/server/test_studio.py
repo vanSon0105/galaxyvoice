@@ -96,6 +96,11 @@ class StudioApiTests(unittest.TestCase):
         self.assertEqual(audio.status_code, 200)
         self.assertEqual(audio.content, b"RIFFstudio")
 
+        graph = self.client.get("/api/project-graph/projects/project-1").json()
+        studio = next(node for node in graph["nodes"] if node["workspace"] == "studio")
+        self.assertEqual(studio["owner_id"], take["take_id"])
+        self.assertIn("voice_wav", {asset["role"] for asset in studio["assets"]})
+
         restarted = TestClient(create_app(config_path=self.config_path))
         try:
             persisted = restarted.get("/api/studio/takes?project_id=project-1").json()

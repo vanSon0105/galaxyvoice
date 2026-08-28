@@ -18,6 +18,7 @@ import { fetchSettings, updateSettings } from '../api/settings'
 import type { AppSettings } from '../api/settings'
 import { openPath } from '../api/voice'
 import { TaskButton } from '../components/TaskButton'
+import { useActiveProjectId } from '../hooks/useActiveProjectId'
 import { hasNativeDialogs, pickFolder, pickMediaFile } from '../lib/dialogs'
 import type { TaskState } from '../ws/useTasks'
 
@@ -30,6 +31,7 @@ function settingBool(settings: AppSettings | undefined, key: string, fallback: b
 }
 
 export function SeparationPage() {
+  const galaxyProjectId = useActiveProjectId()
   const queryClient = useQueryClient()
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
   const metaQuery = useQuery({ queryKey: ['audio-meta'], queryFn: fetchAudioMeta })
@@ -242,6 +244,7 @@ export function SeparationPage() {
       audio_saved_setting: selectedPreset,
     })
     const response = await startAudioSeparation({
+      galaxy_project_id: galaxyProjectId,
       input_path: inputPath,
       output_dir: outputDir,
       project_name: projectName,

@@ -12,6 +12,7 @@ import type { RemovalRegion, RemovalResult } from '../api/removal'
 import { fetchSettings, fetchSettingsMeta, updateSettings } from '../api/settings'
 import { openPath } from '../api/voice'
 import { TaskButton } from '../components/TaskButton'
+import { useActiveProjectId } from '../hooks/useActiveProjectId'
 import { hasNativeDialogs, pickFolder, pickVideoFile } from '../lib/dialogs'
 import type { TaskState } from '../ws/useTasks'
 
@@ -37,6 +38,7 @@ function clampRegion(region: RemovalRegion): RemovalRegion {
 }
 
 export function RemovalPage() {
+  const galaxyProjectId = useActiveProjectId()
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
   const settingsMetaQuery = useQuery({ queryKey: ['settings-meta'], queryFn: fetchSettingsMeta })
   const metaQuery = useQuery({ queryKey: ['removal-meta'], queryFn: fetchRemovalMeta })
@@ -182,6 +184,7 @@ export function RemovalPage() {
       propainter_license_accepted: licenseAccepted,
     })
     const response = await startSubtitleRemoval({
+      galaxy_project_id: galaxyProjectId,
       video_path: videoPath,
       output_dir: outputDir,
       project_name: projectName,

@@ -67,6 +67,7 @@ export interface AudioRuntimeStatus {
 }
 
 export interface SeparationRequest {
+  galaxy_project_id: string
   input_path: string
   output_dir: string
   project_name: string

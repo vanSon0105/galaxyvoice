@@ -30,6 +30,7 @@ class DubbingRevisionConflict(RuntimeError):
 @dataclass(frozen=True)
 class DubbingProjectSummary:
     project_id: str
+    galaxy_project_id: str
     name: str
     stage: str
     revision: int
@@ -41,6 +42,7 @@ class DubbingProjectSummary:
 @dataclass(frozen=True)
 class DubbingProject:
     project_id: str
+    galaxy_project_id: str
     name: str
     stage: str
     revision: int
@@ -60,6 +62,7 @@ class DubbingProject:
     def create(
         cls,
         *,
+        galaxy_project_id: str = "",
         name: str,
         source_srt: str,
         segments: tuple[DubbingSegment, ...],
@@ -72,6 +75,7 @@ class DubbingProject:
         now = _now()
         return cls(
             project_id=uuid4().hex,
+            galaxy_project_id=galaxy_project_id.strip(),
             name=name.strip() or "Dubbing",
             stage="translation" if translated_srt.strip() else "ingest",
             revision=1,
@@ -90,6 +94,7 @@ class DubbingProject:
     def from_dict(cls, payload: Mapping[str, Any]) -> "DubbingProject":
         return cls(
             project_id=str(payload.get("project_id") or ""),
+            galaxy_project_id=str(payload.get("galaxy_project_id") or ""),
             name=str(payload.get("name") or "Dubbing"),
             stage=_stage(str(payload.get("stage") or "ingest")),
             revision=max(1, int(payload.get("revision") or 1)),
@@ -114,6 +119,7 @@ class DubbingProject:
         return {
             "schema_version": 1,
             "project_id": self.project_id,
+            "galaxy_project_id": self.galaxy_project_id,
             "name": self.name,
             "stage": self.stage,
             "revision": self.revision,
@@ -138,6 +144,7 @@ class DubbingProject:
     def summary(self) -> DubbingProjectSummary:
         return DubbingProjectSummary(
             project_id=self.project_id,
+            galaxy_project_id=self.galaxy_project_id,
             name=self.name,
             stage=self.stage,
             revision=self.revision,
@@ -158,13 +165,14 @@ class DubbingProjectRepository:
         with self._locks_guard:
             self._lock = self._locks.setdefault(key, threading.RLock())
 
-    def list(self) -> tuple[DubbingProjectSummary, ...]:
+    def list(self, *, galaxy_project_id: str = "") -> tuple[DubbingProjectSummary, ...]:
         with self._lock:
             payload = read_json(self.index_path)
         items = payload.get("projects", ()) if isinstance(payload, dict) else ()
         summaries = tuple(
             DubbingProjectSummary(
                 project_id=str(item.get("project_id") or ""),
+                galaxy_project_id=str(item.get("galaxy_project_id") or ""),
                 name=str(item.get("name") or "Dubbing"),
                 stage=_stage(str(item.get("stage") or "ingest")),
                 revision=max(1, int(item.get("revision") or 1)),
@@ -175,7 +183,17 @@ class DubbingProjectRepository:
             for item in items
             if isinstance(item, Mapping) and item.get("project_id")
         )
-        return tuple(sorted(summaries, key=lambda item: item.updated_at, reverse=True))
+        parent_id = galaxy_project_id.strip()
+        filtered = (
+            tuple(
+                item
+                for item in summaries
+                if not item.galaxy_project_id or item.galaxy_project_id == parent_id
+            )
+            if parent_id
+            else summaries
+        )
+        return tuple(sorted(filtered, key=lambda item: item.updated_at, reverse=True))
 
     def get(self, project_id: str) -> DubbingProject | None:
         payload = read_json(self._document_path(project_id))

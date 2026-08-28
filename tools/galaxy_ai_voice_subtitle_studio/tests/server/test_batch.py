@@ -162,6 +162,11 @@ class BatchApiTests(unittest.TestCase):
         self.assertEqual(item.status_code, 200)
         self.assertEqual(manifest.status_code, 200)
 
+        graph = self.client.get("/api/project-graph/projects/project-1").json()
+        batch = next(node for node in graph["nodes"] if node["workspace"] == "batch")
+        self.assertEqual(batch["owner_id"], started["batch_id"])
+        self.assertIn("combined_wav", {asset["role"] for asset in batch["assets"]})
+
     def test_cancelled_batch_can_resume_pending_items(self) -> None:
         self.block_first = threading.Event()
         self.release_first = threading.Event()

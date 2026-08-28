@@ -21,6 +21,7 @@ class LongformRevisionConflict(RuntimeError):
 @dataclass(frozen=True)
 class LongformProjectSummary:
     project_id: str
+    galaxy_project_id: str
     name: str
     kind: str
     stage: str
@@ -33,6 +34,7 @@ class LongformProjectSummary:
 @dataclass(frozen=True)
 class LongformProject:
     project_id: str
+    galaxy_project_id: str
     name: str
     kind: str
     stage: str
@@ -50,6 +52,7 @@ class LongformProject:
     def create(
         cls,
         *,
+        galaxy_project_id: str = "",
         name: str,
         kind: str,
         source: str,
@@ -61,6 +64,7 @@ class LongformProject:
         now = _now()
         return cls(
             project_id=uuid4().hex,
+            galaxy_project_id=galaxy_project_id.strip(),
             name=name.strip() or "longform",
             kind=_kind(kind),
             stage="plan" if _item_count(document) else "source",
@@ -78,6 +82,7 @@ class LongformProject:
     def from_dict(cls, payload: Mapping[str, Any]) -> "LongformProject":
         return cls(
             project_id=str(payload.get("project_id") or ""),
+            galaxy_project_id=str(payload.get("galaxy_project_id") or ""),
             name=str(payload.get("name") or "longform"),
             kind=_kind(str(payload.get("kind") or "stories")),
             stage=_stage(str(payload.get("stage") or "source")),
@@ -96,6 +101,7 @@ class LongformProject:
         return {
             "schema_version": 1,
             "project_id": self.project_id,
+            "galaxy_project_id": self.galaxy_project_id,
             "name": self.name,
             "kind": self.kind,
             "stage": self.stage,
@@ -124,6 +130,7 @@ class LongformProject:
         chapters = self.document.get("chapters")
         return LongformProjectSummary(
             project_id=self.project_id,
+            galaxy_project_id=self.galaxy_project_id,
             name=self.name,
             kind=self.kind,
             stage=self.stage,
@@ -145,13 +152,19 @@ class LongformProjectRepository:
         with self._locks_guard:
             self._lock = self._locks.setdefault(key, threading.RLock())
 
-    def list(self, kind: str = "") -> tuple[LongformProjectSummary, ...]:
+    def list(
+        self,
+        kind: str = "",
+        *,
+        galaxy_project_id: str = "",
+    ) -> tuple[LongformProjectSummary, ...]:
         with self._lock:
             payload = read_json(self.index_path)
         items = payload.get("projects", ()) if isinstance(payload, dict) else ()
         summaries = tuple(
             LongformProjectSummary(
                 project_id=str(item.get("project_id") or ""),
+                galaxy_project_id=str(item.get("galaxy_project_id") or ""),
                 name=str(item.get("name") or "longform"),
                 kind=_kind(str(item.get("kind") or "stories")),
                 stage=_stage(str(item.get("stage") or "source")),
@@ -167,6 +180,13 @@ class LongformProjectRepository:
         filtered = summaries if not normalized_kind else tuple(
             item for item in summaries if item.kind == normalized_kind
         )
+        parent_id = galaxy_project_id.strip()
+        if parent_id:
+            filtered = tuple(
+                item
+                for item in filtered
+                if not item.galaxy_project_id or item.galaxy_project_id == parent_id
+            )
         return tuple(sorted(filtered, key=lambda item: item.updated_at, reverse=True))
 
     def get(self, project_id: str) -> LongformProject | None:

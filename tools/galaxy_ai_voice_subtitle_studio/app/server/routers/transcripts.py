@@ -10,6 +10,9 @@ from fastapi.responses import FileResponse, PlainTextResponse
 from pydantic import BaseModel, Field
 
 from ...common.config import default_config_path
+from ...project_graph.integrations import register_transcript_handoff
+from ...project_graph.runtime import project_graph_service
+from ...project_graph.service import ProjectGraphService
 from ...runtime.jobs import TaskContext
 from ...runtime.resources import resource_keys_for_device
 from ...transcripts.models import TranscriptProject
@@ -32,6 +35,10 @@ def _repository(request: Request) -> TranscriptRepository:
 
 def _service(request: Request) -> TranscriptService:
     return TranscriptService(_repository(request))
+
+
+def _graph_service(request: Request) -> ProjectGraphService:
+    return project_graph_service(_settings_path(request))
 
 
 class ImportMediaRequest(BaseModel):
@@ -404,7 +411,8 @@ def speaker_reference(
 @router.post("/projects/{transcript_id}/handoffs/{target}")
 def create_handoff(transcript_id: str, target: str, request: Request) -> dict[str, Any]:
     try:
-        _project, payload = _service(request).record_handoff(transcript_id, target)
+        project, payload = _service(request).record_handoff(transcript_id, target)
+        register_transcript_handoff(_graph_service(request), project, payload)
     except KeyError:
         raise HTTPException(status_code=404, detail="Không tìm thấy transcript.")
     except ValueError as error:

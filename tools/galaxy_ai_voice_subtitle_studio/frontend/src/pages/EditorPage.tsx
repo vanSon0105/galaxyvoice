@@ -12,6 +12,7 @@ import { openPath } from '../api/voice'
 import { Timeline } from '../components/timeline/Timeline'
 import { clamp, formatClock, parseClock } from '../components/timeline/geometry'
 import type { VideoSegment } from '../components/timeline/segments'
+import { useActiveProjectId } from '../hooks/useActiveProjectId'
 import {
   projectDuration,
   rippleDeleteCues,
@@ -63,6 +64,7 @@ function fitCues(cues: EditorCue[], durationMs: number): EditorCue[] {
 }
 
 export function EditorPage() {
+  const galaxyProjectId = useActiveProjectId()
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
   const settingsMetaQuery = useQuery({ queryKey: ['settings-meta'], queryFn: fetchSettingsMeta })
   const { tasks, cancelTask } = useTasks()
@@ -358,6 +360,7 @@ export function EditorPage() {
         editor_timeline_zoom: zoom,
       })
       setTaskId(await startEditorExport({
+        galaxy_project_id: galaxyProjectId,
         video_path: video.path,
         output_dir: outputDir,
         project_name: projectName,

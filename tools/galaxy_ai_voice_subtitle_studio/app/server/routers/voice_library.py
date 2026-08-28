@@ -10,6 +10,8 @@ from pydantic import BaseModel, Field
 from ...common.config import default_config_path
 from ...omnivoice.profiles import list_voice_profiles
 from ...omnivoice.runtime import OmniVoiceRuntime
+from ...project_graph.integrations import register_voice_pin
+from ...project_graph.runtime import project_graph_service
 from ...voice.tts import create_tts_engine, tts_engine_codes
 from ...voice_library.models import VoiceProfileRecord, VoiceSelection
 from ...voice_library.repository import VoiceLibraryRepository
@@ -258,7 +260,10 @@ class PinRequest(BaseModel):
 @router.post("/voices/{voice_id}/pin")
 def pin(voice_id: str, body: PinRequest, request: Request) -> dict[str, Any]:
     try:
-        return _service(request).pin(_find(request, voice_id), body.project_id)
+        voice = _find(request, voice_id)
+        pinned = _service(request).pin(voice, body.project_id)
+        register_voice_pin(project_graph_service(_settings_path(request)), voice, pinned)
+        return pinned
     except (ValueError, OSError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 

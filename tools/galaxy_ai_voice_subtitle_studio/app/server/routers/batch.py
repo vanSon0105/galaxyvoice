@@ -18,6 +18,8 @@ from ...omnivoice.client import OmniVoiceWorkerClient
 from ...omnivoice.runtime import OmniVoiceRuntime
 from ...omnivoice.task_runner import shared_omnivoice_task_coordinator
 from ...omnivoice.worker_pool import get_shared_worker_client
+from ...project_graph.integrations import register_batch_run
+from ...project_graph.runtime import project_graph_service
 from ...runtime.jobs import ACTIVE_STATUSES, TaskContext
 from ...runtime.resources import resource_keys_for_device
 from ...studio.models import StudioVoiceSelection
@@ -150,6 +152,7 @@ def _start(request: Request, run: BatchRun) -> dict[str, str]:
     )
     record.on_cancel = lambda: _task_coordinator.cancel(record.task_id)
     repository = _repository(request)
+    graph_service = project_graph_service(_settings_path(request))
     repository.set_task(run.batch_id, record.task_id)
 
     def operation(context: TaskContext) -> BatchRun:
@@ -170,7 +173,11 @@ def _start(request: Request, run: BatchRun) -> dict[str, str]:
             client_factory=_worker_client,
         )
 
-    task_registry.submit(record, operation, _run_dict)
+    def serialize(completed: BatchRun) -> dict[str, Any]:
+        register_batch_run(graph_service, completed)
+        return _run_dict(completed)
+
+    task_registry.submit(record, operation, serialize)
     event_bus.emit(
         {"type": "event", "kind": "batch_run_started", "payload": {"batch_id": run.batch_id}}
     )

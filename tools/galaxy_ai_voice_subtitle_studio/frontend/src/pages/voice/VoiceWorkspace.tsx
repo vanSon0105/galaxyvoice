@@ -4,10 +4,9 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 
 import { fetchProjects, saveProject } from '../../api/workspaces'
 import { WorkspaceLoading } from '../../components/WorkspaceState'
+import { ACTIVE_PROJECT_CHANGED_EVENT, ACTIVE_PROJECT_KEY } from '../../hooks/useActiveProjectId'
 import { VOICE_NAV_ITEMS } from '../../nav'
 import { VoiceProjectContext } from './VoiceProjectContext'
-
-const ACTIVE_PROJECT_KEY = 'galaxy.voice.activeProject'
 
 function currentWorkspace(pathname: string): string {
   return VOICE_NAV_ITEMS.find((item) =>
@@ -50,6 +49,7 @@ export function VoiceWorkspace() {
   useEffect(() => {
     if (projectId) window.localStorage.setItem(ACTIVE_PROJECT_KEY, projectId)
     else window.localStorage.removeItem(ACTIVE_PROJECT_KEY)
+    window.dispatchEvent(new Event(ACTIVE_PROJECT_CHANGED_EVENT))
   }, [projectId])
 
   const createProject = useMutation({

@@ -173,6 +173,7 @@ class AudioSeparationApiTests(unittest.TestCase):
             response = self.client.post(
                 "/api/audio/separate",
                 json={
+                    "galaxy_project_id": "project-1",
                     "input_path": str(source),
                     "output_dir": str(self.root),
                     "model_filename": "Kim_Vocal_2.onnx",
@@ -186,6 +187,9 @@ class AudioSeparationApiTests(unittest.TestCase):
         self.assertEqual(record.result.output_paths[0].name, "song_vocals.wav")
         served = self.client.get(f"/api/files/task/{task_id}/song_vocals.wav")
         self.assertEqual(served.status_code, 200)
+        graph = self.client.get("/api/project-graph/projects/project-1").json()
+        self.assertEqual(graph["nodes"][0]["workspace"], "separation")
+        self.assertIn("audio_stem_1", {asset["role"] for asset in graph["nodes"][0]["assets"]})
 
     def test_cancel_terminates_only_processes_owned_by_audio_task(self) -> None:
         source = self.root / "song.wav"

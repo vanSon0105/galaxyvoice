@@ -29,6 +29,7 @@ def create_longform_document(
 def save_longform_project(
     repository: LongformProjectRepository,
     *,
+    galaxy_project_id: str,
     project_id: str,
     expected_revision: int,
     name: str,
@@ -52,6 +53,7 @@ def save_longform_project(
         if existing is None:
             raise KeyError(project_id)
         project = existing.evolved(
+            galaxy_project_id=galaxy_project_id.strip() or existing.galaxy_project_id,
             name=name.strip() or existing.name,
             kind=kind,
             stage=stage,
@@ -64,6 +66,7 @@ def save_longform_project(
         )
     else:
         project = LongformProject.create(
+            galaxy_project_id=galaxy_project_id,
             name=name,
             kind=kind,
             source=source,

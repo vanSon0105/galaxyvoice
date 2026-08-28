@@ -30,6 +30,7 @@ export interface RemovalRegion {
 }
 
 export interface RemovalRequest {
+  galaxy_project_id: string
   video_path: string
   output_dir: string
   project_name: string

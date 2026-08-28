@@ -33,6 +33,8 @@ import { AudioPostPanel } from '../../components/audio/AudioPostPanel'
 import { pickBookFile, pickFolder } from '../../lib/dialogs'
 import type { TaskState } from '../../ws/useTasks'
 import { fetchTranscriptHandoff, type TranscriptHandoff } from '../../api/transcripts'
+import { openProjectHandoff } from '../../api/projectGraph'
+import { useVoiceProject } from '../voice/VoiceProjectContext'
 
 type Kind = 'stories' | 'audiobook'
 const LONGFORM_ROW_HEIGHT = 142
@@ -54,6 +56,7 @@ const AUDIOBOOK_SAMPLE = `# Chương 1 - Khởi đầu
 
 /** Stories / audiobook longform workspace: source → document editor → render. */
 export function WorkspacesPage() {
+  const { projectId: galaxyProjectId } = useVoiceProject()
   const location = useLocation()
   const [searchParams] = useSearchParams()
   const handoffApplied = useRef('')
@@ -64,8 +67,8 @@ export function WorkspacesPage() {
   const profilesQuery = useQuery({ queryKey: ['voice-library-picker'], queryFn: () => fetchLibraryVoices() })
   const statusQuery = useQuery({ queryKey: ['omnivoice-status'], queryFn: fetchOmniVoiceStatus })
   const projectsQuery = useQuery({
-    queryKey: ['longform-projects', kind],
-    queryFn: () => fetchLongformProjects(kind),
+    queryKey: ['longform-projects', kind, galaxyProjectId],
+    queryFn: () => fetchLongformProjects(kind, galaxyProjectId),
   })
   const historyQuery = useQuery({
     queryKey: ['workspace-history', kind],
@@ -138,6 +141,16 @@ export function WorkspacesPage() {
   }
 
   useEffect(() => {
+    setSelectedProjectId('')
+    setRevision(0)
+    setSource('')
+    setDoc(null)
+    setResult(null)
+    setDirty(false)
+    handoffApplied.current = ''
+  }, [galaxyProjectId])
+
+  useEffect(() => {
     const settings = settingsQuery.data
     if (!settings) return
     const configuredOutput = String(settings.omnivoice_output_dir ?? settings.output_dir ?? '')
@@ -162,6 +175,11 @@ export function WorkspacesPage() {
       setSelectedProjectId('')
       setRevision(0)
       markDirty()
+      if (handoff.handoff_id) {
+        void openProjectHandoff(handoff.handoff_id).catch((cause) => {
+          if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause))
+        })
+      }
     }
     const stateHandoff = (location.state as { transcriptHandoff?: TranscriptHandoff } | null)
       ?.transcriptHandoff
@@ -296,6 +314,7 @@ export function WorkspacesPage() {
     if (!doc) throw new Error('Hãy tạo kế hoạch trước khi lưu project.')
     const savingGeneration = dirtyGeneration.current
     const saved = await saveLongformProject({
+      galaxy_project_id: galaxyProjectId,
       project_id: selectedProjectId || undefined,
       expected_revision: revision,
       name: projectName || 'longform',

@@ -8,11 +8,13 @@ from collections import deque
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
 from ...common.processes import managed_media_processes
+from ...project_graph.integrations import register_media_result
+from ...project_graph.runtime import project_graph_service
 from ...video_editor.service import (
     EDITOR_AUDIO_MODES,
     EDITOR_ENCODERS,
@@ -70,6 +72,7 @@ class VideoSegmentPayload(BaseModel):
 
 
 class ExportRequest(BaseModel):
+    galaxy_project_id: str = ""
     video_path: str
     output_dir: str
     project_name: str = ""
@@ -169,7 +172,7 @@ def parse_cues(body: CueRequest) -> dict[str, Any]:
 
 
 @router.post("/export")
-def start_export(body: ExportRequest) -> dict[str, str]:
+def start_export(body: ExportRequest, request: Request) -> dict[str, str]:
     video_path = _existing_file(body.video_path, "Video đầu vào")
     audio_path = _existing_file(body.audio_path, "Audio đầu vào") if body.audio_path else None
     if not body.output_dir.strip():
@@ -210,6 +213,8 @@ def start_export(body: ExportRequest) -> dict[str, str]:
         ),
     )
     record.on_cancel = lambda: managed_media_processes.terminate_task(record.task_id)
+    configured = getattr(request.app.state, "settings_path", None)
+    graph_service = project_graph_service(Path(configured) if configured is not None else None)
 
     def run_export():
         from ...video_editor.service import export_editor_video
@@ -222,6 +227,28 @@ def start_export(body: ExportRequest) -> dict[str, str]:
         )
 
     def serialize(result: Any) -> dict[str, Any]:
+        register_media_result(
+            graph_service,
+            project_id=body.galaxy_project_id,
+            workspace="editor",
+            owner_id=record.task_id,
+            label=body.project_name or result.video_path.stem,
+            sources=tuple(
+                (role, str(path))
+                for role, path in (("source_video", video_path), ("source_audio", audio_path))
+                if path is not None
+            ),
+            outputs=tuple(
+                (role, str(path))
+                for role, path in (
+                    ("edited_video", result.video_path),
+                    ("subtitle", result.subtitle_path),
+                    ("manifest", result.manifest_path),
+                )
+                if path is not None
+            ),
+            metadata={"resolution": body.resolution, "fps": body.fps},
+        )
         return {
             "project_dir": str(result.project_dir),
             "video_path": str(result.video_path),

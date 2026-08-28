@@ -275,6 +275,66 @@ class WorkspacesApiTests(unittest.TestCase):
         ).json()
         self.assertEqual(stored["last_result"], {})
 
+    def test_longform_and_dubbing_projects_are_scoped_to_active_project(self) -> None:
+        longform = self.client.post(
+            "/api/workspaces/longform/projects",
+            json={
+                "galaxy_project_id": "active-project-1",
+                "name": "Longform",
+                "kind": "stories",
+                "stage": "plan",
+                "source": "Narrator: Hello",
+                "document": {"chapters": [], "items": []},
+            },
+        )
+        self.assertEqual(longform.status_code, 200, longform.text)
+        self.assertEqual(longform.json()["galaxy_project_id"], "active-project-1")
+        self.assertEqual(
+            len(
+                self.client.get(
+                    "/api/workspaces/longform/projects",
+                    params={"galaxy_project_id": "active-project-1"},
+                ).json()
+            ),
+            1,
+        )
+        self.assertEqual(
+            self.client.get(
+                "/api/workspaces/longform/projects",
+                params={"galaxy_project_id": "other-project"},
+            ).json(),
+            [],
+        )
+
+        dubbing = self.client.post(
+            "/api/workspaces/dubbing/projects",
+            json={
+                "galaxy_project_id": "active-project-1",
+                "name": "Dubbing",
+                "stage": "ingest",
+                "source_srt": "source",
+                "segments": [],
+            },
+        )
+        self.assertEqual(dubbing.status_code, 200, dubbing.text)
+        self.assertEqual(dubbing.json()["galaxy_project_id"], "active-project-1")
+        self.assertEqual(
+            len(
+                self.client.get(
+                    "/api/workspaces/dubbing/projects",
+                    params={"galaxy_project_id": "active-project-1"},
+                ).json()
+            ),
+            1,
+        )
+        self.assertEqual(
+            self.client.get(
+                "/api/workspaces/dubbing/projects",
+                params={"galaxy_project_id": "other-project"},
+            ).json(),
+            [],
+        )
+
     def test_render_uses_document_and_serializes_result(self) -> None:
         created = self.client.post(
             "/api/workspaces/document",

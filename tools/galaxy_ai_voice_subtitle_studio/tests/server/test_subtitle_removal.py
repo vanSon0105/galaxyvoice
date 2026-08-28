@@ -111,6 +111,7 @@ class SubtitleRemovalApiTests(unittest.TestCase):
             response = self.client.post(
                 "/api/removal/remove",
                 json={
+                    "galaxy_project_id": "project-1",
                     "video_path": str(self.video),
                     "output_dir": str(self.root),
                     "mode": "blur",
@@ -124,6 +125,9 @@ class SubtitleRemovalApiTests(unittest.TestCase):
         self.assertEqual(captured["task_id"], task_id)
         served = self.client.get(f"/api/files/task/{task_id}/clean_no_subtitles.mp4")
         self.assertEqual(served.status_code, 200)
+        graph = self.client.get("/api/project-graph/projects/project-1").json()
+        self.assertEqual(graph["nodes"][0]["workspace"], "subtitle_removal")
+        self.assertIn("clean_video", {asset["role"] for asset in graph["nodes"][0]["assets"]})
 
     def test_cancel_terminates_only_subtitle_removal_processes(self) -> None:
         def wait_for_cancel(_options, *, stop_event, **_kwargs):

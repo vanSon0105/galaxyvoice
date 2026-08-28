@@ -121,6 +121,21 @@ class VoiceLibraryApiTests(unittest.TestCase):
         self.assertEqual(pinned.status_code, 200, pinned.text)
         self.assertEqual(pinned.json()["project_id"], "project-1")
         self.assertTrue(Path(pinned.json()["snapshot_path"]).is_file())
+        graph = self.client.get("/api/project-graph/projects/project-1").json()
+        library = next(node for node in graph["nodes"] if node["workspace"] == "library")
+        self.assertEqual(library["owner_id"], f"project-1:{voice['voice_id']}")
+        self.assertEqual(library["assets"][0]["ownership"], "managed")
+
+        second_pin = self.client.post(
+            f"/api/voice-library/voices/{voice['voice_id']}/pin",
+            json={"project_id": "project-2"},
+        )
+        self.assertEqual(second_pin.status_code, 200, second_pin.text)
+        second_graph = self.client.get("/api/project-graph/projects/project-2").json()
+        second_library = next(
+            node for node in second_graph["nodes"] if node["workspace"] == "library"
+        )
+        self.assertEqual(second_library["owner_id"], f"project-2:{voice['voice_id']}")
 
         deleted = self.client.delete(f"/api/voice-library/voices/{voice['voice_id']}")
         self.assertEqual(deleted.status_code, 409)

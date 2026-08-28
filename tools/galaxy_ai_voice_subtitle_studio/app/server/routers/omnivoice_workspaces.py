@@ -27,6 +27,9 @@ from ...omnivoice.runtime import OmniVoiceRuntime, load_supported_language_ids
 from ...omnivoice.task_runner import shared_omnivoice_task_coordinator
 from ...omnivoice.worker_pool import get_shared_worker_client
 from ...omnivoice.workspaces.common.repository import WorkspaceRepository
+from ...project_graph.integrations import register_dubbing_project, register_longform_project
+from ...project_graph.runtime import project_graph_service
+from ...project_graph.service import ProjectGraphService
 from ...omnivoice.workspaces.dubbing.model import (
     DubbingFitPolicy,
     DubbingSegment,
@@ -108,6 +111,10 @@ def _settings_path(request: Request) -> Path:
 
 def _repository(request: Request) -> WorkspaceRepository:
     return WorkspaceRepository(_settings_path(request).with_name("omnivoice_workspaces.json"))
+
+
+def _project_graph(request: Request) -> ProjectGraphService:
+    return project_graph_service(_settings_path(request))
 
 
 def _transcripts(request: Request) -> TranscriptStore:
@@ -379,6 +386,7 @@ def _transcript_dict(item: Any) -> dict[str, Any]:
 
 
 class LongformProjectRequest(BaseModel):
+    galaxy_project_id: str = ""
     project_id: str = ""
     expected_revision: int = 0
     name: str = "longform"
@@ -393,8 +401,18 @@ class LongformProjectRequest(BaseModel):
 
 
 @router.get("/longform/projects")
-def list_longform_projects(request: Request, kind: str = "") -> list[dict[str, Any]]:
-    return [item.__dict__ for item in _longform_repository(request).list(kind)]
+def list_longform_projects(
+    request: Request,
+    kind: str = "",
+    galaxy_project_id: str = "",
+) -> list[dict[str, Any]]:
+    return [
+        item.__dict__
+        for item in _longform_repository(request).list(
+            kind,
+            galaxy_project_id=galaxy_project_id,
+        )
+    ]
 
 
 @router.get("/longform/projects/{project_id}")
@@ -422,6 +440,7 @@ def save_longform_project(body: LongformProjectRequest, request: Request) -> dic
     try:
         saved = save_longform_project_service(
             repository,
+            galaxy_project_id=body.galaxy_project_id,
             project_id=body.project_id,
             expected_revision=body.expected_revision,
             name=body.name,
@@ -442,6 +461,7 @@ def save_longform_project(body: LongformProjectRequest, request: Request) -> dic
         raise HTTPException(status_code=409, detail=str(error)) from error
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    register_longform_project(_project_graph(request), saved)
     return saved.to_dict()
 
 
@@ -601,6 +621,7 @@ def _dubbing_project_dict(project: DubbingProject) -> dict[str, Any]:
 
 
 class DubbingProjectRequest(BaseModel):
+    galaxy_project_id: str = ""
     project_id: str = ""
     expected_revision: int = 0
     name: str = "Dubbing"
@@ -617,8 +638,14 @@ class DubbingProjectRequest(BaseModel):
 
 
 @router.get("/dubbing/projects")
-def list_dubbing_projects(request: Request) -> list[dict[str, Any]]:
-    return [item.__dict__ for item in _dubbing_repository(request).list()]
+def list_dubbing_projects(
+    request: Request,
+    galaxy_project_id: str = "",
+) -> list[dict[str, Any]]:
+    return [
+        item.__dict__
+        for item in _dubbing_repository(request).list(galaxy_project_id=galaxy_project_id)
+    ]
 
 
 @router.get("/dubbing/projects/{project_id}")
@@ -671,6 +698,7 @@ def save_dubbing_project(body: DubbingProjectRequest, request: Request) -> dict[
             if existing is None:
                 raise HTTPException(status_code=404, detail="Không tìm thấy Dubbing project.")
             project = existing.evolved(
+                galaxy_project_id=body.galaxy_project_id.strip() or existing.galaxy_project_id,
                 name=body.name.strip() or existing.name,
                 stage=body.stage,
                 source_srt=body.source_srt,
@@ -687,6 +715,7 @@ def save_dubbing_project(body: DubbingProjectRequest, request: Request) -> dict[
             )
         else:
             project = DubbingProject.create(
+                galaxy_project_id=body.galaxy_project_id,
                 name=body.name,
                 source_srt=body.source_srt,
                 translated_srt=body.translated_srt,
@@ -703,6 +732,7 @@ def save_dubbing_project(body: DubbingProjectRequest, request: Request) -> dict[
         raise HTTPException(status_code=409, detail=str(error)) from error
     except (TypeError, ValueError) as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
+    register_dubbing_project(_project_graph(request), saved)
     return _dubbing_project_dict(saved)
 
 

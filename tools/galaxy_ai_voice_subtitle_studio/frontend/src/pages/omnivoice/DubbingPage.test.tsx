@@ -120,11 +120,11 @@ describe('native Dubbing workspace', () => {
 
   it('restores non-secret render and translation settings from a saved checkpoint', async () => {
     vi.mocked(fetchDubbingProjects).mockResolvedValue([{
-      project_id: 'saved-1', name: 'Bản đã lưu', stage: 'qc', revision: 3,
+      project_id: 'saved-1', galaxy_project_id: 'project-1', name: 'Bản đã lưu', stage: 'qc', revision: 3,
       segment_count: 1, language: 'vi', updated_at: '2026-08-27T00:00:00Z',
     }])
     vi.mocked(fetchDubbingProject).mockResolvedValue({
-      project_id: 'saved-1', name: 'Bản đã lưu', stage: 'qc', revision: 3,
+      project_id: 'saved-1', galaxy_project_id: 'project-1', name: 'Bản đã lưu', stage: 'qc', revision: 3,
       segment_count: 1, language: 'vi', updated_at: '2026-08-27T00:00:00Z',
       source_srt: 'source', translated_srt: 'translated', source_video: '', source_audio: '',
       segments: [segment(0)], created_at: '2026-08-27T00:00:00Z', quality, last_result: {},

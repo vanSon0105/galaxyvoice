@@ -38,6 +38,8 @@ from ...audio_separation.service import (
 from ...common.config import default_config_path
 from ...common.paths import studio_root
 from ...common.processes import managed_media_processes
+from ...project_graph.integrations import register_media_result
+from ...project_graph.runtime import project_graph_service
 from ..event_bus import event_bus
 from ...runtime.resources import resource_keys_for_device
 from ..tasks import TaskRecord, run_task, task_registry
@@ -93,6 +95,7 @@ class PresetRequest(BaseModel):
 
 
 class SeparateRequest(BaseModel):
+    galaxy_project_id: str = ""
     input_path: str
     output_dir: str
     project_name: str = ""
@@ -412,7 +415,7 @@ def install_runtime(body: dict[str, Any]) -> dict[str, bool]:
 
 
 @router.post("/separate")
-def start_separation(body: SeparateRequest) -> dict[str, str]:
+def start_separation(body: SeparateRequest, request: Request) -> dict[str, str]:
     input_path = Path(body.input_path).expanduser()
     if not input_path.is_file():
         raise HTTPException(status_code=422, detail="File audio/video đầu vào không tồn tại.")
@@ -442,6 +445,7 @@ def start_separation(body: SeparateRequest) -> dict[str, str]:
         resource_keys=resource_keys_for_device(processing_device),
     )
     record.on_cancel = lambda: managed_media_processes.terminate_task(record.task_id)
+    graph_service = project_graph_service(_settings_path(request))
 
     def run_separation():
         from ...audio_separation.service import separate_audio
@@ -454,6 +458,19 @@ def start_separation(body: SeparateRequest) -> dict[str, str]:
         )
 
     def serialize(result: Any) -> dict[str, Any]:
+        register_media_result(
+            graph_service,
+            project_id=body.galaxy_project_id,
+            workspace="separation",
+            owner_id=record.task_id,
+            label=body.project_name or input_path.stem,
+            sources=(("source_media", str(input_path)),),
+            outputs=tuple(
+                [(f"audio_stem_{index + 1}", str(path)) for index, path in enumerate(result.output_paths)]
+                + [("manifest", str(result.manifest_path))]
+            ),
+            metadata={"method": body.method, "model": body.model_filename},
+        )
         return {
             "project_dir": str(result.project_dir),
             "output_paths": [str(path) for path in result.output_paths],

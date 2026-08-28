@@ -2,9 +2,11 @@ import type { ReactNode } from 'react'
 import { NavLink } from 'react-router-dom'
 
 import { useT } from '../i18n/useT'
+import { useActiveProjectId } from '../hooks/useActiveProjectId'
 import { NAV_ITEMS } from '../nav'
 import type { WsState } from '../ws/useEvents'
 import { ProgressPanel } from './ProgressPanel'
+import { ProjectGraphPanel } from './project/ProjectGraphPanel'
 
 interface AppShellProps {
   wsState: WsState
@@ -13,6 +15,7 @@ interface AppShellProps {
 
 export function AppShell({ wsState, children }: AppShellProps) {
   const t = useT()
+  const projectId = useActiveProjectId()
   return (
     <div className="shell">
       <header className="titlebar">
@@ -33,6 +36,7 @@ export function AppShell({ wsState, children }: AppShellProps) {
           ))}
         </nav>
         <div className="titlebar-status">
+          <ProjectGraphPanel projectId={projectId} />
           <span className={`status-dot ${wsState === 'open' ? 'open' : wsState === 'closed' ? 'closed' : ''}`} />
           <span>
             {wsState === 'open'

@@ -126,6 +126,7 @@ class DubbingWorkspaceModelTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             repository = DubbingProjectRepository(Path(temp_dir) / "dubbing.json")
             project = DubbingProject.create(
+                galaxy_project_id="active-project-1",
                 name="Ban long tieng",
                 source_srt="1\n00:00:00,000 --> 00:00:01,000\nHello\n",
                 segments=(DubbingSegment("a", 0, 1_000, "Hello", "Xin chao", "Lan"),),
@@ -137,6 +138,12 @@ class DubbingWorkspaceModelTests(unittest.TestCase):
             )
 
             self.assertEqual(updated.revision, 2)
+            self.assertEqual(updated.galaxy_project_id, "active-project-1")
+            self.assertEqual(
+                repository.list(galaxy_project_id="active-project-1")[0].project_id,
+                updated.project_id,
+            )
+            self.assertEqual(repository.list(galaxy_project_id="other-project"), ())
             self.assertEqual(repository.get(updated.project_id).stage, "cast")
             self.assertEqual(repository.list()[0].segment_count, 1)
             with self.assertRaises(DubbingRevisionConflict):

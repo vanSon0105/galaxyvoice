@@ -285,7 +285,13 @@ class VoiceLibraryService:
         }
         path = target / "snapshot.json"
         write_json_atomic(path, snapshot)
-        return {"project_id": project, "voice_id": current.voice_id, "revision": current.revision, "snapshot_path": str(path)}
+        return {
+            "project_id": project,
+            "voice_id": current.voice_id,
+            "revision": current.revision,
+            "snapshot_path": str(path),
+            "fingerprint": digest,
+        }
 
     def export_bundle(self, current: VoiceProfileRecord, output_path: Path) -> Path:
         if current.source == "system":

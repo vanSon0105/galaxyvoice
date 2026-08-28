@@ -263,6 +263,13 @@ class TranscriptApiTests(unittest.TestCase):
             f'/api/transcripts/projects/{project["transcript_id"]}'
         ).json()
         self.assertEqual([item["target"] for item in detail["handoffs"]], ["dubbing", "longform"])
+        graph = self.client.get("/api/project-graph/projects/proj-speakers")
+        self.assertEqual(graph.status_code, 200, graph.text)
+        self.assertEqual(graph.json()["nodes"][0]["node_id"], f'transcripts:{project["transcript_id"]}')
+        self.assertEqual(
+            {item["target_workspace"] for item in graph.json()["handoffs"]},
+            {"dubbing", "longform"},
+        )
         reopened = self.client.get(
             f'/api/transcripts/projects/{project["transcript_id"]}/handoffs/longform'
         )

@@ -100,6 +100,7 @@ export interface LongformDocument {
 
 export interface LongformProjectSummary {
   project_id: string
+  galaxy_project_id: string
   name: string
   kind: 'stories' | 'audiobook'
   stage: string
@@ -163,6 +164,7 @@ export interface DubbingQualityReport {
 
 export interface DubbingProjectSummary {
   project_id: string
+  galaxy_project_id: string
   name: string
   stage: string
   revision: number
@@ -336,8 +338,11 @@ export const documentOp = (
     body: JSON.stringify(op),
   })
 
-export const fetchLongformProjects = (kind: 'stories' | 'audiobook') =>
-  apiJson<LongformProjectSummary[]>(`/api/workspaces/longform/projects?kind=${kind}`)
+export const fetchLongformProjects = (kind: 'stories' | 'audiobook', galaxyProjectId = '') => {
+  const search = new URLSearchParams({ kind })
+  if (galaxyProjectId) search.set('galaxy_project_id', galaxyProjectId)
+  return apiJson<LongformProjectSummary[]>(`/api/workspaces/longform/projects?${search.toString()}`)
+}
 
 export const fetchLongformProject = (projectId: string) =>
   apiJson<LongformProject>(`/api/workspaces/longform/projects/${encodeURIComponent(projectId)}`)
@@ -397,8 +402,12 @@ export const startDubbingTranslation = (body: {
   body: JSON.stringify(body),
 })
 
-export const fetchDubbingProjects = () =>
-  apiJson<DubbingProjectSummary[]>('/api/workspaces/dubbing/projects')
+export const fetchDubbingProjects = (galaxyProjectId = '') => {
+  const suffix = galaxyProjectId
+    ? `?galaxy_project_id=${encodeURIComponent(galaxyProjectId)}`
+    : ''
+  return apiJson<DubbingProjectSummary[]>(`/api/workspaces/dubbing/projects${suffix}`)
+}
 
 export const fetchDubbingProject = (projectId: string) =>
   apiJson<DubbingProject>(`/api/workspaces/dubbing/projects/${encodeURIComponent(projectId)}`)

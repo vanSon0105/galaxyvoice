@@ -76,6 +76,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     from .routers import batch as batch_router
     from .routers import omnivoice as omnivoice_router
     from .routers import omnivoice_workspaces as workspaces_router
+    from .routers import project_graph as project_graph_router
     from .routers import runtime as runtime_router
     from .routers import settings as settings_router
     from .routers import studio as studio_router
@@ -102,6 +103,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     app.include_router(voice_library_router.router)
     app.include_router(omnivoice_router.router)
     app.include_router(workspaces_router.router)
+    app.include_router(project_graph_router.router)
     app.include_router(voicestudio_router.router)
     app.include_router(files_router)
     app.include_router(ws_router)

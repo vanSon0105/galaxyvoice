@@ -73,3 +73,4 @@ tools/galaxy_ai_voice_subtitle_studio/frontend/coverage/
 # Ship the built web UI so users do not need node installed.
 !tools/galaxy_ai_voice_subtitle_studio/frontend/dist/
 !tools/galaxy_ai_voice_subtitle_studio/frontend/dist/**
+tools/galaxy_ai_voice_subtitle_studio/project_graph.json*

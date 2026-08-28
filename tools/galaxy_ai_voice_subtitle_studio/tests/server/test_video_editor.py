@@ -84,6 +84,7 @@ class VideoEditorApiTests(unittest.TestCase):
             response = self.client.post(
                 "/api/editor/export",
                 json={
+                    "galaxy_project_id": "project-1",
                     "video_path": str(self.video),
                     "output_dir": str(self.root),
                     "segments": [
@@ -103,6 +104,12 @@ class VideoEditorApiTests(unittest.TestCase):
             [(500, 1500), (3000, 4500)],
         )
         self.assertEqual(self.client.get(f"/api/files/task/{task_id}/edit.mp4").content, b"edited")
+        graph = self.client.get("/api/project-graph/projects/project-1").json()
+        self.assertEqual(graph["nodes"][0]["workspace"], "editor")
+        self.assertEqual(
+            {asset["role"] for asset in graph["nodes"][0]["assets"]},
+            {"source_video", "edited_video", "manifest"},
+        )
 
     def test_cancel_terminates_only_editor_processes(self) -> None:
         def wait_for_cancel(_options, *, cancellation, **_kwargs):

@@ -144,6 +144,25 @@ The single Galaxy Project Bundle currently shared by the application's voice
 workflows. Cross-workflow handoffs create references inside this bundle rather
 than unrelated output directories.
 
+### Project Graph Node
+
+The Active Project index entry owned by one workflow document or completed task.
+It records the workspace route, owner ID, revision, artifact references, and
+sanitized metadata. The node is a provenance index, not a second copy of the
+workflow's editable state.
+
+### Workspace Handoff
+
+A reversible transfer of selected artifact references from one Project Graph
+Node to a supported destination workspace. Its lifecycle is `pending`,
+`opened`, then `returned`, and it retains the source revision and both routes.
+
+### Return Record
+
+The immutable completion data on a Workspace Handoff: destination node and
+produced artifact IDs. Returning never deletes or replaces the source assets,
+and a completed handoff cannot be reopened as a new transfer.
+
 ### Pinned Voice Snapshot
 
 A project-owned, revisioned copy of the voice definition, consent metadata,

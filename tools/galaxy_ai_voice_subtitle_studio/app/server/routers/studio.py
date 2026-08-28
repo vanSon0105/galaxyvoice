@@ -13,6 +13,8 @@ from ...omnivoice.client import OmniVoiceWorkerClient
 from ...omnivoice.runtime import OmniVoiceRuntime
 from ...omnivoice.task_runner import shared_omnivoice_task_coordinator
 from ...omnivoice.worker_pool import get_shared_worker_client
+from ...project_graph.integrations import register_studio_take
+from ...project_graph.runtime import project_graph_service
 from ...runtime.resources import resource_keys_for_device
 from ...studio.models import StudioGenerationSpec, StudioTakeView, StudioVoiceSelection
 from ...studio.omnivoice_adapter import OmniVoiceStudioAdapter
@@ -131,6 +133,7 @@ def _start(request: Request, spec: StudioGenerationSpec, *, rerun_of: str = "") 
     )
     record.on_cancel = lambda: _task_coordinator.cancel(record.task_id)
     repository = _repository(request)
+    graph_service = project_graph_service(_settings_path(request))
 
     def execute() -> dict[str, Any]:
         if spec.engine_id != "omnivoice":
@@ -147,6 +150,7 @@ def _start(request: Request, spec: StudioGenerationSpec, *, rerun_of: str = "") 
             ),
             client_factory=_worker_client,
         )
+        register_studio_take(graph_service, take)
         event_bus.emit({"type": "event", "kind": "studio_takes_updated", "payload": {}})
         return {"take": _take_dict(take)}
 

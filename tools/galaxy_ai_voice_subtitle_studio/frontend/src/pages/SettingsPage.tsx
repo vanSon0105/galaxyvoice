@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 
 import { fetchSettings, fetchSettingsMeta, updateSettings } from '../api/settings'
 import type { AppSettings, Option, SettingsMeta } from '../api/settings'
+import { ExtensionCapabilitiesPanel } from '../components/ExtensionCapabilitiesPanel'
 import { useT } from '../i18n/useT'
 
 type FieldType = 'text' | 'int' | 'number' | 'bool' | 'select'
@@ -241,6 +242,7 @@ export function SettingsPage() {
           </div>
         </section>
       ))}
+      <ExtensionCapabilitiesPanel />
     </div>
   )
 }

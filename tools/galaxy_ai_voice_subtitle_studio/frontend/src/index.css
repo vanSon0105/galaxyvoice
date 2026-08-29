@@ -897,6 +897,104 @@ body {
   gap: 10px 16px;
 }
 
+.extension-capabilities-state {
+  margin: 0;
+  color: var(--color-fg-subtle);
+}
+
+.extension-capabilities-state.error { color: var(--color-danger); }
+
+.extension-capability-list { border-top: 1px solid var(--border-soft); }
+
+.extension-capability {
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.extension-capability > summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 16px;
+  align-items: center;
+  padding: 11px 2px;
+  cursor: pointer;
+}
+
+.extension-capability > summary:hover { background: var(--color-hover); }
+
+.extension-capability-copy {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.extension-capability-copy strong { color: var(--color-fg); }
+
+.extension-capability-copy > span {
+  color: var(--color-fg-subtle);
+  font-size: 12px;
+}
+
+.extension-disposition {
+  padding: 3px 6px;
+  border: 1px solid var(--color-border-strong);
+  border-radius: 3px;
+  color: var(--color-fg-muted);
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.extension-disposition.extension {
+  border-color: color-mix(in srgb, var(--color-success) 65%, var(--color-border));
+  color: var(--color-success);
+}
+
+.extension-disposition.deferred {
+  border-color: color-mix(in srgb, var(--color-warning) 65%, var(--color-border));
+  color: var(--color-warning);
+}
+
+.extension-disposition.optional_adapter {
+  border-color: color-mix(in srgb, var(--color-accent) 65%, var(--color-border));
+  color: var(--color-accent);
+}
+
+.extension-disposition.non_goal {
+  border-color: color-mix(in srgb, var(--color-danger) 65%, var(--color-border));
+  color: var(--color-danger);
+}
+
+.extension-capability-details {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 2px 2px 14px 20px;
+  color: var(--color-fg-muted);
+}
+
+.extension-capability-details > div {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr);
+  gap: 12px;
+}
+
+.extension-capability-details dt {
+  color: var(--color-fg-subtle);
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.extension-capability-details dd { margin: 0; }
+.extension-capability-details ul { margin: 0; padding-left: 17px; }
+.extension-capability-details li + li { margin-top: 4px; }
+
+@media (max-width: 700px) {
+  .extension-capability > summary { grid-template-columns: 1fr; gap: 8px; }
+  .extension-disposition { justify-self: start; }
+  .extension-capability-details { padding-left: 2px; }
+  .extension-capability-details > div { grid-template-columns: 1fr; gap: 4px; }
+}
+
 .field {
   display: flex;
   flex-direction: column;

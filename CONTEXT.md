@@ -223,3 +223,24 @@ project-relative outputs without credentials.
 A bounded set of display peaks derived from an audio artifact and cached under
 the owning project. It is keyed by source identity and requested resolution,
 may be deleted safely, and is never the authoritative audio source.
+
+### Operation Audit
+
+A user-requested readiness check for one runtime capability, model, device, and
+output destination. It reports the device the isolated runtime can actually
+use, any CPU fallback, a model recommendation, required remediation, and disk
+headroom without starting the operation.
+
+### Task Diagnostic
+
+The persistent, credential-redacted operational record for a background task:
+status, bounded progress log, checkpoint, valid control actions, and recovery
+route. It is diagnostic state, not the authoritative workflow document or a
+place to store API keys.
+
+### Recovery Route
+
+The native workspace URL and user-facing instruction attached to a task so an
+interrupted or failed operation can return to the owning workflow after an app
+restart. A route provides navigation; workflow checkpoints decide whether work
+can resume or must be rerun.

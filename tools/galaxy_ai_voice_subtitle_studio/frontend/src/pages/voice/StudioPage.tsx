@@ -235,9 +235,12 @@ export function StudioPage() {
               <small>{status?.message ?? 'Đang kiểm tra runtime...'}</small>
             </div>
             {status && !status.installed && (
-              <button className="btn accent" type="button" onClick={() => void installOmniVoiceRuntime()}>
-                Cài runtime
-              </button>
+              <TaskButton
+                label="Cài runtime"
+                variant="accent"
+                onStart={async () => (await installOmniVoiceRuntime()).task_id}
+                onFinish={() => void queryClient.invalidateQueries({ queryKey: ['omnivoice-status'] })}
+              />
             )}
           </section>
 
@@ -414,6 +417,7 @@ export function StudioPage() {
             <AudioPostPanel
               key={latestTake.take_id}
               projectId={latestTake.project_id || projectId}
+              workflowId={latestTake.take_id}
               workspace="studio"
               projectDir={latestTake.project_dir}
               title={latestTake.title}

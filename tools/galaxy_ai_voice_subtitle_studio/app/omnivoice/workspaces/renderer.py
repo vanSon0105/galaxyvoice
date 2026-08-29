@@ -15,6 +15,7 @@ from ...audio_postproduction.service import AudioPostproductionService
 from ...common.errors import TaskCancelledError
 from ...common.ffmpeg import find_ffmpeg
 from ...common.paths import slugify, unique_project_dir
+from ...reliability.service import estimate_audio_bytes, guard_output_space
 from ...voice.audio import concatenate_wavs
 from ...voice.media import _run_command, _run_ffmpeg
 from ...voice.srt import SubtitleCue, render_srt
@@ -91,6 +92,15 @@ def render_longform_plan(
     markup_errors = [issue.message for issue in plan.issues if issue.severity == "error"]
     if markup_errors:
         raise ValueError("Markup biểu cảm chưa hợp lệ: " + "; ".join(markup_errors))
+
+    guard_output_space(
+        base_options.output_dir,
+        required_bytes=estimate_audio_bytes(
+            "\n".join(span.text for span in speech_spans),
+            output_count=1 + int(export_mp3) + int(export_stems) + int(export_m4b),
+            minimum_bytes=512 * 1024 * 1024,
+        ),
+    )
 
     project_dir = (
         _validated_resume_dir(base_options.output_dir, resume_project_dir)

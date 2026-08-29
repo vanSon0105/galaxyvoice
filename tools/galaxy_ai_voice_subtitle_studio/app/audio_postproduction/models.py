@@ -51,6 +51,7 @@ class ExportMetadata:
 @dataclass(frozen=True)
 class AudioExportRequest:
     project_id: str
+    workflow_id: str
     workspace: str
     project_dir: Path
     title: str
@@ -65,6 +66,8 @@ class AudioExportRequest:
     def validate(self) -> None:
         if not self.project_id.strip():
             raise ValueError("project_id is required.")
+        if not self.workflow_id.strip():
+            raise ValueError("workflow_id is required.")
         if not self.workspace.strip():
             raise ValueError("workspace is required.")
         selected = [source for source in self.sources if source.selected]

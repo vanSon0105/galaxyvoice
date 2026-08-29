@@ -26,8 +26,13 @@ export interface AudioExportResult {
   warnings: string[]
 }
 
+export interface AudioExportStart {
+  task_id: string
+}
+
 export interface AudioExportPayload {
   project_id: string
+  workflow_id: string
   workspace: string
   project_dir: string
   title: string
@@ -70,7 +75,7 @@ export const discoverProjectAudio = (projectDir: string) =>
   apiJson<AudioPostSource[]>(`/api/audio-post/sources?project_dir=${encodeURIComponent(projectDir)}`)
 
 export const exportAudio = (body: AudioExportPayload) =>
-  apiJson<AudioExportResult>('/api/audio-post/exports', {
+  apiJson<AudioExportStart>('/api/audio-post/exports', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),

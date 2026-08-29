@@ -166,14 +166,12 @@ export function StudioPage() {
             {status ? status.message : 'Đang kiểm tra…'}
           </span>
           {status && !status.installed && (
-            <button
-              className="btn accent"
-              onClick={() => void installOmniVoiceRuntime().then(() =>
-                queryClient.invalidateQueries({ queryKey: ['omnivoice-status'] }))
-              }
-            >
-              Cài runtime local
-            </button>
+            <TaskButton
+              label="Cài runtime local"
+              variant="accent"
+              onStart={async () => (await installOmniVoiceRuntime()).task_id}
+              onFinish={() => void queryClient.invalidateQueries({ queryKey: ['omnivoice-status'] })}
+            />
           )}
         </div>
       </section>

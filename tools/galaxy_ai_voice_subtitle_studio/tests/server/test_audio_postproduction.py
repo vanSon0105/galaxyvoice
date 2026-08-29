@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import tempfile
+import time
 import unittest
 import wave
 from pathlib import Path
@@ -66,6 +67,7 @@ class AudioPostproductionApiTests(unittest.TestCase):
                     "/api/audio-post/exports",
                     json={
                         "project_id": "project-1",
+                        "workflow_id": "take-1",
                         "workspace": "studio",
                         "project_dir": str(project),
                         "title": "Final",
@@ -73,13 +75,23 @@ class AudioPostproductionApiTests(unittest.TestCase):
                         "formats": ["wav"],
                     },
                 )
+                self.assertEqual(response.status_code, 200)
+                task_id = response.json()["task_id"]
+                deadline = time.monotonic() + 2
+                task = client.get(f"/api/tasks/{task_id}").json()
+                while task["status"] not in {"done", "failed"} and time.monotonic() < deadline:
+                    time.sleep(0.01)
+                    task = client.get(f"/api/tasks/{task_id}").json()
 
-            self.assertEqual(response.status_code, 200)
+            self.assertEqual(task["status"], "done")
+            self.assertIn("project_dir=", task["result"]["media_urls"]["wav"])
+            self.assertNotIn("project with space", task["result"]["media_urls"]["wav"])
             mapped = service.export.call_args.args[0]
             self.assertEqual(mapped.project_id, "project-1")
+            self.assertEqual(mapped.workflow_id, "take-1")
             self.assertEqual(mapped.sources[0].source_id, "voice")
-            self.assertIn("project_dir=", response.json()["media_urls"]["wav"])
-            self.assertNotIn("project with space", response.json()["media_urls"]["wav"])
+            result = service.export.call_args
+            self.assertIsNotNone(result.kwargs["stop_event"])
 
 
 if __name__ == "__main__":

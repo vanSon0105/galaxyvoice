@@ -87,8 +87,8 @@ export const startSubtitleRemoval = (
     body: JSON.stringify(payload),
   })
 
-export const installProPainter = (device: string): Promise<{ ok: boolean }> =>
-  apiJson<{ ok: boolean }>('/api/removal/install', {
+export const installProPainter = (device: string): Promise<{ task_id: string }> =>
+  apiJson<{ task_id: string }>('/api/removal/install', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ device }),

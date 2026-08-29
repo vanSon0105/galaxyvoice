@@ -48,7 +48,7 @@ def _repository(request: Request) -> StudioTakeRepository:
 
 def _progress(record: TaskRecord):
     def report(message: str) -> None:
-        event_bus.emit({"type": "progress", "task_id": record.task_id, "message": message})
+        task_registry.report(record.task_id, message)
 
     return report
 
@@ -129,6 +129,7 @@ def _start(request: Request, spec: StudioGenerationSpec, *, rerun_of: str = "") 
     record = task_registry.create(
         "studio-generate",
         capability_id="tts.omnivoice",
+        project_id=spec.project_id,
         resource_keys=resource_keys_for_device(spec.device),
     )
     record.on_cancel = lambda: _task_coordinator.cancel(record.task_id)

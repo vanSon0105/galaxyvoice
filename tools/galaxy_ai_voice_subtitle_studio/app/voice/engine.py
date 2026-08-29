@@ -11,6 +11,7 @@ from typing import Callable
 from .audio import concatenate_wavs, try_convert_to_mp3
 from ..common.errors import TaskCancelledError
 from ..common.paths import unique_project_dir
+from ..reliability.service import estimate_audio_bytes, guard_output_space
 from .srt import SubtitleCue, render_srt
 from .text_splitter import split_text
 from .tts import EdgeTTS, TTSEngine
@@ -54,6 +55,14 @@ def generate_package(
     chunks = split_text(options.text, max_chars=options.max_chars)
     if not chunks:
         raise ValueError("Script is empty.")
+
+    guard_output_space(
+        options.output_dir,
+        required_bytes=estimate_audio_bytes(
+            options.text,
+            output_count=2 + int(options.export_mp3),
+        ),
+    )
 
     tts_engine = tts or EdgeTTS()
     if not tts_engine.available():

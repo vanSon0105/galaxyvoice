@@ -10,6 +10,8 @@ import {
   fetchDubbingPlan,
   fetchDubbingProject,
   fetchDubbingProjects,
+  saveDubbingProject,
+  startDubbingTranslation,
   type DubbingProject,
   type DubbingQualityReport,
   type DubbingSegment,
@@ -36,6 +38,8 @@ vi.mock('../../api/workspaces', async () => {
     fetchDubbingProjects: vi.fn(),
     fetchDubbingProject: vi.fn(),
     fetchResumeJobs: vi.fn().mockResolvedValue([]),
+    saveDubbingProject: vi.fn(),
+    startDubbingTranslation: vi.fn(),
   }
 })
 
@@ -116,6 +120,29 @@ describe('native Dubbing workspace', () => {
 
     expect(await screen.findByText('Đoạn lồng tiếng (500)')).toBeInTheDocument()
     expect(view.container.querySelectorAll('.dubbing-segment-row').length).toBeLessThan(20)
+  })
+
+  it('saves an ingest checkpoint before starting AI translation', async () => {
+    vi.mocked(saveDubbingProject).mockResolvedValue({
+      project_id: 'checkpoint-1', galaxy_project_id: '', name: 'dubbing', stage: 'ingest', revision: 1,
+      source_srt: 'source', translated_srt: '', source_video: '', source_audio: '', language: 'vi',
+      segment_count: 0, segments: [], options: {}, quality: {}, last_result: {},
+      created_at: '2026-08-29T00:00:00Z', updated_at: '2026-08-29T00:00:00Z',
+    })
+    vi.mocked(startDubbingTranslation).mockResolvedValue({ task_id: 'translate-1' })
+    renderPage()
+    fireEvent.change(screen.getByPlaceholderText(/Lan: Hello/), { target: { value: 'source' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Dịch bằng AI' }))
+
+    await waitFor(() => expect(startDubbingTranslation).toHaveBeenCalled())
+    expect(vi.mocked(saveDubbingProject).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(startDubbingTranslation).mock.invocationCallOrder[0])
+    expect(vi.mocked(saveDubbingProject).mock.calls[0][0]).toMatchObject({
+      stage: 'ingest', source_srt: 'source', segments: [],
+    })
+    expect(vi.mocked(startDubbingTranslation).mock.calls[0][0]).toMatchObject({
+      workflow_id: 'checkpoint-1', source_srt: 'source',
+    })
   })
 
   it('restores non-secret render and translation settings from a saved checkpoint', async () => {

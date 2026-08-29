@@ -1,26 +1,53 @@
+import { Link } from 'react-router-dom'
+
 import { useT } from '../i18n/useT'
 import { useTasks } from '../ws/useTasks'
-import { isTaskActive } from '../ws/types'
+import { taskRecoveryRoute } from './taskRecovery'
 
-/** Bottom panel listing running/recent tasks with progress tail + cancel. */
 export function ProgressPanel() {
-  const { tasks, cancelTask } = useTasks()
+  const { tasks, pauseTask, resumeTask, cancelTask } = useTasks()
   const t = useT()
   if (tasks.length === 0) return null
   return (
-    <footer className="progress-panel" aria-label="Tasks">
+    <footer className="progress-panel" aria-label="Tác vụ và tiến trình">
       {tasks.map((task) => (
-        <div className="task-row" key={task.taskId}>
-          <span className="task-status">{t(`task.${task.status}`)}</span>
-          <span className="task-lines" title={task.lines.join('\n')}>
-            {task.lines.length > 0 ? task.lines[task.lines.length - 1] : task.error ?? ''}
-          </span>
-          {isTaskActive(task.status) && (
-            <button className="btn danger" onClick={() => void cancelTask(task.taskId)}>
-              {t('task.cancel')}
-            </button>
-          )}
-        </div>
+        <details
+          className="task-row"
+          key={task.taskId}
+          open={task.status === 'failed' || task.status === 'interrupted'}
+        >
+          <summary>
+            <span className="task-kind">{task.kind}</span>
+            <span className={`task-status ${task.status}`}>{t(`task.${task.status}`)}</span>
+            <span className="task-lines">
+              {task.message || task.lines.at(-1) || task.error || task.recoveryHint || ''}
+            </span>
+            {task.progress !== undefined && (
+              <progress value={task.progress} max={1} aria-label={`Tiến trình ${task.kind}`} />
+            )}
+          </summary>
+          <div className="task-detail">
+            {task.lines.length > 0 && <pre>{task.lines.join('\n')}</pre>}
+            {task.error && <p className="field-error" role="alert">{task.error}</p>}
+            {task.recoveryHint && <p>{task.recoveryHint}</p>}
+            <div className="task-actions">
+              {task.canPause && (
+                <button className="btn" onClick={() => void pauseTask(task.taskId)}>Tạm dừng</button>
+              )}
+              {task.canResume && (
+                <button className="btn primary" onClick={() => void resumeTask(task.taskId)}>Tiếp tục</button>
+              )}
+              {task.canCancel && (
+                <button className="btn danger" onClick={() => void cancelTask(task.taskId)}>
+                  {t('task.cancel')}
+                </button>
+              )}
+              {task.recoveryRoute && !task.canCancel && (
+                <Link className="btn" to={taskRecoveryRoute(task)}>Mở nơi phục hồi</Link>
+              )}
+            </div>
+          </div>
+        </details>
       ))}
     </footer>
   )

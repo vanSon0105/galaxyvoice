@@ -52,13 +52,30 @@ def _tts_preflight(engine_code: str, request: PreflightRequest) -> PreflightResu
 
 
 def _omnivoice_preflight(request: PreflightRequest) -> PreflightResult:
-    from ..omnivoice.runtime import OmniVoiceRuntime, inspect_runtime
+    from ..omnivoice.runtime import OmniVoiceRuntime, inspect_runtime, inspect_runtime_devices
 
     status = inspect_runtime(OmniVoiceRuntime.default())
-    device = request.device if request.device != "auto" else "cpu"
+    if not status.installed:
+        return _simple_result(request, ready=False, message=status.message)
+    devices = inspect_runtime_devices(OmniVoiceRuntime.default())
+    fallback_device = next(
+        (item for item in ("cuda", "xpu", "cpu") if item in devices),
+        "cpu",
+    )
+    device = fallback_device if request.device == "auto" else request.device
+    if request.device != "auto" and device not in devices:
+        return _simple_result(
+            request,
+            ready=False,
+            message=(
+                f"OmniVoice runtime không dùng được {device.upper()}. "
+                f"Thiết bị hiện có: {', '.join(devices).upper()}."
+            ),
+            resolved_device=fallback_device,
+        )
     return _simple_result(
         request,
-        ready=status.installed,
+        ready=True,
         message=status.message,
         resolved_device=device,
     )
@@ -101,15 +118,26 @@ def _diarization_preflight(request: PreflightRequest) -> PreflightResult:
         ),
         "",
     )
+    from ..transcripts.service import available_diarization_devices
+
+    available_devices = set(available_diarization_devices())
+    resolved_device = (
+        "cuda" if request.device == "auto" and "cuda" in available_devices
+        else "cpu" if request.device == "auto"
+        else request.device
+    )
+    device_ready = resolved_device in available_devices
     return _simple_result(
         request,
-        ready=bool(token),
+        ready=bool(token) and device_ready,
         message=(
-            "Speaker diarization is ready."
+            f"Speaker diarization is ready on {resolved_device.upper()}."
+            if token and device_ready
+            else f"Speaker diarization cannot use {resolved_device.upper()} on this machine."
             if token
             else "A Hugging Face token is required for speaker diarization."
         ),
-        resolved_device=request.device,
+        resolved_device=resolved_device,
     )
 
 
@@ -131,18 +159,36 @@ def _translation_preflight(provider_code: str, request: PreflightRequest) -> Pre
 
 
 def _audio_separation_preflight(request: PreflightRequest) -> PreflightResult:
-    from ..audio_separation.service import audio_separator_runtime_ready
+    from ..audio_separation.service import audio_separator_runtime_ready, resolve_audio_device
 
     method = request.options.get("method", "mdx")
+    try:
+        resolved_device = resolve_audio_device(request.device, method)
+    except RuntimeError as error:
+        return _simple_result(
+            request,
+            ready=False,
+            message=str(error),
+            resolved_device="cpu",
+        )
     ready, message = audio_separator_runtime_ready(
-        processing_device=request.device,
+        processing_device=resolved_device,
         method=method,
     )
+    if not ready and request.device == "auto" and resolved_device != "cpu":
+        cpu_ready, cpu_message = audio_separator_runtime_ready(
+            processing_device="cpu",
+            method=method,
+        )
+        if cpu_ready:
+            ready = True
+            resolved_device = "cpu"
+            message = f"{message} Falling back to CPU. {cpu_message}"
     return _simple_result(
         request,
         ready=ready,
         message=message,
-        resolved_device=request.device,
+        resolved_device=resolved_device,
     )
 
 

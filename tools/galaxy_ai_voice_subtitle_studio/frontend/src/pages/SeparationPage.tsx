@@ -566,13 +566,22 @@ export function SeparationPage() {
               >
                 Kiểm tra lại
               </button>
-              <button
-                className="btn"
+              <TaskButton
+                label="Cài / cập nhật engine"
                 disabled={!meta?.installer_available}
-                onClick={() => void installAudioRuntime(selectedRuntimeDevice).then(() => setMessage('Đã mở bộ cài runtime trong cửa sổ riêng.')).catch((error: unknown) => setMessage(error instanceof Error ? error.message : String(error)))}
-              >
-                Cài / cập nhật engine
-              </button>
+                onStart={async () => (await installAudioRuntime(selectedRuntimeDevice)).task_id}
+                onFinish={(task) => {
+                  if (task.status === 'done') {
+                    setMessage('Audio separator runtime đã sẵn sàng.')
+                    void queryClient.invalidateQueries({ queryKey: ['audio-runtime'] })
+                    void queryClient.invalidateQueries({ queryKey: ['audio-models'] })
+                  } else if (task.status === 'cancelled') {
+                    setMessage('Đã hủy cài audio separator runtime.')
+                  } else {
+                    setMessage(task.error || 'Cài audio separator runtime thất bại.')
+                  }
+                }}
+              />
             </div>
           </section>
 

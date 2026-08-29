@@ -8,9 +8,12 @@ import {
   type AudioFormat,
   type AudioPostSource,
 } from '../../api/audioPost'
+import type { TaskState } from '../../ws/useTasks'
+import { TaskButton } from '../TaskButton'
 
 interface Props {
   projectId: string
+  workflowId: string
   workspace: string
   projectDir: string
   title: string
@@ -22,7 +25,7 @@ interface SourceState extends AudioPostSource {
   gain_db: number
 }
 
-export function AudioPostPanel({ projectId, workspace, projectDir, title, sources }: Props) {
+export function AudioPostPanel({ projectId, workflowId, workspace, projectDir, title, sources }: Props) {
   const [sourceState, setSourceState] = useState<SourceState[]>(() =>
     sources.map((source, index) => ({ ...source, selected: source.selected ?? index === 0, gain_db: source.gain_db ?? 0 })),
   )
@@ -43,6 +46,7 @@ export function AudioPostPanel({ projectId, workspace, projectDir, title, source
   const [album, setAlbum] = useState('')
   const [waveform, setWaveform] = useState<number[]>([])
   const [durationMs, setDurationMs] = useState(0)
+  const [playheadMs, setPlayheadMs] = useState(0)
   const [busy, setBusy] = useState(false)
   const [message, setMessage] = useState('')
   const [result, setResult] = useState<AudioExportResult | null>(null)
@@ -77,19 +81,36 @@ export function AudioPostPanel({ projectId, workspace, projectDir, title, source
   const seekWaveform = (event: React.MouseEvent<HTMLDivElement>) => {
     if (!audioRef.current || !durationMs) return
     const ratio = (event.clientX - event.currentTarget.getBoundingClientRect().left) / event.currentTarget.clientWidth
-    audioRef.current.currentTime = Math.max(0, Math.min(1, ratio)) * durationMs / 1000
+    const nextMs = Math.max(0, Math.min(1, ratio)) * durationMs
+    audioRef.current.currentTime = nextMs / 1000
+    setPlayheadMs(nextMs)
   }
 
-  const runExport = async () => {
+  const seekWaveformByKeyboard = (event: React.KeyboardEvent<HTMLDivElement>) => {
+    if (!audioRef.current || !durationMs) return
+    const currentMs = audioRef.current.currentTime * 1000
+    const stepMs = event.shiftKey ? 10_000 : 1_000
+    let nextMs = currentMs
+    if (event.key === 'ArrowLeft') nextMs -= stepMs
+    else if (event.key === 'ArrowRight') nextMs += stepMs
+    else if (event.key === 'Home') nextMs = 0
+    else if (event.key === 'End') nextMs = durationMs
+    else return
+    event.preventDefault()
+    const bounded = Math.max(0, Math.min(durationMs, nextMs))
+    audioRef.current.currentTime = bounded / 1000
+    setPlayheadMs(bounded)
+  }
+
+  const startExport = async () => {
     if (!formats.length) {
       setMessage('Chọn ít nhất một định dạng.')
-      return
+      throw new Error('Chọn ít nhất một định dạng.')
     }
-    setBusy(true)
     setMessage('Đang hậu kỳ và xuất audio...')
-    try {
-      const completed = await exportAudio({
+    const started = await exportAudio({
         project_id: projectId,
+        workflow_id: workflowId,
         workspace,
         project_dir: projectDir,
         title,
@@ -121,14 +142,21 @@ export function AudioPostPanel({ projectId, workspace, projectDir, title, source
         sample_rate: 48_000,
         channels: 2,
         bitrate_kbps: 192,
-      })
-      setResult(completed)
+    })
+    return started.task_id
+  }
+
+  const finishExport = (task: TaskState) => {
+    if (task.status === 'done' && task.result) {
+      setResult(task.result as AudioExportResult)
       setMessage('Đã xuất và ghi manifest vào project.')
-    } catch (error) {
-      setMessage(error instanceof Error ? error.message : String(error))
-    } finally {
-      setBusy(false)
+      return
     }
+    if (task.status === 'cancelled') {
+      setMessage('Đã hủy xuất audio.')
+      return
+    }
+    setMessage(task.error || 'Xuất audio thất bại.')
   }
 
   const expandPanel = async () => {
@@ -150,8 +178,19 @@ export function AudioPostPanel({ projectId, workspace, projectDir, title, source
     <details className="audio-post section-card" open={expanded} onToggle={(event) => setExpanded(event.currentTarget.open)}>
       <summary onClick={() => { if (!expanded) void expandPanel() }}><span>Hậu kỳ & xuất audio</span><small>Gain, mastering, waveform, stem và metadata</small></summary>
       {expanded && <div className="audio-post-body">
-        {previewSource?.preview_url && <audio ref={audioRef} controls preload="metadata" src={previewSource.preview_url} />}
-        <div className="audio-waveform" role="button" tabIndex={0} onClick={seekWaveform} onKeyDown={() => undefined} aria-label="Dạng sóng audio">
+        {previewSource?.preview_url && <audio ref={audioRef} controls preload="metadata" src={previewSource.preview_url} onTimeUpdate={(event) => setPlayheadMs(event.currentTarget.currentTime * 1000)} />}
+        <div
+          className="audio-waveform"
+          role="slider"
+          tabIndex={previewSource?.preview_url ? 0 : -1}
+          onClick={seekWaveform}
+          onKeyDown={seekWaveformByKeyboard}
+          aria-label="Vị trí phát audio"
+          aria-valuemin={0}
+          aria-valuemax={durationMs}
+          aria-valuenow={Math.round(playheadMs)}
+          aria-valuetext={`${(playheadMs / 1000).toFixed(1)} giây`}
+        >
           {waveform.length
             ? waveform.map((peak, index) => <i key={index} style={{ height: `${Math.max(3, peak * 100)}%` }} />)
             : <button className="btn quiet" type="button" disabled={busy || !previewSource} onClick={(event) => { event.stopPropagation(); void loadWaveform() }}>Tải dạng sóng</button>}
@@ -186,7 +225,12 @@ export function AudioPostPanel({ projectId, workspace, projectDir, title, source
           {(['wav', 'mp3', 'flac', 'm4a'] as AudioFormat[]).map((format) => <label key={format}><input type="checkbox" checked={formats.includes(format)} onChange={() => toggleFormat(format)} /> {format.toUpperCase()}</label>)}
         </div>
         <div className="audio-post-actions">
-          <button className="btn accent" type="button" disabled={busy} onClick={() => void runExport()}>{busy ? 'Đang xử lý...' : 'Xuất bản hậu kỳ'}</button>
+          <TaskButton
+            label="Xuất bản hậu kỳ"
+            variant="accent"
+            onStart={startExport}
+            onFinish={finishExport}
+          />
           {result && Object.entries(result.media_urls).map(([format, url]) => <a className="btn" key={format} href={`${url}&download=true`}>Tải {format.toUpperCase()}</a>)}
         </div>
         {result && (result.media_urls.mp3 || result.media_urls.wav || result.media_urls.m4a || result.media_urls.flac) && <audio controls preload="metadata" src={result.media_urls.mp3 || result.media_urls.wav || result.media_urls.m4a || result.media_urls.flac} />}

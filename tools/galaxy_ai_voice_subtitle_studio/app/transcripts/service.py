@@ -13,6 +13,7 @@ from uuid import uuid4
 from ..common.compute import AUTO_DEVICE, normalize_processing_device, resolve_whisper_runtime
 from ..common.errors import TaskCancelledError
 from ..common.ffmpeg import ffmpeg_missing_message, find_ffmpeg
+from ..reliability.service import guard_output_space
 from ..voice.media import _run_command, _run_ffmpeg, build_extract_wav_command
 from ..voice.srt import SubtitleCue, format_timestamp, parse_srt, render_srt
 from .models import (
@@ -34,6 +35,33 @@ class SpeakerTurn:
     speaker_id: str
     start_ms: int
     end_ms: int
+
+
+def available_diarization_devices() -> tuple[str, ...]:
+    """Report devices exposed by the same PyTorch runtime pyannote will use."""
+
+    devices = ["cpu"]
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            devices.insert(0, "cuda")
+    except Exception:
+        pass
+    return tuple(devices)
+
+
+def resolve_diarization_device(requested: str) -> str:
+    devices = available_diarization_devices()
+    normalized = normalize_processing_device(requested)
+    if normalized == AUTO_DEVICE:
+        return "cuda" if "cuda" in devices else "cpu"
+    if normalized not in devices:
+        raise RuntimeError(
+            f"Pyannote không dùng được {normalized.upper()}; "
+            f"thiết bị hiện có: {', '.join(devices).upper()}."
+        )
+    return normalized
 
 
 def format_vtt_timestamp(milliseconds: int) -> str:
@@ -174,6 +202,13 @@ class TranscriptService:
         if not path.is_file():
             raise FileNotFoundError(f"Không tìm thấy file media: {path}")
 
+        guard_output_space(
+            Path(tempfile.gettempdir()),
+            source_paths=(path,),
+            minimum_mib=512,
+            multiplier=2.5,
+        )
+
         ffmpeg = find_ffmpeg()
         if not ffmpeg:
             raise RuntimeError(ffmpeg_missing_message("phiên âm audio/video"))
@@ -210,7 +245,7 @@ class TranscriptService:
                 report("Đang phân tách người nói (diarization)...")
                 turns, diarization_state, warning = self._diarize(
                     audio_path,
-                    device=resolved_device,
+                    device=device,
                     stop_event=stop_event,
                 )
                 if warning:
@@ -794,13 +829,15 @@ class TranscriptService:
             import torch
             from pyannote.audio import Pipeline
 
+            resolved_device = resolve_diarization_device(device)
+
             pipeline = Pipeline.from_pretrained(
                 "pyannote/speaker-diarization-3.1",
                 use_auth_token=token,
             )
             if pipeline is None:
                 raise RuntimeError("Không tải được model pyannote/speaker-diarization-3.1.")
-            if device == "cuda" and torch.cuda.is_available():
+            if resolved_device == "cuda":
                 pipeline.to(torch.device("cuda"))
             result = pipeline(str(audio_path))
             annotation = getattr(result, "speaker_diarization", result)

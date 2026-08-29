@@ -153,7 +153,7 @@ def import_media(body: ImportMediaRequest, request: Request) -> dict[str, str]:
         resource_keys=resource_keys_for_device(body.device),
     )
 
-    def operation(context: TaskContext) -> dict[str, Any]:
+    def operation(context: TaskContext) -> TranscriptProject:
         project = _service(request).import_media(
             project_id=body.project_id,
             media_path=media,
@@ -165,7 +165,7 @@ def import_media(body: ImportMediaRequest, request: Request) -> dict[str, str]:
             progress=lambda msg: context.report(msg),
             stop_event=record.stop_event,
         )
-        return project.to_dict(include_cues=True)
+        return project
 
     task_registry.submit(record, operation, lambda project: project.to_dict(include_cues=False))
     event_bus.emit(

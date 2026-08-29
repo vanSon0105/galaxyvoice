@@ -131,7 +131,7 @@ def _longform_repository(request: Request) -> LongformProjectRepository:
 
 def _progress(record: TaskRecord):
     def report(message: str) -> None:
-        event_bus.emit({"type": "progress", "task_id": record.task_id, "message": message})
+        task_registry.report(record.task_id, message)
 
     return report
 
@@ -786,6 +786,8 @@ def dubbing_quality(body: DubbingQualityRequest) -> dict[str, Any]:
 
 
 class DubbingTranslateRequest(BaseModel):
+    galaxy_project_id: str = ""
+    workflow_id: str = ""
     source_srt: str
     source_language: str = "auto"
     target_language: str = "vi"
@@ -817,7 +819,12 @@ def translate_dubbing(body: DubbingTranslateRequest, request: Request) -> dict[s
         raise HTTPException(status_code=422, detail=str(error)) from error
     # Re-running the request resumes from the deterministic translation checkpoint.
     # The in-memory task itself cannot be restored safely after an app restart.
-    record = task_registry.create("dubbing-translate", resumable=False)
+    record = task_registry.create(
+        "dubbing-translate",
+        resumable=False,
+        project_id=body.galaxy_project_id,
+        workflow_id=body.workflow_id,
+    )
     checkpoint_path = translation_checkpoint_path(
         _settings_path(request).with_name("cache") / "dubbing",
         source,
@@ -951,13 +958,20 @@ def render(request_body: RenderRequest, request: Request) -> dict[str, Any]:
         profiles_dir=runtime.profiles_dir,
     )
     profiles = list_voice_profiles(runtime.profiles_dir)
+    recovery_project_id = ""
+    recovery_workflow_id = request_body.project_id
+    if request_body.kind == "dubbing" and request_body.project_id:
+        saved_dubbing = _dubbing_repository(request).get(request_body.project_id)
+        recovery_project_id = saved_dubbing.galaxy_project_id if saved_dubbing else ""
+    elif longform_project is not None:
+        recovery_project_id = longform_project.galaxy_project_id
     record = task_registry.create(
         "workspace-render",
         capability_id="tts.omnivoice",
         resumable=not is_longform_preview,
         resource_keys=resource_keys_for_device(request_body.device),
-        project_id=request_body.project_id,
-        workflow_id="dubbing" if request_body.kind == "dubbing" else request_body.kind,
+        project_id=recovery_project_id,
+        workflow_id=recovery_workflow_id,
     )
     record.on_cancel = lambda: _task_coordinator.cancel(record.task_id)
     resume_dir = (

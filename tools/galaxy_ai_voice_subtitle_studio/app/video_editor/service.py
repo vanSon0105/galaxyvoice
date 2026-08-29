@@ -16,6 +16,7 @@ from ..common.compute import detect_nvidia_hardware
 from ..common.ffmpeg import ffmpeg_missing_message, find_ffmpeg, find_ffprobe
 from ..common.paths import unique_project_dir
 from ..common.processes import managed_media_processes, terminate_process_tree
+from ..reliability.service import estimate_video_working_bytes, guard_output_space
 from ..voice.srt import SubtitleCue, parse_srt, render_srt
 from .model import normalize_cues
 
@@ -481,6 +482,9 @@ def export_editor_video(
         raise FileNotFoundError(f"Video file not found: {video_path}")
     if options.audio_path is not None and not Path(options.audio_path).expanduser().is_file():
         raise FileNotFoundError(f"Audio file not found: {options.audio_path}")
+    source_paths = (video_path,) + (
+        (Path(options.audio_path).expanduser(),) if options.audio_path is not None else ()
+    )
     ffmpeg = ffmpeg_path or find_ffmpeg()
     if not ffmpeg:
         raise RuntimeError(ffmpeg_missing_message("export an edited video"))
@@ -488,6 +492,19 @@ def export_editor_video(
     media = probe_editor_media(video_path)
     segments = _normalized_video_segments(options.video_segments, media)
     timeline_duration_seconds = sum(segment.duration_ms for segment in segments) / 1000
+    target_size = EDITOR_RESOLUTIONS.get(options.resolution) or (media.width, media.height)
+    target_fps = media.fps if options.fps == SOURCE_FPS else float(options.fps)
+    guard_output_space(
+        options.output_dir,
+        source_paths=source_paths,
+        required_bytes=estimate_video_working_bytes(
+            source_paths,
+            duration_seconds=timeline_duration_seconds,
+            width=target_size[0],
+            height=target_size[1],
+            fps=target_fps,
+        ),
+    )
     if (
         options.audio_path is not None
         and max(0, int(options.audio_offset_ms)) >= round(timeline_duration_seconds * 1000)

@@ -14,6 +14,7 @@ from ..common.ffmpeg import ffmpeg_missing_message, find_ffmpeg, find_ffprobe
 from ..common.errors import TaskCancelledError
 from ..common.paths import unique_project_dir
 from ..common.processes import managed_media_processes
+from ..reliability.service import guard_output_space
 from .propainter import (
     FAST_CHUNK_SECONDS,
     FAST_AI_PROFILE,
@@ -93,6 +94,12 @@ def remove_subtitles_from_video(
     source_path = Path(options.video_path).expanduser()
     if not source_path.is_file():
         raise FileNotFoundError(f"Video file not found: {source_path}")
+    guard_output_space(
+        options.output_dir,
+        source_paths=(source_path,),
+        minimum_mib=512,
+        multiplier=1.8,
+    )
     if options.mode not in SUBTITLE_REMOVAL_MODES:
         raise ValueError(f"Unknown subtitle removal mode: {options.mode}")
     if options.mode != STRIP_MODE:

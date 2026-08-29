@@ -27,7 +27,6 @@ from ...video_editor.service import (
     probe_editor_media,
 )
 from ...voice.srt import SubtitleCue
-from ..event_bus import event_bus
 from ...runtime.resources import resource_keys_for_device
 from ..tasks import TaskRecord, run_task, task_registry
 
@@ -110,7 +109,7 @@ def _register_source(path: Path) -> tuple[str, str]:
 
 def _progress(record: TaskRecord):
     def report(message: str) -> None:
-        event_bus.emit({"type": "progress", "task_id": record.task_id, "message": message})
+        task_registry.report(record.task_id, message)
 
     return report
 

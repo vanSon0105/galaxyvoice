@@ -40,6 +40,7 @@ export function DubbingPage() {
   const [searchParams] = useSearchParams()
   const queryClient = useQueryClient()
   const handoffApplied = useRef('')
+  const recoveryApplied = useRef('')
   const activeRenderProject = useRef('')
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
   const metaQuery = useQuery({ queryKey: ['settings-meta'], queryFn: fetchSettingsMeta })
@@ -198,6 +199,22 @@ export function DubbingPage() {
     try { applyProject(await fetchDubbingProject(id)) } catch (cause) { showError(cause) }
   }
 
+  const applyRecoveryProject = useRef(applyProject)
+  applyRecoveryProject.current = applyProject
+  useEffect(() => {
+    const workflowId = searchParams.get('workflow_id') ?? ''
+    const recoveryProjectId = searchParams.get('project_id') ?? ''
+    if (recoveryProjectId && galaxyProjectId !== recoveryProjectId) return
+    if (!workflowId || recoveryApplied.current === workflowId) return
+    recoveryApplied.current = workflowId
+    void fetchDubbingProject(workflowId)
+      .then((project) => applyRecoveryProject.current(project))
+      .catch((cause) => {
+        recoveryApplied.current = ''
+        showError(cause)
+      })
+  }, [galaxyProjectId, searchParams])
+
   const handlePlan = async () => {
     try {
       const plan = await fetchDubbingPlan(sourceSrt, translatedSrt)
@@ -212,7 +229,10 @@ export function DubbingPage() {
   const handleTranslateStart = async () => {
     if (!sourceSrt.trim()) throw new Error('Hãy nhập sub gốc trước.')
     if (apiKey.trim()) await saveTranslationApiKey(provider, apiKey)
+    const checkpoint = await saveProject(false)
     const response = await startDubbingTranslation({
+      galaxy_project_id: galaxyProjectId,
+      workflow_id: checkpoint.project_id,
       source_srt: sourceSrt,
       source_language: sourceLanguage,
       target_language: language,
@@ -249,14 +269,14 @@ export function DubbingPage() {
     } catch (cause) { showError(cause); throw cause }
   }
 
-  const saveProject = async () => {
-    if (!segments.length) throw new Error('Hãy tạo kế hoạch trước khi lưu project.')
+  const saveProject = async (requirePlan = true) => {
+    if (requirePlan && !segments.length) throw new Error('Hãy tạo kế hoạch trước khi lưu project.')
     const saved = await saveDubbingProject({
       galaxy_project_id: galaxyProjectId,
       project_id: projectId || undefined,
       expected_revision: revision,
       name: projectName || 'dubbing',
-      stage: quality ? 'qc' : segments.every((item) => item.profile_id) ? 'cast' : translatedSrt ? 'translation' : 'ingest',
+      stage: quality ? 'qc' : segments.length && segments.every((item) => item.profile_id) ? 'cast' : translatedSrt ? 'translation' : 'ingest',
       source_srt: sourceSrt,
       translated_srt: translatedSrt,
       source_video: sourceVideo,
@@ -463,7 +483,7 @@ export function DubbingPage() {
     </>}
 
     {result && <section className="section-card dubbing-result"><div><span className="workspace-kicker">RESULT</span><h2 className="section-title">Bản lồng tiếng hoàn chỉnh</h2></div>{resultVideoUrl && <video controls preload="metadata" src={resultVideoUrl} />}{resultAudioUrl && <audio controls preload="metadata" src={resultAudioUrl} />}<div className="dubbing-result-files">{result.video_path && <p>Video: {result.video_path}</p>}<p>WAV: {result.wav_path}</p><p>SRT: {result.srt_path}</p></div></section>}
-    {result && (activeRenderProject.current || projectId) && <AudioPostPanel key={result.manifest_path} projectId={activeRenderProject.current || projectId} workspace="dubbing" projectDir={result.project_dir} title={projectName || 'Bản lồng tiếng'} sources={[...(result.mixed_audio_path ? [{ source_id: 'mixed', label: 'Bản đã trộn', path: result.mixed_audio_path, role: 'mix', preview_url: resultAudioUrl, selected: true }] : []), { source_id: 'voice', label: 'Voice lồng tiếng', path: result.wav_path, role: 'voice', preview_url: result.mixed_audio_path ? undefined : resultAudioUrl, selected: !result.mixed_audio_path }, ...(sourceAudio ? [{ source_id: 'source-audio', label: 'Audio/stem nguồn', path: sourceAudio, role: 'background', selected: false }] : [])]} />}
+    {result && (activeRenderProject.current || projectId) && <AudioPostPanel key={result.manifest_path} projectId={galaxyProjectId} workflowId={activeRenderProject.current || projectId} workspace="dubbing" projectDir={result.project_dir} title={projectName || 'Bản lồng tiếng'} sources={[...(result.mixed_audio_path ? [{ source_id: 'mixed', label: 'Bản đã trộn', path: result.mixed_audio_path, role: 'mix', preview_url: resultAudioUrl, selected: true }] : []), { source_id: 'voice', label: 'Voice lồng tiếng', path: result.wav_path, role: 'voice', preview_url: result.mixed_audio_path ? undefined : resultAudioUrl, selected: !result.mixed_audio_path }, ...(sourceAudio ? [{ source_id: 'source-audio', label: 'Audio/stem nguồn', path: sourceAudio, role: 'background', selected: false }] : [])]} />}
   </div>
 }
 

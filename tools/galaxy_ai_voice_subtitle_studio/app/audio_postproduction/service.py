@@ -5,6 +5,7 @@ import math
 import re
 import shutil
 import subprocess
+import threading
 import uuid
 import wave
 from array import array
@@ -15,7 +16,10 @@ from typing import Callable
 
 from ..common.cache import file_digest, read_json, stable_digest, write_json_atomic
 from ..common.ffmpeg import find_ffmpeg, find_ffprobe
+from ..common.errors import TaskCancelledError
 from ..common.paths import slugify
+from ..common.processes import managed_media_processes
+from ..reliability.service import estimate_media_working_bytes, guard_output_space
 from .models import AudioExportRequest, AudioExportResult, AudioSource, WaveformData
 
 
@@ -36,6 +40,7 @@ class AudioPostproductionService:
     ) -> None:
         self.ffmpeg = ffmpeg or find_ffmpeg()
         self.ffprobe = ffprobe or find_ffprobe()
+        self._custom_runner = runner is not None
         self._runner = runner or self._run
         self._probe = probe or self._probe_audio
 
@@ -83,27 +88,58 @@ class AudioPostproductionService:
         ])
         return temporary
 
-    def export(self, request: AudioExportRequest) -> AudioExportResult:
+    def export(
+        self,
+        request: AudioExportRequest,
+        *,
+        progress: Callable[[str, float], None] | None = None,
+        stop_event: threading.Event | None = None,
+        task_id: str | None = None,
+    ) -> AudioExportResult:
         request.validate()
+        selected = tuple(source for source in request.sources if source.selected)
+        formats = tuple(dict.fromkeys(item.casefold() for item in request.formats))
+        guard_output_space(
+            request.project_dir,
+            source_paths=tuple(source.path for source in selected),
+            required_bytes=estimate_media_working_bytes(
+                tuple(source.path for source in selected),
+                sample_rate=request.sample_rate,
+                channels=request.channels,
+                working_copies=1 + len(formats),
+                minimum_bytes=512 * 1024 * 1024,
+            ),
+        )
         project_dir = self._ensure_project_dir(request.project_dir)
         self._bind_project_identity(project_dir, request.project_id, request.workspace)
         if not self.ffmpeg:
             raise ValueError("ffmpeg is required for audio postproduction.")
+        report = progress or (lambda _message, _value: None)
+        self._check_cancelled(stop_event)
         export_id = uuid.uuid4().hex
         export_dir = project_dir / "exports" / "audio" / export_id
         export_dir.mkdir(parents=True, exist_ok=False)
         title_slug = slugify(request.title) or "audio-export"
-        selected = tuple(source for source in request.sources if source.selected)
         master_path = export_dir / f"{title_slug}.master.wav"
         try:
+            report("Đang trộn và hậu kỳ audio...", 0.1)
             command = self._render_command(request, selected, master_path)
-            self._run_checked(command)
+            self._run_checked(command, stop_event=stop_event, task_id=task_id)
 
             outputs: dict[str, Path] = {}
-            formats = tuple(dict.fromkeys(item.casefold() for item in request.formats))
             for format_name in formats:
+                self._check_cancelled(stop_event)
+                completed_count = len(outputs)
+                report(
+                    f"Đang xuất {format_name.upper()} ({completed_count + 1}/{len(formats)})...",
+                    0.55 + 0.35 * completed_count / max(1, len(formats)),
+                )
                 output = export_dir / f"{title_slug}.{format_name}"
-                self._run_checked(self._conversion_command(request, master_path, output, format_name))
+                self._run_checked(
+                    self._conversion_command(request, master_path, output, format_name),
+                    stop_event=stop_event,
+                    task_id=task_id,
+                )
                 outputs[format_name] = output
             master_path.unlink(missing_ok=True)
 
@@ -112,6 +148,7 @@ class AudioPostproductionService:
                 "schema_version": 1,
                 "export_id": export_id,
                 "project_id": request.project_id,
+                "workflow_id": request.workflow_id,
                 "workspace": request.workspace,
                 "title": request.title,
                 "created_at": datetime.now(timezone.utc).isoformat(),
@@ -126,6 +163,7 @@ class AudioPostproductionService:
                 "files": {name: path.relative_to(project_dir).as_posix() for name, path in outputs.items()},
             }
             write_json_atomic(manifest_path, manifest)
+            report("Đã xuất audio và ghi manifest.", 1.0)
         except Exception:
             shutil.rmtree(export_dir, ignore_errors=True)
             raise
@@ -358,7 +396,35 @@ class AudioPostproductionService:
     def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
         return subprocess.run(command, capture_output=True, text=True, check=False)
 
-    def _run_checked(self, command: list[str]) -> None:
-        completed = self._runner(command)
+    def _run_checked(
+        self,
+        command: list[str],
+        *,
+        stop_event: threading.Event | None = None,
+        task_id: str | None = None,
+    ) -> None:
+        self._check_cancelled(stop_event)
+        if self._custom_runner:
+            completed = self._runner(command)
+        else:
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            managed_media_processes.add(process, task_id=task_id)
+            try:
+                stdout, stderr = process.communicate()
+            finally:
+                managed_media_processes.discard(process)
+            completed = subprocess.CompletedProcess(command, process.returncode, stdout, stderr)
+        self._check_cancelled(stop_event)
         if completed.returncode != 0:
             raise RuntimeError(completed.stderr.strip() or "ffmpeg audio operation failed.")
+
+    @staticmethod
+    def _check_cancelled(stop_event: threading.Event | None) -> None:
+        if stop_event is not None and stop_event.is_set():
+            raise TaskCancelledError()

@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import mimetypes
-import subprocess
 import tempfile
 import threading
 import uuid
@@ -20,7 +19,7 @@ from ...common.processes import managed_media_processes
 from ...project_graph.integrations import register_media_result
 from ...project_graph.runtime import project_graph_service
 from ...subtitle_removal.constants import REMOVAL_MODE_LABELS
-from ...subtitle_removal.propainter import resolve_propainter_runtime
+from ...subtitle_removal.propainter import install_propainter_runtime, resolve_propainter_runtime
 from ...subtitle_removal.service import (
     AI_INPAINT_MODES,
     BLUR_MODE,
@@ -30,7 +29,6 @@ from ...subtitle_removal.service import (
     probe_video_duration,
     probe_video_size,
 )
-from ..event_bus import event_bus
 from ...runtime.resources import resource_keys_for_device
 from ..tasks import TaskRecord, run_task, task_registry
 
@@ -85,7 +83,7 @@ def _video_path(raw_path: str) -> Path:
 
 def _progress(record: TaskRecord):
     def report(message: str) -> None:
-        event_bus.emit({"type": "progress", "task_id": record.task_id, "message": message})
+        task_registry.report(record.task_id, message)
 
     return report
 
@@ -166,29 +164,29 @@ def preview_frame(body: PreviewRequest, background_tasks: BackgroundTasks) -> Fi
 
 
 @router.post("/install")
-def install_propainter(body: dict[str, Any]) -> dict[str, bool]:
+def install_propainter(body: dict[str, Any]) -> dict[str, str]:
     installer = studio_root() / "install_propainter.ps1"
     if not installer.is_file():
         raise HTTPException(status_code=404, detail=f"Không tìm thấy bộ cài: {installer}")
     device = str(body.get("device") or "auto")
-    try:
-        subprocess.Popen(
-            [
-                "powershell",
-                "-NoExit",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(installer),
-                "-Device",
-                device,
-            ],
-            cwd=installer.parent,
-            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+    record = task_registry.create(
+        "propainter-install",
+        capability_id="video.inpainting.propainter",
+        resource_keys=("network", "disk"),
+    )
+    record.on_cancel = lambda: managed_media_processes.terminate_task(record.task_id)
+
+    def operation() -> dict[str, str]:
+        return install_propainter_runtime(
+            installer,
+            device=device,
+            progress=_progress(record),
+            stop_event=record.stop_event,
+            task_id=record.task_id,
         )
-    except OSError as error:
-        raise HTTPException(status_code=500, detail=f"Không mở được bộ cài: {error}") from error
-    return {"ok": True}
+
+    run_task(record, operation, lambda result: result)
+    return {"task_id": record.task_id}
 
 
 @router.post("/remove")

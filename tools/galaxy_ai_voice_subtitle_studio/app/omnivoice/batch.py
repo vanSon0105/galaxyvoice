@@ -12,6 +12,7 @@ from typing import Callable
 from ..common.cache import write_json_atomic
 from ..common.errors import TaskCancelledError
 from ..common.paths import slugify, unique_project_dir
+from ..reliability.service import estimate_audio_bytes, guard_output_space
 from ..voice.audio import concatenate_wavs, try_convert_to_mp3
 from .models import OmniVoiceGenerationOptions, OmniVoiceResult
 from .service import WorkerClient, generate_omnivoice_audio
@@ -121,6 +122,14 @@ def generate_omnivoice_batch(
 ) -> OmniVoiceBatchResult:
     if not items:
         raise ValueError("Batch Voice không có mục nào để xử lý.")
+
+    guard_output_space(
+        base_options.output_dir,
+        required_bytes=estimate_audio_bytes(
+            "\n".join(item.text for item in items),
+            output_count=1 + int(base_options.export_mp3) + int(combine),
+        ),
+    )
 
     project_dir = unique_project_dir(
         base_options.output_dir,

@@ -60,6 +60,7 @@ export function WorkspacesPage() {
   const location = useLocation()
   const [searchParams] = useSearchParams()
   const handoffApplied = useRef('')
+  const recoveryApplied = useRef('')
   const activeRenderProject = useRef('')
   const queryClient = useQueryClient()
   const [kind, setKind] = useState<Kind>('stories')
@@ -402,6 +403,20 @@ export function WorkspacesPage() {
       setError(cause instanceof Error ? cause.message : String(cause))
     }
   }
+
+  const applyRecoveryProject = useRef(applyProject)
+  applyRecoveryProject.current = applyProject
+  useEffect(() => {
+    const workflowId = searchParams.get('workflow_id') ?? ''
+    const recoveryProjectId = searchParams.get('project_id') ?? ''
+    if (recoveryProjectId && galaxyProjectId !== recoveryProjectId) return
+    if (!workflowId || recoveryApplied.current === workflowId) return
+    recoveryApplied.current = workflowId
+    void fetchLongformProject(workflowId).then((project) => applyRecoveryProject.current(project)).catch((cause) => {
+      recoveryApplied.current = ''
+      setError(cause instanceof Error ? cause.message : String(cause))
+    })
+  }, [galaxyProjectId, searchParams])
 
   const handleDeleteProject = async () => {
     if (!selectedProjectId || !window.confirm('Xóa project Truyện & Sách nói này?')) return
@@ -1111,7 +1126,7 @@ export function WorkspacesPage() {
               </div>
             </div>
           )}
-          {result && resultAudioUrl && (activeRenderProject.current || selectedProjectId) && <AudioPostPanel key={result.manifest_path} projectId={activeRenderProject.current || selectedProjectId} workspace="longform" projectDir={result.project_dir} title={projectName || 'Truyện và sách nói'} sources={[{ source_id: 'longform-master', label: 'Bản đọc hoàn chỉnh', path: result.wav_path, role: 'voice', preview_url: resultAudioUrl }]} />}
+          {result && resultAudioUrl && (activeRenderProject.current || selectedProjectId) && <AudioPostPanel key={result.manifest_path} projectId={galaxyProjectId} workflowId={activeRenderProject.current || selectedProjectId} workspace="longform" projectDir={result.project_dir} title={projectName || 'Truyện và sách nói'} sources={[{ source_id: 'longform-master', label: 'Bản đọc hoàn chỉnh', path: result.wav_path, role: 'voice', preview_url: resultAudioUrl }]} />}
         </section>
       )}
     </div>

@@ -6,6 +6,7 @@ from typing import Callable, Protocol
 
 from ..common.cache import write_json_atomic
 from ..common.paths import unique_project_dir
+from ..reliability.service import estimate_audio_bytes, guard_output_space
 from ..voice.audio import try_convert_to_mp3
 from .models import (
     CLONE_MODE,
@@ -46,6 +47,11 @@ def generate_omnivoice_audio(
         raise ValueError("Hãy nhập nội dung cần tạo giọng.")
     if options.mode not in OMNIVOICE_MODES:
         raise ValueError(f"Chế độ OmniVoice không hợp lệ: {options.mode}")
+
+    guard_output_space(
+        options.output_dir,
+        required_bytes=estimate_audio_bytes(text, output_count=1 + int(options.export_mp3)),
+    )
 
     profiles_dir = options.profiles_dir
     profile_prompt: Path | None = None

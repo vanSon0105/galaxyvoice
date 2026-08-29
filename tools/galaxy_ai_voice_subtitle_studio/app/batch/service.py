@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Callable
 
 from ..common.errors import TaskCancelledError
+from ..reliability.service import estimate_audio_bytes, guard_output_space
 from ..studio.service import StudioEngine
 from ..voice.audio import concatenate_wavs, try_convert_to_mp3
 from .models import BatchRun
@@ -32,6 +33,16 @@ class BatchService:
         stop_event: threading.Event | None = None,
     ) -> BatchRun:
         run = self.repository.require(batch_id)
+        pending_text = "\n".join(
+            item.spec.text for item in run.items if item.status not in {"done", "failed"}
+        )
+        guard_output_space(
+            run.spec.output_dir,
+            required_bytes=estimate_audio_bytes(
+                pending_text,
+                output_count=len(run.spec.formats) + int(run.spec.combine),
+            ),
+        )
         if engine.engine_id != run.spec.engine_id:
             raise ValueError(f"Adapter {engine.engine_id} không xử lý được Batch {run.spec.engine_id}.")
         run.status = "running"

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import tempfile
+import threading
 import unittest
 import wave
 from pathlib import Path
@@ -15,6 +16,7 @@ from app.audio_postproduction.models import (
     SegmentGain,
 )
 from app.audio_postproduction.service import AudioPostproductionService
+from app.common.errors import TaskCancelledError
 
 
 def _write_wav(path: Path, *, frames: int = 8_000, sample_rate: int = 8_000) -> None:
@@ -31,6 +33,31 @@ def _write_wav(path: Path, *, frames: int = 8_000, sample_rate: int = 8_000) -> 
 
 
 class AudioPostproductionServiceTests(unittest.TestCase):
+    def test_export_honors_cancellation_before_starting_ffmpeg(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            project_dir = Path(directory) / "project"
+            source = project_dir / "voice.wav"
+            _write_wav(source)
+            stop_event = threading.Event()
+            stop_event.set()
+            service = AudioPostproductionService(
+                ffmpeg="ffmpeg",
+                runner=lambda command: CompletedProcess(command, 0, "", ""),
+            )
+
+            with self.assertRaises(TaskCancelledError):
+                service.export(
+                    AudioExportRequest(
+                        project_id="p",
+                        workflow_id="take-1",
+                        workspace="studio",
+                        project_dir=project_dir,
+                        title="take",
+                        sources=(AudioSource("voice", source),),
+                    ),
+                    stop_event=stop_event,
+                )
+
     def test_waveform_is_bounded_and_reuses_project_cache(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             project_dir = Path(directory) / "project"
@@ -72,6 +99,7 @@ class AudioPostproductionServiceTests(unittest.TestCase):
             )
             request = AudioExportRequest(
                 project_id="project-1",
+                workflow_id="dub-1",
                 workspace="dubbing",
                 project_dir=project_dir,
                 title="Final dub",
@@ -130,6 +158,7 @@ class AudioPostproductionServiceTests(unittest.TestCase):
                 service.export(
                     AudioExportRequest(
                         project_id="p",
+                        workflow_id="take-1",
                         workspace="studio",
                         project_dir=project_path,
                         title="take",
@@ -151,6 +180,7 @@ class AudioPostproductionServiceTests(unittest.TestCase):
                 service.export(
                     AudioExportRequest(
                         project_id="p",
+                        workflow_id="take-1",
                         workspace="studio",
                         project_dir=project_dir,
                         title="take",
@@ -166,6 +196,7 @@ class AudioPostproductionServiceTests(unittest.TestCase):
                 service.export(
                     AudioExportRequest(
                         project_id="another-project",
+                        workflow_id="take-2",
                         workspace="studio",
                         project_dir=project_dir,
                         title="take",

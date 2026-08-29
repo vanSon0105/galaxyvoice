@@ -139,7 +139,7 @@ export function deleteAudioPreset(name: string): Promise<{ ok: boolean }> {
   return apiJson(`/api/audio/presets/${encodeURIComponent(name)}`, { method: 'DELETE' })
 }
 
-export function installAudioRuntime(device: string): Promise<{ ok: boolean }> {
+export function installAudioRuntime(device: string): Promise<{ task_id: string }> {
   return apiJson('/api/audio/install', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },

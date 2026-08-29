@@ -12,8 +12,10 @@ from threading import Event
 from typing import Callable, Mapping, TextIO
 
 from ..common.compute import AUTO_DEVICE, CPU_DEVICE, CUDA_DEVICE, normalize_processing_device, resolve_torch_device
+from ..common.diagnostics import redact_sensitive_text, redacted_binary_log
 from ..common.errors import TaskCancelledError
-from ..common.processes import managed_media_processes
+from ..common.processes import managed_media_processes, terminate_process_tree
+from ..reliability.service import guard_output_space
 
 ProgressCallback = Callable[[str], None]
 Region = tuple[int, int, int, int]
@@ -275,6 +277,86 @@ def default_propainter_dir() -> Path:
     local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
     base = Path(local_app_data) if local_app_data else Path.home() / "AppData" / "Local"
     return base / "GalaxyAIStudio" / "models" / "ProPainter"
+
+
+def install_propainter_runtime(
+    installer: Path,
+    *,
+    device: str = AUTO_DEVICE,
+    progress: ProgressCallback | None = None,
+    stop_event: Event | None = None,
+    task_id: str | None = None,
+) -> dict[str, str]:
+    """Install ProPainter as a managed, cancellable Galaxy task."""
+
+    script = Path(installer).expanduser()
+    if not script.is_file():
+        raise FileNotFoundError(f"ProPainter installer not found: {script}")
+    repository = default_propainter_dir()
+    runtime_root = repository.parent
+    guard_output_space(runtime_root, minimum_mib=8 * 1024)
+    if stop_event is not None and stop_event.is_set():
+        raise TaskCancelledError()
+
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    log_path = runtime_root / "propainter-install.log"
+    report = progress or (lambda _message: None)
+    report("Installing ProPainter runtime...")
+    command = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-Device",
+        normalize_processing_device(device),
+    ]
+    try:
+        with redacted_binary_log(log_path) as log_stream:
+            process = subprocess.Popen(
+                command,
+                cwd=str(script.parent),
+                stdout=log_stream,
+                stderr=subprocess.STDOUT,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            managed_media_processes.add(process, task_id=task_id)
+            try:
+                while process.poll() is None:
+                    if stop_event is not None and stop_event.wait(0.25):
+                        if task_id:
+                            managed_media_processes.terminate_task(task_id)
+                        else:
+                            terminate_process_tree(process)
+                        raise TaskCancelledError()
+                if process.returncode != 0:
+                    log_stream.flush()
+                    details = _propainter_installer_log_tail(log_path)
+                    raise RuntimeError(
+                        f"ProPainter installation failed with exit code {process.returncode}."
+                        + (f"\n{details}" if details else f" See log: {log_path}")
+                    )
+            finally:
+                managed_media_processes.discard(process)
+    except OSError as error:
+        raise RuntimeError(f"Could not run the ProPainter installer: {error}") from error
+
+    runtime = resolve_propainter_runtime(repository)
+    report("ProPainter runtime is ready.")
+    return {
+        "python_path": str(runtime.python_executable),
+        "log_path": str(log_path),
+    }
+
+
+def _propainter_installer_log_tail(path: Path, limit: int = 2_000) -> str:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return ""
+    text = raw.decode("utf-8", errors="replace").strip()
+    return redact_sensitive_text(text[-max(1, int(limit)):])
 
 
 def resolve_propainter_runtime(repo_dir: Path | None = None) -> ProPainterRuntime:

@@ -326,9 +326,16 @@ export function RemovalPage() {
               )}
             </div>
             {usesAi && !metaQuery.data?.propainter_ready && (
-              <button className="btn" disabled={!metaQuery.data?.installer_available} onClick={() => void installProPainter(device).then(() => setMessage('Đã mở bộ cài ProPainter.')).catch((error: unknown) => setMessage(error instanceof Error ? error.message : String(error)))}>
-                Cài ProPainter
-              </button>
+              <TaskButton
+                label="Cài ProPainter"
+                disabled={!metaQuery.data?.installer_available}
+                onStart={async () => (await installProPainter(device)).task_id}
+                onFinish={(task) => {
+                  if (task.status !== 'done') return
+                  setMessage('ProPainter đã sẵn sàng.')
+                  void metaQuery.refetch()
+                }}
+              />
             )}
           </section>
 

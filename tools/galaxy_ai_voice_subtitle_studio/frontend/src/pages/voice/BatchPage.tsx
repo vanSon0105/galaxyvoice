@@ -65,6 +65,7 @@ function statusLabel(status: BatchRun['status']) {
 export function BatchPage() {
   const { projectId, project } = useVoiceProject()
   const queryClient = useQueryClient()
+  const recoveryWorkflowId = new URLSearchParams(window.location.search).get('workflow_id') ?? ''
   const { tasks } = useTasks()
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
   const statusQuery = useQuery({ queryKey: ['omnivoice-status'], queryFn: fetchOmniVoiceStatus })
@@ -125,9 +126,9 @@ export function BatchPage() {
   }, [settingsQuery.data])
 
   useEffect(() => {
-    setSelectedBatchId('')
+    setSelectedBatchId(recoveryWorkflowId)
     setActiveTaskId('')
-  }, [projectId])
+  }, [projectId, recoveryWorkflowId])
 
   useEffect(() => {
     const first = runsQuery.data?.find((run) => run.project_id === projectId)
@@ -335,6 +336,7 @@ export function BatchPage() {
             <AudioPostPanel
               key={selectedRun.batch_id}
               projectId={selectedRun.project_id || selectedRun.batch_id}
+              workflowId={selectedRun.batch_id}
               workspace="batch"
               projectDir={selectedRun.root_dir}
               title={selectedRun.title}

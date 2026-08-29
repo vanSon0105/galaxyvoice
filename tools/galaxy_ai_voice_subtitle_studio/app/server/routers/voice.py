@@ -116,7 +116,7 @@ def _config() -> Any:
 
 def _progress(record: TaskRecord):
     def report(message: str) -> None:
-        event_bus.emit({"type": "progress", "task_id": record.task_id, "message": message})
+        task_registry.report(record.task_id, message)
 
     return report
 

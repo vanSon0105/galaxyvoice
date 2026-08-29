@@ -94,6 +94,27 @@ class SubtitleRemovalApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 422)
         self.assertIn("license", response.json()["detail"].lower())
 
+    def test_propainter_install_runs_as_a_managed_task(self) -> None:
+        installer = self.root / "install_propainter.ps1"
+        installer.write_text("# installer", encoding="utf-8")
+        with (
+            mock.patch.object(removal_router, "studio_root", return_value=self.root),
+            mock.patch.object(
+                removal_router,
+                "install_propainter_runtime",
+                return_value={"python_path": "python.exe", "log_path": "install.log"},
+            ) as install,
+        ):
+            response = self.client.post("/api/removal/install", json={"device": "cpu"})
+            task_id = response.json()["task_id"]
+            self.assertEqual(_wait_status(task_id), DONE)
+
+        record = task_registry.get(task_id)
+        self.assertEqual(record.kind, "propainter-install")
+        self.assertEqual(record.capability_id, "video.inpainting.propainter")
+        self.assertEqual(record.resource_keys, ("network", "disk"))
+        self.assertEqual(install.call_args.kwargs["task_id"], task_id)
+
     def test_removal_task_returns_playable_video_and_passes_task_context(self) -> None:
         captured: dict[str, object] = {}
 

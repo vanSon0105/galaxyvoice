@@ -108,8 +108,8 @@ export function fetchOmniVoiceStatus(): Promise<OmniVoiceStatus> {
   return apiJson<OmniVoiceStatus>('/api/omnivoice/status')
 }
 
-export function installOmniVoiceRuntime(): Promise<{ ok: boolean }> {
-  return apiJson<{ ok: boolean }>('/api/omnivoice/install', { method: 'POST' })
+export function installOmniVoiceRuntime(): Promise<{ task_id: string }> {
+  return apiJson<{ task_id: string }>('/api/omnivoice/install', { method: 'POST' })
 }
 
 export function startOmniVoiceGenerate(

@@ -17,6 +17,8 @@ from ...audio_postproduction.models import (
     SegmentGain,
 )
 from ...audio_postproduction.service import AudioPostproductionService
+from ...common.processes import managed_media_processes
+from ..tasks import run_task, task_registry
 
 
 router = APIRouter(prefix="/api/audio-post", tags=["audio-postproduction"])
@@ -70,6 +72,7 @@ class MetadataRequest(BaseModel):
 
 class ExportRequest(BaseModel):
     project_id: str
+    workflow_id: str
     workspace: str
     project_dir: str
     title: str = "audio-export"
@@ -113,10 +116,11 @@ def discover_sources(project_dir: str = Query(min_length=1)) -> list[dict[str, o
 
 
 @router.post("/exports")
-def export_audio(body: ExportRequest) -> dict[str, Any]:
+def export_audio(body: ExportRequest) -> dict[str, str]:
     chain_data = body.chain.model_dump(exclude={"segment_gains"})
     request = AudioExportRequest(
         project_id=body.project_id,
+        workflow_id=body.workflow_id,
         workspace=body.workspace,
         project_dir=Path(body.project_dir),
         title=body.title,
@@ -137,10 +141,37 @@ def export_audio(body: ExportRequest) -> dict[str, Any]:
         channels=body.channels,
         bitrate_kbps=body.bitrate_kbps,
     )
-    try:
-        result = _service().export(request)
-    except (ValueError, OSError, RuntimeError) as error:
-        raise HTTPException(status_code=422, detail=str(error)) from error
+    record = task_registry.create(
+        "audio-post-export",
+        capability_id="media.ffmpeg",
+        project_id=body.project_id,
+        workflow_id=body.workflow_id,
+        resource_keys=("cpu",),
+        recovery_route={
+            "batch": "/voice/batch",
+            "dubbing": "/voice/dubbing",
+            "longform": "/voice/longform",
+            "stories": "/voice/longform",
+            "audiobook": "/voice/longform",
+        }.get(body.workspace.casefold(), "/voice"),
+    )
+    record.on_cancel = lambda: managed_media_processes.terminate_task(record.task_id)
+
+    def execute():
+        return _service().export(
+            request,
+            progress=lambda message, value: task_registry.report(
+                record.task_id, message, progress=value
+            ),
+            stop_event=record.stop_event,
+            task_id=record.task_id,
+        )
+
+    run_task(record, execute, _result_payload)
+    return {"task_id": record.task_id}
+
+
+def _result_payload(result) -> dict[str, Any]:
     media_urls = {
         name: (
             f"/api/audio-post/exports/{result.export_id}/media/{name}"

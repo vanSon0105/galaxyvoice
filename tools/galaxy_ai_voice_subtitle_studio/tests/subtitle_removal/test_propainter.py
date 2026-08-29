@@ -7,7 +7,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT))
@@ -27,6 +27,7 @@ from app.subtitle_removal.propainter import (  # noqa: E402
     build_inpainting_merge_command,
     build_propainter_command,
     generate_dynamic_subtitle_masks,
+    install_propainter_runtime,
     plan_inpainting_crop,
     plan_video_chunks,
     propainter_cuda_available,
@@ -41,6 +42,35 @@ from app.subtitle_removal.propainter import (  # noqa: E402
 
 
 class ProPainterTests(unittest.TestCase):
+    def test_installer_is_managed_and_checks_disk_space(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            installer = root / "install_propainter.ps1"
+            installer.write_text("# installer", encoding="utf-8")
+            repository = root / "models" / "ProPainter"
+            runtime = ProPainterRuntime(
+                repository,
+                repository / ".venv" / "Scripts" / "python.exe",
+                repository / "inference_propainter.py",
+            )
+            process = Mock(returncode=0)
+            process.poll.return_value = 0
+            with (
+                patch("app.subtitle_removal.propainter.default_propainter_dir", return_value=repository),
+                patch("app.subtitle_removal.propainter.guard_output_space") as guard,
+                patch("app.subtitle_removal.propainter.subprocess.Popen", return_value=process) as popen,
+                patch("app.subtitle_removal.propainter.resolve_propainter_runtime", return_value=runtime),
+                patch.object(managed_media_processes, "add") as add,
+                patch.object(managed_media_processes, "discard") as discard,
+            ):
+                result = install_propainter_runtime(installer, device=CPU_DEVICE, task_id="task-1")
+
+        guard.assert_called_once_with(repository.parent, minimum_mib=8 * 1024)
+        self.assertIn("-NoProfile", popen.call_args.args[0])
+        add.assert_called_once_with(process, task_id="task-1")
+        discard.assert_called_once_with(process)
+        self.assertEqual(result["python_path"], str(runtime.python_executable))
+
     def test_job_worker_reuses_one_process_for_multiple_chunks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)

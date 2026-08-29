@@ -13,6 +13,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from ..common.cache import read_json, write_json_atomic
+from ..common.diagnostics import get_logger, redact_sensitive_text
 from ..common.errors import TaskCancelledError
 from .resources import ResourceScheduler, shared_resource_scheduler
 
@@ -27,9 +28,32 @@ INTERRUPTED = "interrupted"
 ACTIVE_STATUSES = frozenset({QUEUED, RUNNING, PAUSED})
 TERMINAL_STATUSES = frozenset({DONE, FAILED, CANCELLED, INTERRUPTED})
 _SENSITIVE_KEYS = re.compile(
-    r"(?:api[_-]?key|token|secret|password|authorization|credential|cookie|bearer)",
-    re.I,
+    r"(?:api[_-]?key|token|secret|password|authorization|credential|cookie|bearer)", re.I
 )
+LOGGER = get_logger("runtime.jobs")
+MAX_TASK_LOG_LINES = 100
+MAX_TASK_RECORDS = 200
+PROGRESS_PERSIST_INTERVAL_SECONDS = 1.0
+_RECOVERY_DEFAULTS: dict[str, tuple[str, str]] = {
+    "studio-generate": ("/voice", "Mở Studio và chạy lại bản đọc từ nội dung đã lưu."),
+    "voice-batch": ("/voice/batch", "Mở Batch để tiếp tục hoặc chạy lại các mục chưa xong."),
+    "omnivoice-batch": ("/voice/batch", "Mở Batch để tiếp tục từ checkpoint gần nhất."),
+    "transcript-asr": ("/voice/transcripts", "Mở Transcripts và nhập lại tệp media."),
+    "workspace-render": ("/voice/longform", "Mở project và tiếp tục render từ checkpoint."),
+    "dubbing-translate": ("/voice/dubbing", "Mở Dubbing và dịch lại; cache đã hoàn thành sẽ được dùng lại."),
+    "audio-separation": ("/separation", "Mở Tách âm thanh và chạy lại với thiết lập đã lưu."),
+    "subtitle-removal": ("/removal", "Mở Xóa phụ đề và chạy lại video."),
+    "video-editor": ("/editor", "Mở Dựng video và xuất lại project."),
+    "transcribe": ("/dubbing", "Mở Phụ đề video và tạo lại phụ đề."),
+    "generate": ("/dubbing", "Mở Phụ đề video và tạo lại giọng đọc."),
+    "extract-audio": ("/dubbing", "Mở Phụ đề video và trích âm thanh lại."),
+    "omnivoice-generate": ("/voice", "Mở Studio và tạo lại bản đọc."),
+    "omnivoice-install": ("/settings", "Mở Thiết lập máy và cài lại OmniVoice runtime."),
+    "model-install": ("/settings", "Mở Cài đặt và cài lại model."),
+    "audio-model-download": ("/separation", "Mở Tách âm thanh và tải lại model."),
+    "audio-separator-install": ("/separation", "Mở Tách âm thanh và cài lại runtime."),
+    "audio-post-export": ("/voice", "Mở workspace và xuất lại bản hậu kỳ audio."),
+}
 
 
 def default_job_store_path() -> Path:
@@ -39,7 +63,9 @@ def default_job_store_path() -> Path:
 
 
 def _safe_checkpoint(value: Any) -> Any:
-    if value is None or isinstance(value, (str, int, float, bool)):
+    if isinstance(value, str):
+        return redact_sensitive_text(value)
+    if value is None or isinstance(value, (int, float, bool)):
         return value
     if isinstance(value, Mapping):
         return {
@@ -58,6 +84,7 @@ class TaskRecord:
     kind: str
     status: str = RUNNING
     result: Any = None
+    result_payload: Any = None
     error: str | None = None
     created_at: float = field(default_factory=time.time)
     started_at: float | None = None
@@ -73,6 +100,9 @@ class TaskRecord:
     progress: float | None = None
     message: str = ""
     checkpoint: dict[str, Any] = field(default_factory=dict)
+    logs: list[str] = field(default_factory=list)
+    recovery_route: str = ""
+    recovery_hint: str = ""
     on_cancel: Callable[[], None] | None = field(default=None, repr=False, compare=False)
     thread: threading.Thread | None = field(default=None, repr=False, compare=False)
 
@@ -110,7 +140,8 @@ class JobStore:
             "task_id": record.task_id,
             "kind": record.kind,
             "status": record.status,
-            "error": record.error,
+            "error": redact_sensitive_text(record.error) if record.error else None,
+            "result": _safe_checkpoint(record.result_payload),
             "created_at": record.created_at,
             "started_at": record.started_at,
             "updated_at": record.updated_at,
@@ -123,8 +154,11 @@ class JobStore:
             "pausable": record.pausable,
             "resource_keys": list(record.resource_keys),
             "progress": record.progress,
-            "message": record.message,
+            "message": redact_sensitive_text(record.message),
             "checkpoint": _safe_checkpoint(record.checkpoint),
+            "logs": [redact_sensitive_text(item) for item in record.logs[-MAX_TASK_LOG_LINES:]],
+            "recovery_route": record.recovery_route,
+            "recovery_hint": record.recovery_hint,
         }
 
 
@@ -170,6 +204,8 @@ class TaskRegistry:
         self._event_sink = event_sink
         self._scheduler = scheduler or shared_resource_scheduler
         self._resume_handlers: dict[str, tuple[ResumeHandler, Callable[[Any], Any] | None]] = {}
+        self._last_progress_persist_at: dict[str, float] = {}
+        self._progress_flush_timers: dict[str, threading.Timer] = {}
         self._restore()
 
     def bind_event_sink(self, event_sink: Callable[[dict[str, Any]], None] | None) -> None:
@@ -192,7 +228,12 @@ class TaskRegistry:
                     task_id=str(payload["task_id"]),
                     kind=str(payload["kind"]),
                     status=str(payload.get("status", INTERRUPTED)),
-                    error=payload.get("error"),
+                    error=(
+                        redact_sensitive_text(payload.get("error"))
+                        if payload.get("error")
+                        else None
+                    ),
+                    result_payload=_safe_checkpoint(payload.get("result")),
                     created_at=float(payload.get("created_at", time.time())),
                     started_at=payload.get("started_at"),
                     updated_at=float(payload.get("updated_at", time.time())),
@@ -205,17 +246,23 @@ class TaskRegistry:
                     pausable=bool(payload.get("pausable", False)),
                     resource_keys=tuple(payload.get("resource_keys", ())),
                     progress=payload.get("progress"),
-                    message=str(payload.get("message", "")),
+                    message=redact_sensitive_text(str(payload.get("message", ""))),
                     checkpoint=dict(payload.get("checkpoint") or {}),
+                    logs=[redact_sensitive_text(item) for item in payload.get("logs", [])][
+                        -MAX_TASK_LOG_LINES:
+                    ],
+                    recovery_route=str(payload.get("recovery_route", "")),
+                    recovery_hint=str(payload.get("recovery_hint", "")),
                 )
             except (KeyError, TypeError, ValueError):
                 continue
             if record.status in ACTIVE_STATUSES:
-                record.status = PAUSED if record.resumable else INTERRUPTED
-                record.finished_at = None if record.resumable else time.time()
+                # Python threads and subprocess handles cannot survive a process restart.
+                # Workflow repositories own checkpoint resume; the task points users back
+                # there instead of pretending its old thread can continue.
+                record.status = INTERRUPTED
+                record.finished_at = time.time()
                 record.updated_at = time.time()
-                if record.status == PAUSED:
-                    record.pause_event.set()
                 changed = True
             self._tasks[record.task_id] = record
         if changed:
@@ -243,7 +290,10 @@ class TaskRegistry:
         project_id: str = "",
         workflow_id: str = "",
         resource_keys: tuple[str, ...] = (),
+        recovery_route: str = "",
+        recovery_hint: str = "",
     ) -> TaskRecord:
+        default_route, default_hint = _RECOVERY_DEFAULTS.get(kind, ("", ""))
         record = TaskRecord(
             task_id=f"{kind}_{uuid.uuid4().hex[:8]}",
             kind=kind,
@@ -253,11 +303,29 @@ class TaskRegistry:
             project_id=project_id,
             workflow_id=workflow_id,
             resource_keys=tuple(resource_keys),
+            recovery_route=recovery_route or default_route,
+            recovery_hint=recovery_hint or default_hint,
         )
         with self._lock:
             self._tasks[record.task_id] = record
+            self._prune_locked()
             self._persist_locked()
         return record
+
+    def _prune_locked(self) -> None:
+        overflow = len(self._tasks) - MAX_TASK_RECORDS
+        if overflow <= 0:
+            return
+        terminal = sorted(
+            (record for record in self._tasks.values() if record.status in TERMINAL_STATUSES),
+            key=lambda record: record.updated_at,
+        )
+        for record in terminal[:overflow]:
+            self._tasks.pop(record.task_id, None)
+            self._last_progress_persist_at.pop(record.task_id, None)
+            timer = self._progress_flush_timers.pop(record.task_id, None)
+            if timer is not None:
+                timer.cancel()
 
     def get(self, task_id: str) -> TaskRecord | None:
         with self._lock:
@@ -297,21 +365,36 @@ class TaskRegistry:
                     result = operation(context)
                     context.check_cancelled()
                     payload = result_serializer(result) if result_serializer else None
+                    safe_payload = _safe_checkpoint(payload)
             except TaskCancelledError:
                 self.finish(task_id, status=CANCELLED)
                 self._emit({"type": "task", "task_id": task_id, "status": CANCELLED})
                 return
             except Exception as error:
+                LOGGER.error(
+                    "Task %s (%s) failed: %s",
+                    task_id,
+                    record.kind,
+                    redact_sensitive_text(error),
+                )
                 status = self.finish(task_id, status=FAILED, error=str(error)) or FAILED
                 event: dict[str, Any] = {"type": "task", "task_id": task_id, "status": status}
                 if status == FAILED:
-                    event["error"] = str(error)
+                    finished = self.get(task_id)
+                    event["error"] = (
+                        finished.error if finished is not None else redact_sensitive_text(error)
+                    )
                 self._emit(event)
                 return
-            status = self.finish(task_id, status=DONE, result=result) or DONE
+            status = self.finish(
+                task_id,
+                status=DONE,
+                result=result,
+                result_payload=safe_payload,
+            ) or DONE
             event = {"type": "task", "task_id": task_id, "status": status}
             if status == DONE:
-                event["result"] = payload
+                event["result"] = safe_payload
             self._emit(event)
 
         thread = threading.Thread(target=run, name=f"task-{task_id}", daemon=True)
@@ -332,20 +415,55 @@ class TaskRegistry:
         self._emit({"type": "task", "task_id": task_id, "status": status})
 
     def report(self, task_id: str, message: str, *, progress: float | None = None) -> None:
+        safe_message = redact_sensitive_text(message)
+        timer_to_start: threading.Timer | None = None
         with self._lock:
             record = self._tasks.get(task_id)
             if record is None:
                 return
-            record.message = message
+            record.message = safe_message
+            if not record.logs or record.logs[-1] != safe_message:
+                record.logs.append(safe_message)
+                del record.logs[:-MAX_TASK_LOG_LINES]
             if progress is not None:
                 record.progress = min(1.0, max(0.0, float(progress)))
             record.updated_at = time.time()
-            self._persist_locked()
+            monotonic_now = time.monotonic()
+            last_persisted = self._last_progress_persist_at.get(task_id, 0.0)
+            terminal_progress = progress is not None and record.progress in {0.0, 1.0}
+            if terminal_progress or monotonic_now - last_persisted >= PROGRESS_PERSIST_INTERVAL_SECONDS:
+                timer = self._progress_flush_timers.pop(task_id, None)
+                if timer is not None:
+                    timer.cancel()
+                self._persist_locked()
+                self._last_progress_persist_at[task_id] = monotonic_now
+            elif task_id not in self._progress_flush_timers:
+                delay = max(
+                    0.01,
+                    PROGRESS_PERSIST_INTERVAL_SECONDS - (monotonic_now - last_persisted),
+                )
+                timer_to_start = threading.Timer(delay, self._flush_progress, args=(task_id,))
+                timer_to_start.daemon = True
+                self._progress_flush_timers[task_id] = timer_to_start
             current_progress = record.progress
-        event: dict[str, Any] = {"type": "progress", "task_id": task_id, "message": message}
+        if timer_to_start is not None:
+            timer_to_start.start()
+        event: dict[str, Any] = {
+            "type": "progress",
+            "task_id": task_id,
+            "message": safe_message,
+        }
         if current_progress is not None:
             event["progress"] = current_progress
         self._emit(event)
+
+    def _flush_progress(self, task_id: str) -> None:
+        with self._lock:
+            self._progress_flush_timers.pop(task_id, None)
+            if task_id not in self._tasks:
+                return
+            self._persist_locked()
+            self._last_progress_persist_at[task_id] = time.monotonic()
 
     def save_checkpoint(self, task_id: str, checkpoint: Mapping[str, Any]) -> None:
         with self._lock:
@@ -410,6 +528,9 @@ class TaskRegistry:
                 record.status = CANCELLED
                 record.finished_at = time.time()
                 record.updated_at = record.finished_at
+                timer = self._progress_flush_timers.pop(task_id, None)
+                if timer is not None:
+                    timer.cancel()
                 self._persist_locked()
         self._scheduler.wake()
         if on_cancel is not None:
@@ -451,6 +572,7 @@ class TaskRegistry:
         *,
         status: str,
         result: Any = None,
+        result_payload: Any = None,
         error: str | None = None,
     ) -> str | None:
         with self._lock:
@@ -463,11 +585,16 @@ class TaskRegistry:
                 status, result, error = CANCELLED, None, None
             record.status = status
             record.result = result
-            record.error = error
+            record.result_payload = _safe_checkpoint(result_payload)
+            record.error = redact_sensitive_text(error) if error else None
             record.progress = 1.0 if status == DONE else record.progress
             record.finished_at = time.time()
             record.updated_at = record.finished_at
             self._persist_locked()
+            self._last_progress_persist_at.pop(task_id, None)
+            timer = self._progress_flush_timers.pop(task_id, None)
+            if timer is not None:
+                timer.cancel()
             return status
 
     def running_count(self) -> int:
@@ -476,4 +603,20 @@ class TaskRegistry:
 
     def snapshot(self) -> list[dict[str, Any]]:
         with self._lock:
-            return [JobStore._serialize(record) for record in self._tasks.values()]
+            snapshots: list[dict[str, Any]] = []
+            for record in self._tasks.values():
+                item = JobStore._serialize(record)
+                item.update(
+                    {
+                        "result": record.result_payload if record.status == DONE else None,
+                        "can_pause": record.pausable and record.status in {RUNNING, QUEUED},
+                        "can_resume": record.status == PAUSED
+                        and (
+                            (record.thread is not None and record.thread.is_alive())
+                            or record.kind in self._resume_handlers
+                        ),
+                        "can_cancel": record.status in ACTIVE_STATUSES,
+                    }
+                )
+                snapshots.append(item)
+            return snapshots

@@ -33,6 +33,10 @@ export function VoiceWorkspace() {
     () => [...(projectsQuery.data ?? [])].sort((left, right) => right.updated_at.localeCompare(left.updated_at)),
     [projectsQuery.data],
   )
+  const recoveryProjectId = useMemo(
+    () => new URLSearchParams(location.search).get('project_id') ?? '',
+    [location.search],
+  )
   const project = projects.find((item) => item.project_id === projectId) ?? null
 
   useEffect(() => {
@@ -41,10 +45,14 @@ export function VoiceWorkspace() {
       if (projectId) setProjectId('')
       return
     }
+    if (recoveryProjectId && projects.some((item) => item.project_id === recoveryProjectId)) {
+      if (projectId !== recoveryProjectId) setProjectId(recoveryProjectId)
+      return
+    }
     if (!projects.some((item) => item.project_id === projectId)) {
       setProjectId(projects[0].project_id)
     }
-  }, [projectId, projects, projectsQuery.isPending])
+  }, [projectId, projects, projectsQuery.isPending, recoveryProjectId])
 
   useEffect(() => {
     if (projectId) window.localStorage.setItem(ACTIVE_PROJECT_KEY, projectId)

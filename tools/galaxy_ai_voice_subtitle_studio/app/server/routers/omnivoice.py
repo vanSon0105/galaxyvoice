@@ -44,6 +44,7 @@ from ...omnivoice.profiles import (
 from ...omnivoice.runtime import (
     OMNIVOICE_DEVICES,
     OmniVoiceRuntime,
+    install_omnivoice_runtime,
     inspect_runtime,
     load_supported_language_ids,
     omnivoice_device_label,
@@ -53,6 +54,8 @@ from ...omnivoice.task_runner import shared_omnivoice_task_coordinator
 from ...omnivoice.worker_pool import get_shared_worker_client
 from ..event_bus import event_bus
 from ...runtime.resources import resource_keys_for_device
+from ...common.paths import studio_root
+from ...common.processes import managed_media_processes
 from ..tasks import TaskRecord, run_task, task_registry
 
 router = APIRouter(prefix="/api/omnivoice")
@@ -202,7 +205,7 @@ def _batch_result_dict(result: Any) -> dict[str, Any]:
 
 def _progress(record: TaskRecord):
     def report(message: str) -> None:
-        event_bus.emit({"type": "progress", "task_id": record.task_id, "message": message})
+        task_registry.report(record.task_id, message)
 
     return report
 
@@ -239,34 +242,34 @@ def status() -> dict[str, Any]:
 
 
 @router.post("/install")
-def install_runtime() -> dict[str, bool]:
-    import subprocess
-
-    from ...common.paths import studio_root
-
+def install_runtime() -> dict[str, str]:
     installer = studio_root() / "install_omnivoice.ps1"
     if not installer.is_file():
         raise HTTPException(status_code=404, detail=f"Không tìm thấy bộ cài: {installer}")
     device = _config().omnivoice_device
-    try:
-        subprocess.Popen(
-            [
-                "powershell.exe",
-                "-NoProfile",
-                "-ExecutionPolicy",
-                "Bypass",
-                "-File",
-                str(installer),
-                "-Device",
-                device,
-            ],
-            cwd=str(studio_root()),
-            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+    record = task_registry.create(
+        "omnivoice-install",
+        capability_id="tts.omnivoice",
+        resource_keys=("disk", "network"),
+    )
+    record.on_cancel = lambda: managed_media_processes.terminate_task(record.task_id)
+
+    def run_install() -> dict[str, str]:
+        result = install_omnivoice_runtime(
+            _runtime(),
+            installer,
+            device=device,
+            progress=_progress(record),
+            stop_event=record.stop_event,
+            task_id=record.task_id,
         )
-    except OSError as error:
-        raise HTTPException(status_code=500, detail=f"Không mở được bộ cài: {error}")
+        _status_cache.update({"at": 0.0, "value": None})
+        event_bus.emit({"type": "event", "kind": "omnivoice_install_completed", "payload": {}})
+        return result
+
+    run_task(record, run_install, lambda result: result)
     event_bus.emit({"type": "event", "kind": "omnivoice_install_started", "payload": {}})
-    return {"ok": True}
+    return {"task_id": record.task_id}
 
 
 @router.post("/generate")

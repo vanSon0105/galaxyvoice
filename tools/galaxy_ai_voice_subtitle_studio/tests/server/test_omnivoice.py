@@ -82,6 +82,21 @@ class OmniVoiceApiTests(unittest.TestCase):
         self.assertTrue(path.is_file(), f"worker không tồn tại: {path}")
         self.assertIn("app" + str(Path("/omnivoice/worker.py")), str(path))
 
+    def test_install_runtime_is_a_tracked_task(self) -> None:
+        with mock.patch.object(
+            omnivoice_router,
+            "install_omnivoice_runtime",
+            return_value={"python_path": "python.exe", "message": "ready"},
+        ):
+            response = self.client.post("/api/omnivoice/install")
+
+        self.assertEqual(response.status_code, 200)
+        task_id = response.json()["task_id"]
+        self.assertEqual(_wait_status(task_id), DONE)
+        record = task_registry.get(task_id)
+        self.assertEqual(record.kind, "omnivoice-install")
+        self.assertEqual(record.result_payload["message"], "ready")
+
     def test_generate_requires_text(self) -> None:
         response = self.client.post("/api/omnivoice/generate", json={"text": "  "})
         self.assertEqual(response.status_code, 422)

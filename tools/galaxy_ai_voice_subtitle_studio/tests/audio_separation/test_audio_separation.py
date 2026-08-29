@@ -144,7 +144,7 @@ class AudioSeparationTests(unittest.TestCase):
             with patch(
                 "app.audio_separation.service._run_streaming_command",
                 side_effect=fake_run,
-            ) as run:
+            ) as run, patch("app.audio_separation.service.guard_output_space") as guard:
                 downloaded = download_audio_model(
                     model,
                     runtime=runtime,
@@ -153,6 +153,7 @@ class AudioSeparationTests(unittest.TestCase):
 
         self.assertEqual(downloaded.name, model.filename)
         self.assertEqual(run.call_args.args[0][0], str(python_path))
+        guard.assert_called_once_with(root / "managed" / "models" / "MDX_Net_Models", minimum_mib=2 * 1024)
 
     def test_auto_device_prefers_cuda_then_directml(self) -> None:
         self.assertEqual(

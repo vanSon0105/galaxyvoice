@@ -8,6 +8,7 @@ from typing import Mapping
 
 from ....common.cache import read_json, write_json_atomic
 from ....common.ffmpeg import find_ffmpeg, find_ffprobe, ffmpeg_missing_message
+from ....reliability.service import guard_output_space
 from ....voice.media import _run_command, _run_ffmpeg
 from ...models import OmniVoiceGenerationOptions
 from ...profiles import VoiceProfile
@@ -46,6 +47,15 @@ def render_dubbing_project(
     resume_project_dir: Path | None = None,
     stop_event: threading.Event | None = None,
 ) -> LongformWorkspaceResult:
+    source_paths = tuple(
+        path for path in (source_video, source_audio) if path is not None
+    )
+    guard_output_space(
+        base_options.output_dir,
+        source_paths=source_paths,
+        minimum_mib=512,
+        multiplier=2.0,
+    )
     policy = fit_policy or DubbingFitPolicy()
     normalized_mode = mix_mode.strip().lower() or MIX_REPLACE
     if normalized_mode not in MIX_MODES:

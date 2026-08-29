@@ -5,7 +5,9 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
+from app.common.cache import write_json_atomic
 from app.runtime.jobs import (
     DONE,
     INTERRUPTED,
@@ -18,6 +20,41 @@ from app.runtime.resources import ResourceScheduler
 
 
 class PersistentJobRunnerTests(unittest.TestCase):
+    def test_progress_persistence_is_throttled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = JobStore(Path(temp_dir) / "jobs.json")
+            with mock.patch.object(store, "save", wraps=store.save) as save:
+                registry = TaskRegistry(store=store)
+                record = registry.create("chatty")
+                before = save.call_count
+                for index in range(20):
+                    registry.report(record.task_id, f"line {index}", progress=0.5)
+
+                self.assertEqual(save.call_count - before, 1)
+                registry.finish(record.task_id, status=DONE)
+
+    def test_throttled_progress_gets_a_trailing_persistence_flush(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = JobStore(Path(temp_dir) / "jobs.json")
+            with mock.patch("app.runtime.jobs.PROGRESS_PERSIST_INTERVAL_SECONDS", 0.05), mock.patch.object(
+                store, "save", wraps=store.save
+            ) as save:
+                registry = TaskRegistry(store=store)
+                record = registry.create("chatty")
+                registry.report(record.task_id, "first", progress=0.5)
+                before = save.call_count
+                registry.report(record.task_id, "trailing update")
+                self.assertEqual(save.call_count, before)
+
+                deadline = time.monotonic() + 0.5
+                while save.call_count == before and time.monotonic() < deadline:
+                    time.sleep(0.01)
+
+                self.assertGreater(save.call_count, before)
+                restored = TaskRegistry(store=store).get(record.task_id)
+                self.assertEqual(restored.message, "trailing update")
+                registry.finish(record.task_id, status=DONE)
+
     def test_job_reports_progress_and_persists_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             events: list[dict[str, object]] = []
@@ -44,6 +81,7 @@ class PersistentJobRunnerTests(unittest.TestCase):
             self.assertEqual(finished.progress, 1.0)
             self.assertEqual(finished.checkpoint, {"segment": 12})
             self.assertTrue(any(event.get("type") == "progress" for event in events))
+            self.assertEqual(registry.snapshot()[0]["result"], {"ok": True})
 
             restored = TaskRegistry(store=store)
             snapshot = restored.get(record.task_id)
@@ -51,7 +89,7 @@ class PersistentJobRunnerTests(unittest.TestCase):
             self.assertEqual(snapshot.checkpoint, {"segment": 12})
             self.assertIsNone(snapshot.result)
 
-    def test_restart_pauses_resumable_work_and_interrupts_other_work(self) -> None:
+    def test_restart_interrupts_process_bound_work_and_keeps_checkpoint(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = JobStore(Path(temp_dir) / "jobs.json")
             registry = TaskRegistry(store=store)
@@ -61,7 +99,7 @@ class PersistentJobRunnerTests(unittest.TestCase):
 
             restored = TaskRegistry(store=store)
 
-            self.assertEqual(restored.get(resumable.task_id).status, PAUSED)
+            self.assertEqual(restored.get(resumable.task_id).status, INTERRUPTED)
             self.assertEqual(restored.get(resumable.task_id).checkpoint, {"span": 4})
             self.assertEqual(restored.get(ordinary.task_id).status, INTERRUPTED)
 
@@ -84,6 +122,97 @@ class PersistentJobRunnerTests(unittest.TestCase):
                 restored.checkpoint,
                 {"segment": 4, "nested": {"offset": 12}},
             )
+
+    def test_restore_redacts_legacy_message_error_and_result_credentials(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = JobStore(Path(temp_dir) / "jobs.json")
+            record = TaskRegistry(store=store).create("legacy")
+            payload = store.load()[0]
+            payload.update({
+                "status": DONE,
+                "message": "Authorization: Basic dXNlcjpwYXNz",
+                "error": "api_key=sk-old",
+                "result": {"token": "hf_old", "path": "voice.wav"},
+            })
+            write_json_atomic(store.path, {"schema_version": 1, "jobs": [payload]})
+
+            restored = TaskRegistry(store=store).get(record.task_id)
+
+            self.assertNotIn("dXNlcjpwYXNz", restored.message)
+            self.assertNotIn("sk-old", restored.error)
+            self.assertEqual(restored.result_payload, {"path": "voice.wav"})
+
+    def test_progress_log_and_recovery_metadata_survive_restart(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = JobStore(Path(temp_dir) / "jobs.json")
+            registry = TaskRegistry(store=store)
+            record = registry.create(
+                "longform",
+                resumable=True,
+                recovery_route="/voice/longform",
+                recovery_hint="Mở project và tiếp tục từ checkpoint.",
+            )
+            registry.report(record.task_id, "Đang dựng chương 2", progress=0.4)
+
+            restored = TaskRegistry(store=store).get(record.task_id)
+
+            self.assertEqual(restored.logs, ["Đang dựng chương 2"])
+            self.assertEqual(restored.recovery_route, "/voice/longform")
+            self.assertEqual(restored.recovery_hint, "Mở project và tiếp tục từ checkpoint.")
+
+    def test_task_logs_are_bounded_and_secrets_are_redacted(self) -> None:
+        registry = TaskRegistry()
+        record = registry.create("secure")
+        for index in range(140):
+            registry.report(
+                record.task_id,
+                f"line {index} api_key=sk-super-secret",
+            )
+
+        snapshot = registry.snapshot()[0]
+
+        self.assertEqual(len(snapshot["logs"]), 100)
+        self.assertIn("line 139", snapshot["logs"][-1])
+        self.assertNotIn("sk-super-secret", "\n".join(snapshot["logs"]))
+
+    def test_task_logs_redact_quoted_json_credentials(self) -> None:
+        registry = TaskRegistry()
+        record = registry.create("secure-json")
+        registry.report(
+            record.task_id,
+            '{"api_key":"sk-json", "password": "hidden", "cookie":"session"}',
+        )
+
+        line = registry.snapshot()[0]["logs"][0]
+        self.assertNotIn("sk-json", line)
+        self.assertNotIn("hidden", line)
+        self.assertNotIn("session", line)
+
+    def test_serialized_result_redacts_credentials_inside_plain_text_values(self) -> None:
+        registry = TaskRegistry()
+        record = registry.create("secure-result")
+        registry.finish(
+            record.task_id,
+            status=DONE,
+            result_payload={"detail": "Authorization: Bearer sk-result-secret"},
+        )
+
+        detail = registry.snapshot()[0]["result"]["detail"]
+        self.assertNotIn("sk-result-secret", detail)
+
+    def test_serialized_result_is_redacted_before_websocket_emit(self) -> None:
+        events: list[dict[str, object]] = []
+        registry = TaskRegistry(event_sink=events.append)
+        record = registry.create("secure-result")
+        registry.submit(
+            record,
+            lambda _context: {"detail": "Bearer sk-abcdefghijklmnopqrstuvwxyz"},
+            lambda result: result,
+        )
+        self.assertEqual(registry.wait_for_running(2), [])
+
+        terminal = next(event for event in events if event.get("status") == DONE)
+        self.assertNotIn("sk-abcdefghijklmnopqrstuvwxyz", str(terminal.get("result")))
 
     def test_resource_keys_serialize_jobs(self) -> None:
         scheduler = ResourceScheduler({"accelerator": 1})

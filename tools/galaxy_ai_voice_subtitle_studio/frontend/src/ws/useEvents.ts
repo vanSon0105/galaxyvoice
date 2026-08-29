@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 
-import { publishEvent } from './hub'
+import { publishConnectionOpen, publishEvent } from './hub'
 import type { ServerEvent } from './types'
 
 export type WsState = 'connecting' | 'open' | 'closed'
@@ -27,6 +27,7 @@ export function useEvents(): WsState {
       socket.onopen = () => {
         attempt = 0
         setState('open')
+        publishConnectionOpen()
       }
       socket.onmessage = (message) => {
         try {

@@ -14,6 +14,7 @@ from ..common.cache import default_cache_dir, file_digest, read_json, stable_dig
 from ..common.compute import AUTO_DEVICE, normalize_processing_device, resolve_whisper_runtime
 from ..common.errors import TaskCancelledError
 from ..common.ffmpeg import ffmpeg_missing_message, find_ffmpeg
+from ..reliability.service import guard_output_space
 from .media import Runner, _run_command, _run_ffmpeg, build_extract_wav_command
 from ..common.paths import unique_project_dir
 from .srt import SubtitleCue, parse_srt, render_srt
@@ -156,6 +157,13 @@ def prepare_subtitles_from_video(
     video_path = Path(options.video_path).expanduser()
     if not video_path.exists():
         raise FileNotFoundError(f"Video file not found: {video_path}")
+
+    guard_output_space(
+        Path(tempfile.gettempdir()),
+        source_paths=(video_path,),
+        minimum_mib=512,
+        multiplier=2.0,
+    )
 
     ffmpeg = ffmpeg_path or find_ffmpeg()
     if not ffmpeg:

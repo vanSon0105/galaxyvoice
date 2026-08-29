@@ -15,10 +15,12 @@ from typing import Callable, Iterable
 
 from ..common.cache import read_json, write_json_atomic
 from ..common.compute import detect_nvidia_hardware
+from ..common.diagnostics import redact_sensitive_text, redacted_binary_log
 from ..common.errors import TaskCancelledError
 from ..common.ffmpeg import ffmpeg_missing_message, find_ffmpeg
 from ..common.paths import repository_root, unique_project_dir
 from ..common.processes import managed_media_processes, terminate_process_tree
+from ..reliability.service import estimate_media_working_bytes, guard_output_space
 
 MDX_METHOD = "mdx"
 MDXC_METHOD = "mdxc"
@@ -180,6 +182,85 @@ def default_audio_separator_runtime() -> AudioSeparatorRuntime:
     return AudioSeparatorRuntime(
         base / "GalaxyAIStudio" / "models" / "AudioSeparator" / ".venv" / "Scripts" / "python.exe"
     )
+
+
+def install_audio_separator_runtime(
+    installer: Path,
+    *,
+    runtime: AudioSeparatorRuntime | None = None,
+    device: str = AUTO_AUDIO_DEVICE,
+    progress: ProgressCallback | None = None,
+    stop_event: threading.Event | None = None,
+    task_id: str | None = None,
+) -> dict[str, str]:
+    """Install the isolated separator runtime as a managed, cancellable task."""
+
+    script = Path(installer).expanduser()
+    if not script.is_file():
+        raise FileNotFoundError(f"Không tìm thấy bộ cài: {script}")
+    selected = runtime or default_audio_separator_runtime()
+    runtime_root = selected.python_path.parents[2]
+    guard_output_space(runtime_root, minimum_mib=4 * 1024)
+    if stop_event is not None and stop_event.is_set():
+        raise TaskCancelledError()
+
+    runtime_root.mkdir(parents=True, exist_ok=True)
+    log_path = runtime_root / "install.log"
+    report = progress or (lambda _message: None)
+    report("Đang cài audio separator runtime...")
+    command = [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        str(script),
+        "-Device",
+        normalize_audio_device(device),
+    ]
+    try:
+        with redacted_binary_log(log_path) as log_stream:
+            process = subprocess.Popen(
+                command,
+                cwd=str(script.parent),
+                stdout=log_stream,
+                stderr=subprocess.STDOUT,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            managed_media_processes.add(process, task_id=task_id)
+            try:
+                while process.poll() is None:
+                    if stop_event is not None and stop_event.wait(0.25):
+                        if task_id:
+                            managed_media_processes.terminate_task(task_id)
+                        else:
+                            terminate_process_tree(process)
+                        raise TaskCancelledError()
+                if process.returncode != 0:
+                    log_stream.flush()
+                    details = _installer_log_tail(log_path)
+                    raise RuntimeError(
+                        f"Cài audio separator thất bại với mã {process.returncode}."
+                        + (f"\n{details}" if details else f" Xem log: {log_path}")
+                    )
+            finally:
+                managed_media_processes.discard(process)
+    except OSError as error:
+        raise RuntimeError(f"Không chạy được bộ cài audio separator: {error}") from error
+
+    if not selected.python_path.is_file():
+        raise RuntimeError(f"Bộ cài kết thúc nhưng runtime chưa sẵn sàng: {selected.python_path}")
+    report("Audio separator runtime đã sẵn sàng.")
+    return {"python_path": str(selected.python_path), "log_path": str(log_path)}
+
+
+def _installer_log_tail(path: Path, limit: int = 2_000) -> str:
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return ""
+    text = raw.decode("utf-8", errors="replace").strip()
+    return redact_sensitive_text(text[-max(1, int(limit)):])
 
 
 def default_managed_audio_models_root() -> Path:
@@ -395,6 +476,7 @@ def download_audio_model(
         raise RuntimeError(f"Runtime chưa được cài: {selected_runtime.python_path}")
 
     destination = audio_model_download_dir(model.model_type, managed_root)
+    guard_output_space(destination, minimum_mib=2 * 1024)
     destination.mkdir(parents=True, exist_ok=True)
     report = progress or (lambda _message: None)
     cancellation = stop_event or threading.Event()
@@ -691,6 +773,18 @@ def separate_audio(
     if not input_path.is_file():
         raise FileNotFoundError(f"Không tìm thấy file đầu vào: {input_path}")
 
+    guard_output_space(
+        options.output_dir,
+        source_paths=(input_path,),
+        required_bytes=estimate_media_working_bytes(
+            (input_path,),
+            sample_rate=44_100,
+            channels=2,
+            working_copies=4,
+            minimum_bytes=1024 * 1024 * 1024,
+        ),
+    )
+
     models = discover_uvr_models(uvr_root)
     method = normalize_audio_method(options.method)
     model = next(
@@ -714,11 +808,28 @@ def separate_audio(
         resolved_device,
         method,
     )
+    warnings: list[str] = []
+    if (
+        not ready
+        and normalize_audio_device(options.processing_device) == AUTO_AUDIO_DEVICE
+        and resolved_device != CPU_AUDIO_DEVICE
+    ):
+        cpu_ready, cpu_message = audio_separator_runtime_ready(
+            selected_runtime,
+            CPU_AUDIO_DEVICE,
+            method,
+        )
+        if cpu_ready:
+            warnings.append(
+                f"{runtime_message} Đã tự động chuyển sang CPU; tác vụ có thể chậm hơn."
+            )
+            ready = True
+            resolved_device = CPU_AUDIO_DEVICE
+            runtime_message = cpu_message
     if not ready:
         raise RuntimeError(
             f"{runtime_message}\nChạy install_audio_separator.ps1 để cài engine tách âm thanh."
         )
-    warnings: list[str] = []
     if (
         normalize_audio_device(options.processing_device) == AUTO_AUDIO_DEVICE
         and method == DEMUCS_METHOD

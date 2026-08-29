@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Callable, Protocol
 
+from ..reliability.service import estimate_audio_bytes, guard_output_space
 from .models import StudioArtifact, StudioGenerationSpec, StudioTakeView
 from .repository import StudioTakeRepository
 
@@ -33,6 +34,10 @@ class StudioService:
         generation_run_id: str,
     ) -> StudioTakeView:
         spec.validate()
+        guard_output_space(
+            spec.output_dir,
+            required_bytes=estimate_audio_bytes(spec.text, output_count=len(spec.formats)),
+        )
         if engine.engine_id != spec.engine_id:
             raise ValueError(
                 f"Adapter {engine.engine_id} không thể xử lý yêu cầu cho {spec.engine_id}."

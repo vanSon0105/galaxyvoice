@@ -1,7 +1,6 @@
 """Web API for the local Ultimate Vocal Remover audio workspace."""
 from __future__ import annotations
 
-import subprocess
 import threading
 import time
 from pathlib import Path
@@ -28,6 +27,7 @@ from ...audio_separation.service import (
     download_audio_model,
     discover_uvr_models,
     list_downloadable_audio_models,
+    install_audio_separator_runtime,
     load_audio_presets,
     normalize_audio_device,
     normalize_audio_method,
@@ -258,7 +258,7 @@ def _runtime_status(device: str, method: str, *, force: bool = False) -> dict[st
 
 def _progress(record: TaskRecord):
     def report(message: str) -> None:
-        event_bus.emit({"type": "progress", "task_id": record.task_id, "message": message})
+        task_registry.report(record.task_id, message)
 
     return report
 
@@ -388,30 +388,34 @@ def delete_preset(name: str, request: Request) -> dict[str, bool]:
 
 
 @router.post("/install")
-def install_runtime(body: dict[str, Any]) -> dict[str, bool]:
+def install_runtime(body: dict[str, Any]) -> dict[str, str]:
     installer = studio_root() / "install_audio_separator.ps1"
     if not installer.is_file():
         raise HTTPException(status_code=404, detail=f"Không tìm thấy bộ cài: {installer}")
     device = normalize_audio_device(str(body.get("device") or "auto"))
-    command = [
-        "powershell",
-        "-NoExit",
-        "-ExecutionPolicy",
-        "Bypass",
-        "-File",
-        str(installer),
-        "-Device",
-        device,
-    ]
-    try:
-        subprocess.Popen(
-            command,
-            cwd=installer.parent,
-            creationflags=getattr(subprocess, "CREATE_NEW_CONSOLE", 0),
+    runtime = default_audio_separator_runtime()
+    record = task_registry.create(
+        "audio-separator-install",
+        capability_id="audio.separation",
+        resource_keys=("network", "disk"),
+        recovery_route="/separation",
+    )
+    record.on_cancel = lambda: managed_media_processes.terminate_task(record.task_id)
+
+    def execute() -> dict[str, str]:
+        result = install_audio_separator_runtime(
+            installer,
+            runtime=runtime,
+            device=device,
+            progress=_progress(record),
+            stop_event=record.stop_event,
+            task_id=record.task_id,
         )
-    except OSError as error:
-        raise HTTPException(status_code=500, detail=f"Không mở được bộ cài: {error}") from error
-    return {"ok": True}
+        reset_audio_api_caches()
+        return result
+
+    run_task(record, execute, lambda result: result)
+    return {"task_id": record.task_id}
 
 
 @router.post("/separate")

@@ -14,10 +14,35 @@ from app.common.diagnostics import (  # noqa: E402
     configure_logging,
     get_logger,
     log_operation_failure,
+    redacted_binary_log,
+    redact_sensitive_text,
 )
 
 
 class DiagnosticsTests(unittest.TestCase):
+    def test_retained_subprocess_log_is_sanitized_on_failure(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            log_path = Path(temp_dir) / "install.log"
+            with self.assertRaisesRegex(RuntimeError, "failed"):
+                with redacted_binary_log(log_path) as stream:
+                    stream.write(b"download https://example.invalid/?token=hf_abcdefghijk\n")
+                    raise RuntimeError("failed")
+
+            contents = log_path.read_text(encoding="utf-8")
+            self.assertNotIn("hf_abcdefghijk", contents)
+            self.assertIn("***", contents)
+
+    def test_redactor_masks_provider_tokens_and_natural_key_messages(self) -> None:
+        text = redact_sensitive_text(
+            "Incorrect API key provided: sk-proj-123456789; "
+            "NVIDIA api key: nvapi-abcdefghijk and token hf_abcdefghijk"
+        )
+
+        self.assertNotIn("sk-proj", text)
+        self.assertNotIn("nvapi-", text)
+        self.assertNotIn("hf_", text)
+        self.assertGreaterEqual(text.count("***"), 3)
+
     def test_failure_log_records_operation_without_exception_details(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             log_path = Path(temp_dir) / "galaxy.log"

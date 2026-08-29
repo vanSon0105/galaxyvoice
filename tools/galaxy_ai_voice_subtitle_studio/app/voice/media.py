@@ -14,6 +14,7 @@ from ..common.errors import TaskCancelledError
 from ..common.ffmpeg import ffmpeg_missing_message, find_ffmpeg
 from ..common.paths import unique_project_dir
 from ..common.processes import managed_media_processes, terminate_process_tree
+from ..reliability.service import estimate_media_working_bytes, guard_output_space
 
 ProgressCallback = Callable[[str], None]
 Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
@@ -54,6 +55,19 @@ def extract_audio_from_video(
         raise FileNotFoundError(f"Video file not found: {video_path}")
     if not options.export_wav and not options.export_mp3:
         raise ValueError("Choose at least one audio export format.")
+
+    guard_output_space(
+        options.output_dir,
+        source_paths=(video_path,),
+        required_bytes=estimate_media_working_bytes(
+            (video_path,),
+            sample_rate=48_000,
+            channels=2,
+            bytes_per_sample=2,
+            working_copies=int(options.export_wav) + int(options.export_mp3),
+            minimum_bytes=512 * 1024 * 1024,
+        ),
+    )
 
     ffmpeg = ffmpeg_path or find_ffmpeg()
     if not ffmpeg:

@@ -387,6 +387,8 @@ export const fetchDubbingQuality = (segments: DubbingSegment[], options: Record<
   })
 
 export const startDubbingTranslation = (body: {
+  galaxy_project_id?: string
+  workflow_id?: string
   source_srt: string
   source_language?: string
   target_language?: string

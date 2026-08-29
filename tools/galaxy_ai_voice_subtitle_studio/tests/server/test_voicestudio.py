@@ -94,10 +94,11 @@ class VoiceStudioRouterTests(unittest.TestCase):
             runtime.snapshot_dir.mkdir(parents=True)
             runtime.snapshot_metadata_path.write_text("{}", encoding="utf-8")
             process = Mock(returncode=0)
-            process.poll.return_value = 0
+            process.poll.side_effect = [None, 0]
             controller = Mock(runtime=runtime)
             controller.installer_running.return_value = False
             controller.run_installer.return_value = process
+            controller.installer_log_tail.return_value = "Installing local runtime"
             emitted: list[dict[str, object]] = []
             with (
                 patch.object(voicestudio, "_get_controller", return_value=controller),
@@ -112,6 +113,7 @@ class VoiceStudioRouterTests(unittest.TestCase):
         self.assertIsNotNone(record)
         self.assertEqual(record.status, DONE)
         self.assertEqual(record.result, {"success": True})
+        self.assertIn("Installing local runtime", record.logs)
         self.assertTrue(
             any(event.get("kind") == "voicestudio_installed" for event in emitted)
         )

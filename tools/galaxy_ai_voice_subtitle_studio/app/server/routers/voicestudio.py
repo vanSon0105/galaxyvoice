@@ -126,9 +126,7 @@ def install(request: InstallRequest) -> dict[str, Any]:
                     raise TaskCancelledError("Đã dừng cài đặt VoiceStudio")
                 tail = controller.installer_log_tail()
                 if tail and tail != last_tail:
-                    event_bus.emit(
-                        {"type": "progress", "task_id": record.task_id, "message": tail}
-                    )
+                    task_registry.report(record.task_id, tail)
                     last_tail = tail
                 time.sleep(1)
             if record.stop_event.is_set():

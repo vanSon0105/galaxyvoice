@@ -72,6 +72,24 @@ class AdvancedCapabilityRegistryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "Unknown disposition"):
             disposition("extension.invalid", kind=cast(DispositionKind, "native"))
 
+    def test_default_capabilities_have_approved_dispositions(self) -> None:
+        self.assertEqual(
+            {
+                item.capability_id: item.disposition
+                for item in advanced_capability_registry.list_capabilities()
+            },
+            {
+                "dictation.live": "extension",
+                "transcripts.local_refinement": "extension",
+                "api.openai_audio": "extension",
+                "mcp.voice": "extension",
+                "backend.remote": "deferred",
+                "audio.watermarking": "optional_adapter",
+                "video.visual_lip_sync": "optional_adapter",
+                "marketplace.plugins": "non_goal",
+            },
+        )
+
     def test_default_capabilities_are_disabled_and_immutable(self) -> None:
         capabilities = advanced_capability_registry.list_capabilities()
 

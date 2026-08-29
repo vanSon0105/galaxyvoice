@@ -1,3 +1,4 @@
+import { useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
 import {
@@ -28,9 +29,22 @@ function DetailList({ title, items }: { title: string; items: string[] }) {
 }
 
 function CapabilityRow({ capability }: { capability: ExtensionCapability }) {
+  const [open, setOpen] = useState(false)
+
   return (
-    <details className="extension-capability">
-      <summary>
+    <details
+      className="extension-capability"
+      open={open}
+      onToggle={(event) => setOpen(event.currentTarget.open)}
+    >
+      <summary
+        onKeyDown={(event) => {
+          if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault()
+            setOpen((current) => !current)
+          }
+        }}
+      >
         <span className="extension-capability-copy">
           <strong>{capability.label}</strong>
           <span>{capability.summary}</span>

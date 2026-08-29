@@ -129,11 +129,14 @@ describe('ExtensionCapabilitiesPanel', () => {
 
     summary.focus()
     expect(summary).toHaveFocus()
-    fireEvent.click(summary)
+    fireEvent.keyDown(summary, { key: 'Enter' })
 
     expect(details).toHaveAttribute('open')
     expect(screen.getByText('Reuse the Transcript ASR adapter.')).toBeVisible()
     expect(screen.getByText('Microphone access requires explicit permission.')).toBeVisible()
     expect(screen.getByText('A supported capture contract is available.')).toBeVisible()
+
+    fireEvent.keyDown(summary, { key: ' ' })
+    expect(details).not.toHaveAttribute('open')
   })
 })

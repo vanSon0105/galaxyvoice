@@ -1,7 +1,8 @@
 import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import * as extensionsApi from '../api/extensions'
 import * as settingsApi from '../api/settings'
 import type { AppSettings, SettingsMeta } from '../api/settings'
 import { SettingsPage } from './SettingsPage'
@@ -39,7 +40,56 @@ afterEach(() => {
   vi.restoreAllMocks()
 })
 
+beforeEach(() => {
+  vi.spyOn(extensionsApi, 'fetchExtensionCapabilities').mockResolvedValue({ capabilities: [] })
+})
+
 describe('SettingsPage', () => {
+  it('loads the extension catalogue while editable settings are pending', async () => {
+    vi.spyOn(settingsApi, 'fetchSettings').mockImplementation(() => new Promise(() => undefined))
+    vi.spyOn(settingsApi, 'fetchSettingsMeta').mockImplementation(() => new Promise(() => undefined))
+    vi.mocked(extensionsApi.fetchExtensionCapabilities).mockResolvedValue({
+      capabilities: [{
+        capability_id: 'dictation.live', label: 'Live dictation', category: 'voice_input',
+        disposition: 'extension', summary: 'Microphone transcription.', boundary: 'Use Transcript ASR.',
+        constraints: [], revisit_triggers: [], extension_capability_ids: ['asr.faster-whisper'],
+        default_enabled: false,
+      }],
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsPage />
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('Live dictation')).toBeInTheDocument()
+    expect(screen.getByText('Microphone transcription.')).toBeInTheDocument()
+  })
+
+  it('keeps the extension catalogue visible when editable settings fail', async () => {
+    vi.spyOn(settingsApi, 'fetchSettings').mockRejectedValue(new Error('settings unavailable'))
+    vi.spyOn(settingsApi, 'fetchSettingsMeta').mockResolvedValue(EMPTY_META)
+    vi.mocked(extensionsApi.fetchExtensionCapabilities).mockResolvedValue({
+      capabilities: [{
+        capability_id: 'backend.remote', label: 'Remote backend', category: 'deployment',
+        disposition: 'deferred', summary: 'Remote service.', boundary: 'Keep loopback.',
+        constraints: [], revisit_triggers: [], extension_capability_ids: [], default_enabled: false,
+      }],
+    })
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsPage />
+      </QueryClientProvider>,
+    )
+
+    expect(await screen.findByText('Remote backend')).toBeInTheDocument()
+    expect(screen.getByText('Remote service.')).toBeInTheDocument()
+  })
+
   it('keeps the latest draft when save responses arrive out of order', async () => {
     vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({ output_dir: 'D:/old' })
     vi.spyOn(settingsApi, 'fetchSettingsMeta').mockResolvedValue(EMPTY_META)

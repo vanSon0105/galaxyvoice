@@ -153,14 +153,9 @@ export function SettingsPage() {
     }
   }, [draft, settingsQuery.data])
 
-  if (settingsQuery.isPending || metaQuery.isPending) {
-    return <div className="placeholder-page">{t('ws.connecting')}</div>
-  }
-  if (!settingsQuery.data || !metaQuery.data || draft === null) {
-    return <div className="placeholder-page">{t('settings.loadError')}</div>
-  }
-
-  const settings = draft
+  const settingsPending = settingsQuery.isPending || metaQuery.isPending
+  const settingsUnavailable = !settingsQuery.data || !metaQuery.data || draft === null
+  const settings = draft ?? {}
 
   const handleChange = (field: FieldSchema, raw: string | boolean) => {
     setDraft((current) => ({ ...(current ?? {}), [field.key]: raw }))
@@ -234,14 +229,20 @@ export function SettingsPage() {
         </h1>
         <span style={{ color: 'var(--color-fg-subtle)', fontSize: 12 }}>{saveNote}</span>
       </div>
-      {SECTIONS.map((section) => (
-        <section className="section-card" key={section.key}>
-          <h2 className="section-title">{section.label}</h2>
-          <div className="field-grid">
-            {schema.filter((field) => field.section === section.key).map(renderField)}
-          </div>
-        </section>
-      ))}
+      {settingsPending ? (
+        <div className="placeholder-page">{t('ws.connecting')}</div>
+      ) : settingsUnavailable ? (
+        <div className="placeholder-page">{t('settings.loadError')}</div>
+      ) : (
+        SECTIONS.map((section) => (
+          <section className="section-card" key={section.key}>
+            <h2 className="section-title">{section.label}</h2>
+            <div className="field-grid">
+              {schema.filter((field) => field.section === section.key).map(renderField)}
+            </div>
+          </section>
+        ))
+      )}
       <ExtensionCapabilitiesPanel />
     </div>
   )

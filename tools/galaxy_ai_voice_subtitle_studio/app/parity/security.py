@@ -19,6 +19,7 @@ _SENSITIVE_KEY = re.compile(
     re.IGNORECASE,
 )
 _HASH_CHUNK_SIZE = 8 * 1024 * 1024
+_REPARSE_POINT_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 
 
 class UnsafePathError(ValueError):
@@ -39,9 +40,17 @@ def resolve_approved_path(path: Path, roots: Sequence[Path]) -> Path:
 
 def fingerprint_source(path: Path) -> SourceFingerprint:
     source = Path(path)
-    if source.is_symlink():
-        raise UnsafePathError(f"Fingerprint source cannot be a symlink: {path}")
-    if source.is_file():
+    try:
+        source_info = source.lstat()
+    except FileNotFoundError:
+        raise FileNotFoundError(
+            f"Fingerprint source is not a regular file or directory: {path}"
+        ) from None
+    if _is_link_like(source_info):
+        raise UnsafePathError(
+            f"Fingerprint source cannot be a link or reparse point: {path}"
+        )
+    if stat.S_ISREG(source_info.st_mode):
         digest = hashlib.sha256()
         byte_size = _hash_file(source, digest)
         return SourceFingerprint(
@@ -50,7 +59,7 @@ def fingerprint_source(path: Path) -> SourceFingerprint:
             byte_size=byte_size,
             entry_count=1,
         )
-    if source.is_dir():
+    if stat.S_ISDIR(source_info.st_mode):
         digest = hashlib.sha256(b"directory\0")
         byte_size, entry_count = _hash_directory(source, digest)
         return SourceFingerprint(
@@ -83,11 +92,10 @@ def _hash_directory(root: Path, digest: Any) -> tuple[int, int]:
             entry_count += 1
             entry_path = Path(entry.path)
             relative_path = entry_path.relative_to(root).as_posix().encode("utf-8")
-            mode = entry.stat(follow_symlinks=False).st_mode
-            if stat.S_ISLNK(mode):
-                _hash_entry_header(digest, b"L", relative_path)
-                digest.update(os.fsencode(os.readlink(entry.path)))
-                digest.update(b"\0")
+            entry_info = entry.stat(follow_symlinks=False)
+            mode = entry_info.st_mode
+            if _is_link_like(entry_info):
+                _hash_link_metadata(digest, entry.path, relative_path, entry_info)
             elif stat.S_ISDIR(mode):
                 _hash_entry_header(digest, b"D", relative_path)
                 visit(entry_path)
@@ -101,6 +109,31 @@ def _hash_directory(root: Path, digest: Any) -> tuple[int, int]:
 
     visit(root)
     return byte_size, entry_count
+
+
+def _is_link_like(file_info: os.stat_result) -> bool:
+    file_attributes = getattr(file_info, "st_file_attributes", 0)
+    return stat.S_ISLNK(file_info.st_mode) or bool(
+        _REPARSE_POINT_ATTRIBUTE
+        and file_attributes & _REPARSE_POINT_ATTRIBUTE
+    )
+
+
+def _hash_link_metadata(
+    digest: Any,
+    path: str,
+    relative_path: bytes,
+    file_info: os.stat_result,
+) -> None:
+    _hash_entry_header(digest, b"L", relative_path)
+    digest.update(str(getattr(file_info, "st_reparse_tag", 0)).encode("ascii"))
+    digest.update(b":")
+    try:
+        target = os.readlink(path)
+    except OSError as error:
+        raise UnsafePathError(f"Cannot inspect link metadata: {path}") from error
+    digest.update(os.fsencode(target))
+    digest.update(b"\0")
 
 
 def _hash_entry_header(digest: Any, kind: bytes, relative_path: bytes) -> None:

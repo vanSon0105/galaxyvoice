@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -12,6 +14,37 @@ from app.parity import (
     redact_report_value,
     resolve_approved_path,
 )
+
+
+_SYMLINK_UNAVAILABLE_ERRNOS = {
+    errno.EACCES,
+    errno.ENOSYS,
+    errno.ENOTSUP,
+    errno.EPERM,
+}
+_SYMLINK_UNAVAILABLE_WINERRORS = {1, 50, 1314}
+
+
+def _symlink_or_skip(link: Path, target: Path, *, target_is_directory: bool) -> None:
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except OSError as error:
+        if (
+            error.errno in _SYMLINK_UNAVAILABLE_ERRNOS
+            or getattr(error, "winerror", None) in _SYMLINK_UNAVAILABLE_WINERRORS
+        ):
+            pytest.skip(f"Symlinks are unavailable: {error}")
+        raise
+
+
+def _create_windows_junction(link: Path, target: Path) -> None:
+    subprocess.run(
+        ["cmd.exe", "/d", "/c", "mklink", "/J", str(link), str(target)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert os.path.isjunction(link)
 
 
 def test_approved_path_accepts_descendant_and_rejects_escape(tmp_path: Path) -> None:
@@ -31,10 +64,7 @@ def test_approved_path_rejects_symlink_escape(tmp_path: Path) -> None:
     root.mkdir()
     outside.mkdir()
     link = root / "external"
-    try:
-        link.symlink_to(outside, target_is_directory=True)
-    except OSError as error:
-        pytest.skip(f"Symlinks are unavailable: {error}")
+    _symlink_or_skip(link, outside, target_is_directory=True)
 
     with pytest.raises(UnsafePathError):
         resolve_approved_path(link / "source.db", (root,))
@@ -68,14 +98,43 @@ def test_directory_fingerprint_does_not_follow_symlinks(tmp_path: Path) -> None:
     outside = tmp_path / "outside.bin"
     root.mkdir()
     outside.write_bytes(b"outside-one")
-    try:
-        (root / "external.bin").symlink_to(outside)
-    except OSError as error:
-        pytest.skip(f"Symlinks are unavailable: {error}")
+    _symlink_or_skip(root / "external.bin", outside, target_is_directory=False)
 
     before = fingerprint_source(root)
 
     outside.write_bytes(b"outside-two-is-different")
+    assert fingerprint_source(root) == before
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction behavior")
+def test_fingerprint_rejects_windows_junction_source(tmp_path: Path) -> None:
+    target = tmp_path / "outside"
+    junction = tmp_path / "junction"
+    target.mkdir()
+    _create_windows_junction(junction, target)
+
+    with pytest.raises(UnsafePathError):
+        fingerprint_source(junction)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction behavior")
+def test_directory_fingerprint_does_not_follow_windows_junction(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "source"
+    outside = tmp_path / "outside"
+    junction = root / "external"
+    root.mkdir()
+    outside.mkdir()
+    outside_file = outside / "outside.bin"
+    outside_file.write_bytes(b"outside-one")
+    _create_windows_junction(junction, outside)
+
+    before = fingerprint_source(root)
+
+    assert before.byte_size == 0
+    assert before.entry_count == 1
+    outside_file.write_bytes(b"outside-two-is-different")
     assert fingerprint_source(root) == before
 
 

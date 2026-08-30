@@ -21,6 +21,7 @@ from typing import Any, Literal
 from urllib.parse import quote
 
 from ..common.paths import repository_root
+from ..video_editor.service import probe_audio_duration
 from ..voice_library.models import ConsentRecord, VoiceProfileRecord
 from .models import SourceFingerprint
 from .security import fingerprint_source, redact_report_value, resolve_approved_path
@@ -156,7 +157,13 @@ class MigrationAsset:
     byte_size: int = 0
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "role", _text(redact_report_value(self.role)))
         object.__setattr__(self, "hint", _text(redact_report_value(self.hint)))
+        object.__setattr__(
+            self,
+            "expected_sha256",
+            _text(redact_report_value(self.expected_sha256)),
+        )
 
 
 @dataclass(frozen=True)
@@ -169,7 +176,14 @@ class MigrationCandidate:
     consent: ConsentRecord = field(default_factory=ConsentRecord)
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "source_id",
+            _text(redact_report_value(self.source_id)),
+        )
+        object.__setattr__(self, "target", _text(redact_report_value(self.target)))
         safe_data = redact_report_value(dict(self.data))
+        safe_consent = redact_report_value(asdict(self.consent))
         object.__setattr__(self, "data", MappingProxyType(dict(safe_data)))
         object.__setattr__(self, "assets", tuple(self.assets))
         object.__setattr__(
@@ -177,6 +191,7 @@ class MigrationCandidate:
             "warnings",
             tuple(_text(redact_report_value(item)) for item in self.warnings),
         )
+        object.__setattr__(self, "consent", ConsentRecord(**safe_consent))
 
 
 @dataclass(frozen=True)
@@ -244,10 +259,13 @@ def inspect_migration_source(
     source: Path,
     *,
     approved_roots: Sequence[Path],
+    copied_source_confirmed: bool,
     sandbox_root: Path | None = None,
 ) -> MigrationDryRun:
     """Inspect a copied database, data directory, or persona bundle without writes."""
 
+    if copied_source_confirmed is not True:
+        raise ValueError("Explicit copied source confirmation is required")
     selection = _select_migration_source(Path(source), approved_roots)
     resolved_source = selection.path
     before = fingerprint_source(resolved_source)
@@ -671,11 +689,11 @@ def _normalize_dub_tracks(
     data_root: Path,
     approved_roots: tuple[Path, ...],
     warnings: list[str],
-) -> tuple[list[dict[str, Any]] | None, tuple[MigrationAsset, ...]]:
+) -> tuple[list[str | dict[str, Any]] | None, tuple[MigrationAsset, ...]]:
     if not isinstance(value, list):
         warnings.append("tracks: expected a list; unsupported payload omitted")
         return None, ()
-    normalized: list[dict[str, Any]] = []
+    normalized: list[str | dict[str, Any]] = []
     assets: list[MigrationAsset] = []
     allowed = {"id", "track_id", "language", "language_code", "speaker", "segments"}
     paths = {
@@ -685,8 +703,14 @@ def _normalize_dub_tracks(
         "dubbed_path": "dub_output",
     }
     for index, raw_track in enumerate(value):
+        if isinstance(raw_track, str):
+            if raw_track.strip():
+                normalized.append(raw_track)
+            else:
+                warnings.append(f"tracks[{index}]: empty track identifier omitted")
+            continue
         if not isinstance(raw_track, Mapping):
-            warnings.append(f"tracks[{index}]: unsupported non-object track omitted")
+            warnings.append(f"tracks[{index}]: unsupported track value omitted")
             continue
         track: dict[str, Any] = {}
         track_id = raw_track.get("id") or raw_track.get("track_id")
@@ -1069,7 +1093,7 @@ def _inspect_bundle(bundle: Path, sandbox: Path, inspection: _Inspection) -> Non
 
 
 def _archive_rejection(infos: list[zipfile.ZipInfo]) -> str:
-    members = [info for info in infos if not info.is_dir()]
+    members = infos
     if len(members) > MAX_ARCHIVE_MEMBERS:
         return "archive member count limit exceeded"
     total = sum(max(0, info.file_size) for info in members)
@@ -1757,19 +1781,9 @@ def _is_valid_audio(path: Path) -> bool:
                     and audio.getframerate() > 0
                     and audio.getnframes() > 0
                 )
-        with path.open("rb") as source:
-            header = source.read(16)
-        if suffix == ".flac":
-            return header.startswith(b"fLaC")
-        if suffix in {".ogg", ".opus"}:
-            return header.startswith(b"OggS")
-        if suffix == ".mp3":
-            return header.startswith(b"ID3") or (
-                len(header) >= 2 and header[0] == 0xFF and header[1] & 0xE0 == 0xE0
-            )
-        if suffix in {".m4a", ".mp4"}:
-            return len(header) >= 12 and header[4:8] == b"ftyp"
-    except (OSError, EOFError, wave.Error):
+        if suffix in {".flac", ".ogg", ".opus", ".mp3", ".m4a", ".mp4"}:
+            return probe_audio_duration(path) > 0
+    except (OSError, RuntimeError, ValueError, EOFError, wave.Error):
         return False
     return False
 

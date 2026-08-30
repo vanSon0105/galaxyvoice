@@ -175,3 +175,81 @@ not invoke Galaxy persistence repositories.
   symlink privilege (`WinError 1314`); privilege-free junction/reparse coverage
   passes. The full suite also retains one pre-existing Starlette `httpx`
   deprecation warning.
+
+## Fix Round 2
+
+### Status
+
+DONE_WITH_CONCERNS. C1, I1, I2, I4, I5, and I7 from the scoped re-review are
+fixed. Issue 17 was moved back to `claimed` during verification and resolved
+only after the focused regressions, compile check, and full backend suite all
+passed.
+
+### Reviewer Findings Addressed
+
+- C1: compressed consent recordings now require a successful local ffprobe
+  duration probe; fake MP3 magic bytes fail unconfirmed. WAV remains validated
+  by the strict standard-library parser.
+- I1: report redaction now covers candidate source IDs, targets, consent
+  fields, asset roles/hints/checksums, nested data (including names/titles),
+  findings, and warnings.
+- I2: ZIP directory entries pass through duplicate, control-character,
+  traversal, link/reparse, count, size, and compression checks before any
+  extraction filtering; one unsafe directory rejects the whole bundle.
+- I4: the snapshot's published `dub_history.tracks` shape (`list[str]`) is
+  preserved structurally, while object tracks remain allowlisted and raw
+  engine payloads remain omitted.
+- I5: `inspect_migration_source()` now requires the caller to pass the typed,
+  keyword-only `copied_source_confirmed=True`; omission and false reject while
+  all existing denylist, format, filename, link, and reparse defenses remain.
+- I7: issue 17's claims and verification counts now match this round's passing
+  fixtures and suites.
+
+### TDD Evidence
+
+The copied-source contract test first failed because omission did not reject.
+After that contract was added, the remaining four regression probes failed on
+their reviewed symptoms:
+
+```text
+FAILED test_published_bundle_consent_rejects_fake_compressed_audio_magic
+FAILED test_every_source_controlled_candidate_field_is_redacted
+FAILED test_dub_mapping_preserves_published_string_track_identifiers
+FAILED test_archive_unsafe_directory_entry_rejects_whole_bundle
+4 failed in 0.79s
+```
+
+Each fix then passed its targeted test before the next finding was changed.
+
+### Verification
+
+```text
+python -m pytest tests/parity/test_migration.py tests/parity/test_security.py -q -rs
+51 passed, 2 skipped in 11.97s
+
+python -m compileall -q app/parity tests/parity
+exit 0
+
+python -m pytest -q -rs
+538 passed, 2 skipped, 1 warning, 60 subtests passed in 86.81s
+```
+
+`git diff --check` exits 0 apart from Git's LF-to-CRLF working-copy notices.
+The diff keeps SQLite `mode=ro`, does not import or edit vendored VoiceStudio,
+and does not invoke Galaxy persistence repositories.
+
+### Fix Round Files
+
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/migration.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_migration.py`
+- `.scratch/native-voice-workspace/issues/17-voicestudio-data-migration-policy.md`
+- `.superpowers/sdd/2026-08-30-native-parity-validation/task-2-report.md`
+
+### Remaining Concerns
+
+- M1 (aggregate database/report limits) and M2 (module decomposition) remain
+  deferred minors from the original review.
+- Two ordinary-symlink security tests remain skipped because this Windows
+  account lacks symlink privilege (`WinError 1314`); junction/reparse coverage
+  passes. The full suite retains one existing Starlette `httpx` deprecation
+  warning.

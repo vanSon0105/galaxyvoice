@@ -11,12 +11,20 @@ import wave
 import zipfile
 from contextlib import closing
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from app.parity import migration as migration_module
 from app.parity import fingerprint_source
-from app.parity.migration import MAX_ARCHIVE_MEMBER_BYTES, MAX_JSON_BYTES, inspect_migration_source
+from app.parity.migration import (
+    MAX_ARCHIVE_MEMBER_BYTES,
+    MAX_JSON_BYTES,
+    MigrationAsset,
+    MigrationCandidate,
+    inspect_migration_source as _inspect_migration_source,
+)
+from app.voice_library.models import ConsentRecord
 
 
 SUPPORTED_SCHEMA = """
@@ -91,7 +99,7 @@ def build_source_db(
     *,
     consent_text: str = "I attest this is my voice",
     consent_recording: str = "consent.wav",
-    tracks: str = '[{"speaker": "narrator"}]',
+    tracks: str = '["es", "fr"]',
     job_data: str = '{"segments": [{"text": "Hello"}]}',
 ) -> Path:
     copied_root = tmp_path / "voicestudio-copy"
@@ -194,6 +202,14 @@ def build_source_db(
         connection.execute("INSERT INTO future_table VALUES ('new-1', '{}')")
         connection.commit()
     return source
+
+
+def inspect_migration_source(source: Path, **kwargs: Any) -> Any:
+    return _inspect_migration_source(
+        source,
+        copied_source_confirmed=True,
+        **kwargs,
+    )
 
 
 def build_bundle(tmp_path: Path, members: dict[str, bytes]) -> Path:
@@ -330,7 +346,7 @@ def test_sqlite_maps_supported_groups_and_only_confirms_complete_consent(
     assert voice.data["instruction"] == "Warm delivery"
     assert voice.consent.confirmed is True
     assert report.generation_history[0].data["starred"] is True
-    assert report.dub_history[0].data["tracks"] == [{"speaker": "narrator"}]
+    assert report.dub_history[0].data["tracks"] == ["es", "fr"]
     assert report.studio_projects[0].data["name"] == "Studio project"
     assert report.export_history[0].data["filename"] == "take.wav"
     assert report.glossary_terms[0].data["note"] == "Keep brand"
@@ -396,6 +412,30 @@ def test_bundle_consent_rejects_truthy_strings_arbitrary_method_and_fake_audio(
 
     assert report.persona_bundles[0].consent.confirmed is False
     assert report.persona_bundles[0].consent.basis == ""
+
+
+def test_published_bundle_consent_rejects_fake_compressed_audio_magic(
+    tmp_path: Path,
+) -> None:
+    manifest = published_persona_manifest(consent_audio="consent_audio.mp3")
+    bundle = build_bundle_entries(
+        tmp_path,
+        [
+            ("manifest.json", json.dumps(manifest).encode("utf-8")),
+            ("consent.json", json.dumps(published_consent()).encode("utf-8")),
+            ("preview.wav", valid_wav_bytes()),
+            ("ref_audio.wav", valid_wav_bytes()),
+            ("locked_audio.wav", valid_wav_bytes()),
+            ("consent_audio.mp3", b"ID3" + b"\x00" * 1_500),
+        ],
+        compression=zipfile.ZIP_STORED,
+    )
+
+    report = inspect_migration_source(bundle, approved_roots=(tmp_path,))
+
+    candidate = report.persona_bundles[0]
+    assert candidate.consent.confirmed is False
+    assert any("re-attestation" in warning for warning in candidate.warnings)
 
 
 def test_sqlite_wal_copy_is_rejected_before_sidecars_can_change(tmp_path: Path) -> None:
@@ -498,6 +538,26 @@ def test_absolute_asset_hints_are_redacted_after_classification(
     assert asset.state == "linked"
     assert asset.hint.replace("\\", "/") == "<home>/linked.wav"
     assert str(fake_home) not in repr(report)
+
+
+def test_every_source_controlled_candidate_field_is_redacted() -> None:
+    private = str(Path.home() / "private" / "api_key=TOP-SECRET")
+
+    candidate = MigrationCandidate(
+        source_id=private,
+        target="voice_profile",
+        data={"name": private, "title": private},
+        assets=(MigrationAsset(role="reference_audio", hint=private, state="linked"),),
+        consent=ConsentRecord(statement=private, provenance=private),
+    )
+
+    rendered = repr(candidate)
+    assert str(Path.home()) not in rendered
+    assert "TOP-SECRET" not in rendered
+    assert candidate.source_id.startswith("<home>")
+    assert candidate.data["name"].startswith("<home>")
+    assert candidate.data["title"].startswith("<home>")
+    assert candidate.assets[0].hint.startswith("<home>")
 
 
 def test_global_report_warnings_are_redacted() -> None:
@@ -616,6 +676,16 @@ def test_dub_mapping_allowlists_structure_and_classifies_output_assets(
     assert all(asset.state == "managed" for asset in candidate.assets)
     assert any("unsupported" in warning.casefold() for warning in candidate.warnings)
     assert "SECRET" not in repr(candidate)
+
+
+def test_dub_mapping_preserves_published_string_track_identifiers(tmp_path: Path) -> None:
+    source = build_source_db(tmp_path, tracks=json.dumps(["es", "fr"]))
+
+    report = inspect_migration_source(source, approved_roots=(tmp_path,))
+
+    candidate = report.dub_history[0]
+    assert candidate.data["tracks"] == ["es", "fr"]
+    assert not any("tracks[" in warning for warning in candidate.warnings)
 
 
 def test_studio_state_is_allowlisted_and_unmatched_fields_warn(tmp_path: Path) -> None:
@@ -796,6 +866,24 @@ def test_archive_duplicate_or_control_member_rejects_whole_bundle(
     assert not any(asset.state == "managed" for asset in report.assets)
 
 
+def test_archive_unsafe_directory_entry_rejects_whole_bundle(tmp_path: Path) -> None:
+    bundle = build_bundle_entries(
+        tmp_path,
+        [
+            ("../../escape/", b""),
+            ("manifest.json", minimal_persona_manifest()),
+            ("preview.wav", valid_wav_bytes()),
+        ],
+        compression=zipfile.ZIP_STORED,
+    )
+
+    report = inspect_migration_source(bundle, approved_roots=(tmp_path,))
+
+    assert report.persona_bundles == ()
+    assert not any(asset.state == "managed" for asset in report.assets)
+    assert any("traversal" in finding.reason for finding in report.unsupported)
+
+
 def test_archive_compression_ratio_limit_rejects_whole_bundle(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -952,6 +1040,22 @@ def test_live_galaxy_and_voicestudio_roots_are_rejected_even_when_approved(
 
     with pytest.raises(ValueError, match="live|protected|copied"):
         inspect_migration_source(live_database, approved_roots=(tmp_path,))
+
+
+def test_public_contract_requires_explicit_typed_copied_source_confirmation(
+    tmp_path: Path,
+) -> None:
+    source = build_source_db(tmp_path)
+
+    with pytest.raises(TypeError, match="copied_source_confirmed"):
+        _inspect_migration_source(source, approved_roots=(tmp_path,))
+
+    with pytest.raises(ValueError, match="copied source confirmation"):
+        _inspect_migration_source(
+            source,
+            approved_roots=(tmp_path,),
+            copied_source_confirmed=False,
+        )
 
 
 def test_repository_and_vendor_paths_are_rejected_before_format_detection() -> None:

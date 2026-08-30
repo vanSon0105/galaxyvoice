@@ -8,6 +8,7 @@ import os
 import re
 import sqlite3
 import stat
+import subprocess
 import wave
 import zipfile
 from collections.abc import Mapping, Sequence
@@ -20,8 +21,8 @@ from types import MappingProxyType
 from typing import Any, Literal
 from urllib.parse import quote
 
+from ..common.ffmpeg import find_ffprobe
 from ..common.paths import repository_root
-from ..video_editor.service import probe_audio_duration
 from ..voice_library.models import ConsentRecord, VoiceProfileRecord
 from .models import SourceFingerprint
 from .security import fingerprint_source, redact_report_value, resolve_approved_path
@@ -1782,10 +1783,60 @@ def _is_valid_audio(path: Path) -> bool:
                     and audio.getnframes() > 0
                 )
         if suffix in {".flac", ".ogg", ".opus", ".mp3", ".m4a", ".mp4"}:
-            return probe_audio_duration(path) > 0
+            return _has_valid_audio_stream(path)
     except (OSError, RuntimeError, ValueError, EOFError, wave.Error):
         return False
     return False
+
+
+def _has_valid_audio_stream(path: Path) -> bool:
+    ffprobe = find_ffprobe()
+    if not ffprobe:
+        return False
+    try:
+        completed = subprocess.run(
+            [
+                ffprobe,
+                "-v",
+                "error",
+                "-select_streams",
+                "a:0",
+                "-show_entries",
+                "stream=codec_type,codec_name,sample_rate,channels,duration:format=duration",
+                "-of",
+                "json",
+                str(path),
+            ],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            check=False,
+            timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    if completed.returncode != 0:
+        return False
+    try:
+        payload = json.loads(completed.stdout or "{}")
+        streams = payload.get("streams")
+        if not isinstance(streams, list) or not streams:
+            return False
+        stream = streams[0]
+        if not isinstance(stream, Mapping) or stream.get("codec_type") != "audio":
+            return False
+        duration = stream.get("duration") or (payload.get("format") or {}).get("duration")
+        return bool(
+            _text(stream.get("codec_name")).strip()
+            and int(stream.get("sample_rate") or 0) > 0
+            and int(stream.get("channels") or 0) > 0
+            and math.isfinite(float(duration))
+            and float(duration) > 0
+        )
+    except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+        return False
 
 
 def _text(value: Any) -> str:

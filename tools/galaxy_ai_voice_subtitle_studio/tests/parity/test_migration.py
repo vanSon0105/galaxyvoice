@@ -15,6 +15,7 @@ from typing import Any
 
 import pytest
 
+from app.common.ffmpeg import find_ffmpeg
 from app.parity import migration as migration_module
 from app.parity import fingerprint_source
 from app.parity.migration import (
@@ -92,6 +93,31 @@ def valid_wav_bytes(*, frame_count: int = 1600) -> bytes:
         audio.setframerate(16_000)
         audio.writeframes(samples)
     return output.getvalue()
+
+
+def rendered_media_bytes(tmp_path: Path, filename: str, input_spec: str) -> bytes:
+    ffmpeg = find_ffmpeg()
+    assert ffmpeg is not None, "ffmpeg is required for consent media regressions"
+    output = tmp_path / filename
+    completed = subprocess.run(
+        [
+            ffmpeg,
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            input_spec,
+            "-y",
+            str(output),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert completed.returncode == 0, completed.stderr
+    return output.read_bytes()
 
 
 def build_source_db(
@@ -438,6 +464,87 @@ def test_published_bundle_consent_rejects_fake_compressed_audio_magic(
     assert any("re-attestation" in warning for warning in candidate.warnings)
 
 
+def test_published_bundle_consent_rejects_video_only_timed_container(
+    tmp_path: Path,
+) -> None:
+    manifest = published_persona_manifest(consent_audio="consent_audio.mp4")
+    video_only = rendered_media_bytes(
+        tmp_path,
+        "video-only.mp4",
+        "color=c=black:s=32x32:r=10:d=1",
+    )
+    bundle = build_bundle_entries(
+        tmp_path,
+        [
+            ("manifest.json", json.dumps(manifest).encode("utf-8")),
+            ("consent.json", json.dumps(published_consent()).encode("utf-8")),
+            ("preview.wav", valid_wav_bytes()),
+            ("ref_audio.wav", valid_wav_bytes()),
+            ("locked_audio.wav", valid_wav_bytes()),
+            ("consent_audio.mp4", video_only),
+        ],
+        compression=zipfile.ZIP_STORED,
+    )
+
+    report = inspect_migration_source(bundle, approved_roots=(tmp_path,))
+
+    assert report.persona_bundles[0].consent.confirmed is False
+
+
+def test_published_bundle_consent_accepts_valid_compressed_audio(tmp_path: Path) -> None:
+    manifest = published_persona_manifest(consent_audio="consent_audio.flac")
+    compressed_audio = rendered_media_bytes(
+        tmp_path,
+        "valid-consent.flac",
+        "sine=frequency=440:sample_rate=16000:duration=1",
+    )
+    bundle = build_bundle_entries(
+        tmp_path,
+        [
+            ("manifest.json", json.dumps(manifest).encode("utf-8")),
+            ("consent.json", json.dumps(published_consent()).encode("utf-8")),
+            ("preview.wav", valid_wav_bytes()),
+            ("ref_audio.wav", valid_wav_bytes()),
+            ("locked_audio.wav", valid_wav_bytes()),
+            ("consent_audio.flac", compressed_audio),
+        ],
+        compression=zipfile.ZIP_STORED,
+    )
+
+    report = inspect_migration_source(bundle, approved_roots=(tmp_path,))
+
+    assert report.persona_bundles[0].consent.confirmed is True
+
+
+def test_published_bundle_consent_rejects_compressed_audio_without_ffprobe(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    manifest = published_persona_manifest(consent_audio="consent_audio.flac")
+    compressed_audio = rendered_media_bytes(
+        tmp_path,
+        "valid-but-unprobeable.flac",
+        "sine=frequency=440:sample_rate=16000:duration=1",
+    )
+    bundle = build_bundle_entries(
+        tmp_path,
+        [
+            ("manifest.json", json.dumps(manifest).encode("utf-8")),
+            ("consent.json", json.dumps(published_consent()).encode("utf-8")),
+            ("preview.wav", valid_wav_bytes()),
+            ("ref_audio.wav", valid_wav_bytes()),
+            ("locked_audio.wav", valid_wav_bytes()),
+            ("consent_audio.flac", compressed_audio),
+        ],
+        compression=zipfile.ZIP_STORED,
+    )
+    monkeypatch.setattr(migration_module, "find_ffprobe", lambda: None, raising=False)
+
+    report = inspect_migration_source(bundle, approved_roots=(tmp_path,))
+
+    assert report.persona_bundles[0].consent.confirmed is False
+
+
 def test_sqlite_wal_copy_is_rejected_before_sidecars_can_change(tmp_path: Path) -> None:
     source = build_source_db(tmp_path)
     writer = sqlite3.connect(source)
@@ -546,7 +653,11 @@ def test_every_source_controlled_candidate_field_is_redacted() -> None:
     candidate = MigrationCandidate(
         source_id=private,
         target="voice_profile",
-        data={"name": private, "title": private},
+        data={
+            "name": private,
+            "title": private,
+            "design_state": {private: "source-controlled value"},
+        },
         assets=(MigrationAsset(role="reference_audio", hint=private, state="linked"),),
         consent=ConsentRecord(statement=private, provenance=private),
     )
@@ -558,6 +669,8 @@ def test_every_source_controlled_candidate_field_is_redacted() -> None:
     assert candidate.data["name"].startswith("<home>")
     assert candidate.data["title"].startswith("<home>")
     assert candidate.assets[0].hint.startswith("<home>")
+    nested_keys = tuple(candidate.data["design_state"])
+    assert nested_keys == (str(Path("<home>") / "private" / "api_key=***"),)
 
 
 def test_global_report_warnings_are_redacted() -> None:

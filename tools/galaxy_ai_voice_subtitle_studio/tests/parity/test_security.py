@@ -164,3 +164,19 @@ def test_redaction_removes_sensitive_values_and_home_prefixes(
         "tuple": ("safe", {"password": "***"}),
     }
     assert source["api_key"] == "sk-private-value"
+
+
+def test_redaction_sanitizes_nested_source_controlled_mapping_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: home))
+    unsafe_key = os.fspath(home / "private" / "api_key=TOP-SECRET")
+    source = {"design_state": {unsafe_key: "source-controlled value"}}
+
+    redacted = redact_report_value(source)
+
+    safe_key = os.fspath(Path("<home>") / "private" / "api_key=***")
+    assert redacted == {"design_state": {safe_key: "***"}}
+    assert tuple(source["design_state"]) == (unsafe_key,)

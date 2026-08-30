@@ -253,3 +253,82 @@ and does not invoke Galaxy persistence repositories.
   account lacks symlink privilege (`WinError 1314`); junction/reparse coverage
   passes. The full suite retains one existing Starlette `httpx` deprecation
   warning.
+
+## Fix Round 3
+
+### Status
+
+DONE_WITH_CONCERNS. C1, I1, and I7 from `task-2-rereview-round2.md` are fixed.
+Issue 17 remained `claimed` until the focused regressions, compile check, diff
+check, and full backend suite passed, then its supported claims and counts were
+updated before resolution.
+
+### Reviewer Findings Addressed
+
+- C1: compressed consent media now runs a fail-closed ffprobe query selecting
+  `a:0` and requires an audio codec, positive sample rate, channel count, and
+  duration. A real video-only MP4 stays unconfirmed; missing/failed probes and
+  fake compressed data stay unconfirmed; a generated valid FLAC confirms.
+- I1: `redact_report_value()` now recursively sanitizes string mapping keys as
+  well as values. Stable safe schema keys remain unchanged, sensitive-key
+  values remain masked, and nested keys containing home paths or credential
+  assignments are redacted without mutating the source mapping.
+- I7: issue 17 was reopened during implementation and resolved only after all
+  new focused regressions and the full suite passed with the counts below.
+
+### TDD Evidence
+
+Initial targeted runs reproduced both findings:
+
+```text
+FAILED test_published_bundle_consent_rejects_video_only_timed_container
+FAILED test_every_source_controlled_candidate_field_is_redacted
+2 failed, 1 passed in 5.13s
+
+FAILED test_published_bundle_consent_rejects_compressed_audio_without_ffprobe
+1 failed in 4.76s
+
+FAILED test_redaction_sanitizes_nested_source_controlled_mapping_keys
+1 failed in 0.16s
+```
+
+The corresponding targeted GREEN runs passed before the complete migration
+and security suites were run.
+
+### Verification
+
+```text
+python -m pytest tests/parity/test_migration.py tests/parity/test_security.py -q -rs
+55 passed, 2 skipped in 9.09s
+
+python -m compileall -q app/parity tests/parity
+exit 0
+
+python -m pytest -q -rs
+542 passed, 2 skipped, 1 warning, 60 subtests passed in 43.59s
+
+git diff --check
+exit 0
+```
+
+The diff keeps SQLite `mode=ro`, uses only the Galaxy-owned local ffprobe
+boundary, does not import or edit vendored VoiceStudio, and does not invoke
+Galaxy persistence repositories.
+
+### Fix Round Files
+
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/migration.py`
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/security.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_migration.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_security.py`
+- `.scratch/native-voice-workspace/issues/17-voicestudio-data-migration-policy.md`
+- `.superpowers/sdd/2026-08-30-native-parity-validation/task-2-report.md`
+
+### Remaining Concerns
+
+- M1 (aggregate database/report limits) and M2 (module decomposition) remain
+  deferred minors from the original review.
+- Two ordinary-symlink security tests remain skipped because this Windows
+  account lacks symlink privilege (`WinError 1314`); junction/reparse coverage
+  passes. The full suite retains one existing Starlette `httpx` deprecation
+  warning.

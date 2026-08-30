@@ -147,7 +147,9 @@ def _hash_entry_header(digest: Any, kind: bytes, relative_path: bytes) -> None:
 def redact_report_value(value: Any) -> Any:
     if isinstance(value, Mapping):
         return {
-            key: "***" if _SENSITIVE_KEY.search(str(key)) else redact_report_value(item)
+            _redact_mapping_key(key): (
+                "***" if _SENSITIVE_KEY.search(str(key)) else redact_report_value(item)
+            )
             for key, item in value.items()
         }
     if isinstance(value, list):
@@ -157,6 +159,12 @@ def redact_report_value(value: Any) -> Any:
     if isinstance(value, str):
         return _redact_home_prefix(redact_sensitive_text(value))
     return value
+
+
+def _redact_mapping_key(key: Any) -> Any:
+    if isinstance(key, str):
+        return _redact_home_prefix(redact_sensitive_text(key))
+    return key
 
 
 def _redact_home_prefix(value: str) -> str:

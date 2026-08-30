@@ -244,3 +244,19 @@ The native workspace URL and user-facing instruction attached to a task so an
 interrupted or failed operation can return to the owning workflow after an app
 restart. A route provides navigation; workflow checkpoints decide whether work
 can resume or must be rerun.
+
+### Advanced Capability Disposition
+
+The immutable product decision for an auxiliary capability outside Galaxy's
+six native voice workspaces. It records a stable capability ID, one of
+`extension`, `deferred`, `optional_adapter`, or `non_goal`, its implementation
+boundary, constraints, and objective revisit triggers. A catalogue entry does
+not mean the capability is implemented or enabled.
+
+### Extension Capability
+
+An auxiliary capability reserved to build on named Galaxy-owned runtime or
+workflow contracts without direct engine access or a new core workspace. Its
+protected dependency references preserve a future integration boundary; the
+Phase 14 catalogue is read-only and every listed extension remains disabled
+until separately implemented and accepted.

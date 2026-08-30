@@ -89,4 +89,3 @@
 - [ ] Add canonical glossary terms for disposition and extension capability.
 - [ ] Run full backend tests, frontend tests, lint, typecheck, build, `compileall`, and `git diff --check`.
 - [ ] Commit the complete Phase 14 change with message `feat: define advanced voice capability dispositions`.
-

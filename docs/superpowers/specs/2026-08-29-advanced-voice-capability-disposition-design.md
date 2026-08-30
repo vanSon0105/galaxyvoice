@@ -73,4 +73,3 @@ stable ordering, duplicate rejection, and valid extension references. Router
 tests assert the read-only response and SPA/API separation. Frontend tests
 assert every disposition is visible, details can be opened with the keyboard,
 and loading/error states remain explicit.
-

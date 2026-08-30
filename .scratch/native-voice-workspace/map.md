@@ -39,6 +39,7 @@ explicitly approved.
 - [Audio postproduction and export contract](issues/11-audio-postproduction-and-export-contract.md) - One Galaxy-owned post chain serves Studio, Batch, Dubbing, and Longform with waveform caching, source/stem selection, trim and gain automation, loudness mastering, metadata, multi-format export, and project-owned provenance manifests.
 - [Workspace handoffs and project graph](issues/12-workspace-handoffs-and-project-graph.md) - One non-destructive Active Project graph records workflow ownership, linked/generated artifacts, supported open-in routes, and reversible pending/opened/returned handoffs across native voice and media workspaces.
 - [Reliability, diagnostics, and accessibility](issues/13-reliability-diagnostics-and-accessibility.md) - Persistent redacted task diagnostics, recovery routes, runtime/device audits, disk guards, keyboard semantics, and route-level loading provide one observable and recoverable contract across native workspaces.
+- [Advanced VoiceStudio capability disposition](issues/14-advanced-voice-capability-disposition.md) - A read-only Galaxy catalogue records live dictation, local transcript refinement, the compatible local audio API, and MCP bindings as extensions; remote backend as deferred; watermarking and visual lip-sync as optional adapters; and plugin marketplace as a non-goal. All eight capability behaviors remain disabled and unimplemented until their recorded constraints and revisit triggers are satisfied.
 - [Expressive text and terminology contract](issues/18-expressive-text-and-terminology-contract.md) - Galaxy compiles canonical markup into separate display, spoken, timing, and engine-instruction fields with language-scoped pronunciation and explicit capability degradation.
 - Native workflow parity over engine parity - Galaxy reimplements its own
   workflows while VoiceStudio remains a comparison reference until the final
@@ -56,10 +57,6 @@ explicitly approved.
 
 - The exact model/engine adapters selected for speaker diarization, forced
   alignment, and visual lip-sync if it is later approved.
-- Whether advanced auxiliary capabilities (global dictation, local OpenAI/MCP
-  compatibility, provenance watermarking, remote backend) become first-class
-  Galaxy tools after the core workspace is complete. They remain in the
-  inventory and cannot disappear by accident.
 
 ## Out of scope
 

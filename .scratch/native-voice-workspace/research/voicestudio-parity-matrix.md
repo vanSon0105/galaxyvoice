@@ -155,24 +155,26 @@ user workflows rather than duplicating every endpoint.
 | Storage management | Settings storage/temp/model routes | Partial | Show model/cache/project sizes and clear only explicitly selected recoverable data. |
 | HF token and restricted-network mirrors | Settings HF token/mirror routes; README `:167-173` | Partial: VoiceStudio-only credential screen | Shared secure configuration only for adapters that require it; capability remains optional. |
 
-## Advanced capabilities requiring explicit disposition
+## Advanced capability dispositions
 
 These are real shipped surfaces in the snapshot, but they do not belong in the
-six core tabs automatically. Ticket `Advanced VoiceStudio capability
-disposition` must decide each item without letting it disappear silently.
+six core tabs automatically. ADR 0014 records the binding Galaxy disposition.
+The read-only catalogue is implemented, but none of the capability behaviors
+or optional adapters in this table are implemented or enabled by Phase 14.
 
-| Capability | Implemented evidence | Recommended disposition |
+| Capability | VoiceStudio evidence | Final Galaxy disposition |
 | --- | --- | --- |
-| Global dictation widget, hotkey and auto-paste | `/dictation/*`, `/ws/transcribe`; README `:442` | Deferred native extension using the Transcript ASR adapter. |
-| Local LLM transcript refinement | Settings LLM providers/skills and dictation refinement routes | Deferred shared AI service; never required for core transcription. |
-| OpenAI-compatible local TTS/STT API | `/v1/audio/speech`, `/transcriptions`, `/voices` | Preserve as an optional Galaxy API after native engine contracts stabilize. |
-| MCP client voice bindings | `/api/mcp/bindings`; README `:444` | Extension over the local API; not a UI tab. |
-| Remote backend and bearer auth | README `:445`, system network/Tailscale routes | Deferred; requires a separate threat model and authentication design. |
-| Audio watermark detection/settings | `/watermark/status`, detect/settings; README `:437` | Optional licensed adapter with visible provenance metadata. |
+| Global dictation widget, hotkey and auto-paste | `/dictation/*`, `/ws/transcribe`; README `:442` | Extension `dictation.live`, disabled and not implemented. It must reuse Transcript ASR; revisit after a supported capture/hotkey contract exists and demand justifies the workflow. |
+| Local LLM transcript refinement | Settings LLM providers/skills and dictation refinement routes | Extension `transcripts.local_refinement`, disabled and not implemented. Core transcription cannot depend on it; revisit after structured local-provider edits and quality fixtures preserve timing. |
+| OpenAI-compatible local TTS/STT API | `/v1/audio/speech`, `/transcriptions`, `/voices` | Extension `api.openai_audio`, disabled and not implemented. It must wrap stable Galaxy contracts and remain loopback-only by default; revisit after contract and compatibility fixtures exist. |
+| MCP client voice bindings | `/api/mcp/bindings`; README `:444` | Extension `mcp.voice`, disabled and not implemented. It must use the authenticated local audio API without direct engine access; revisit after that API is stable and a client workflow has acceptance fixtures. |
+| Remote backend and bearer auth | README `:445`, system network/Tailscale routes | Deferred `backend.remote`, disabled and not implemented. Revisit only after approval of the threat model, ownership, authentication, TLS, secret-storage, and revocation designs. |
+| Audio watermark detection/settings | `/watermark/status`, detect/settings; README `:437` | Optional adapter `audio.watermarking`, disabled and not implemented. Revisit after license/compatibility review and approval of provenance and verification contracts. |
+| Visual lip-sync | README roadmap `:416-418` | Optional adapter `video.visual_lip_sync`, disabled and not implemented; it is distinct from Audio Lip-Sync. Revisit after model quality/runtime/license review and isolated GPU scheduling are approved. |
 | Video logo overlay | README `:437` | Prefer the Galaxy video editor/export path, not Voice Workspace core. |
 | Media tool acquisition and repair | `/media-tools/*` | Implement only for tools Galaxy actually owns, through shared Settings. |
 | Public marketplace/community | `/marketplace/*`, `/community/*` | Out by user decision; local Voice Library import/export replaces it. |
-| Plugin marketplace | README roadmap `:416-418` | Not shipped parity; extension design only if later requested. |
+| Plugin marketplace | README roadmap `:416-418` | Non-goal `marketplace.plugins`, disabled and not implemented. It has no protected execution seam; only a new product decision can reopen it. |
 | Cross-platform installers, updates, single-instance and tray | README `:441` | Galaxy remains Windows-first for this effort; package/update lifecycle is a separate release concern, not Voice workflow parity. |
 | Docker and Colab deployment | README installation and Colab sections | No native desktop parity requirement; retain engine/service boundaries that do not prevent future headless use. |
 | Analytics, donate, enterprise, contact and changelog surfaces | Frontend App modes and Settings routes | Product chrome, not creative workflow parity. Galaxy may supply its own About/Privacy/Updates UX. |
@@ -187,9 +189,10 @@ not under shipped features:
 - Plugin marketplace.
 - Real-time voice changer.
 
-They must not block native retirement. Visual lip-sync may later be added as an
-independently licensed optional adapter, while shipped Smart Fit and audio
-lip-sync QC remain required Dubbing parity.
+They must not block native retirement. The Phase 14 catalogue records visual
+lip-sync as a disabled, unimplemented optional adapter that still requires
+independent quality, runtime, and license review. Shipped Smart Fit and Audio
+Lip-Sync QC remain required Dubbing parity.
 
 ## Parity acceptance contract
 
@@ -222,6 +225,6 @@ VoiceStudio may be retired only when all of the following are true:
 | Transcripts | ASR, timing, diarization, editing, search and subtitle/text exports. |
 | Dubbing | Translation, speaker voices, segment generation, Smart Fit, QC, mixing and video/subtitle/audio export. |
 | Truyen & Sach noi | Story and audiobook authoring over one long-form project/renderer. |
-| Settings/extensions | Model/runtime setup plus disposition-approved dictation, API/MCP, remote and provenance adapters. |
+| Settings/extensions | Model/runtime setup plus the read-only advanced-capability catalogue. Future dictation, API/MCP, remote, provenance, and visual adapters remain disabled and unimplemented until their recorded triggers and constraints are satisfied. |
 
 This ownership map is the binding input to the remaining wayfinding tickets.

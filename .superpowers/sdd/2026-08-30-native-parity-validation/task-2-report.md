@@ -103,3 +103,75 @@ line-ending policy on `app/parity/__init__.py`.
   returns `WinError 1314`. The two privilege-free junction tests pass.
 - The full suite emits one existing Starlette `httpx` test-client deprecation
   warning.
+
+## Fix Round 1
+
+### Status
+
+DONE_WITH_CONCERNS. All Critical and Important findings from
+`task-2-review.md` are fixed with targeted regression coverage. Issue 17 was
+kept open while the fixes were in progress and resolved only after the focused
+and full backend suites passed.
+
+### Reviewer Findings Addressed
+
+- C1: consent now requires strict booleans, non-empty parseable timestamps,
+  the published attestation method and fields, a declared recording, and valid
+  audio content for both database and bundle sources.
+- C2 and I6: copied SQLite sources with WAL/SHM/journal sidecars fail closed,
+  sidecars are checked before and after direct inspection, source bytes are
+  proven unchanged, and every connection is deterministically closed.
+- I1: candidate data is allowlisted and recursively redacted; report-level
+  warnings redact embedded home paths and secrets; settings and sensitive JSON
+  are unsupported instead of copied.
+- I2: archive member count, declared and streamed total size, member size,
+  compression ratio, case-insensitive duplicates, semantic control-member
+  duplicates, control characters, traversal, absolute paths, and links reject
+  the complete bundle before a candidate is emitted.
+- I3 and I4: the published top-level `members`, `tags`, `preview`, `license`,
+  persona identity/design fields, and `verified_own_voice` consent shape are
+  mapped. Dub, studio, export, discovered document, and generated-media
+  mappings are structural, asset-aware, and omit raw engine state.
+- I5: the public operation verifies a typed copied-source boundary and rejects
+  live VoiceStudio/Galaxy roots, repository/vendor paths, renamed arbitrary
+  SQLite files, and top-level links/reparse points.
+- I7: ticket 17 now cites only the passing evidence below.
+
+### TDD Evidence
+
+Targeted RED runs reproduced every reviewer class, including truthy-string and
+invalid-audio consent, WAL sidecars and handle lifetime, archive fail-open
+limits, published bundle shape, raw secret/path leakage, incomplete structured
+mappings, and copied-source boundary probes. The final self-review added two
+more RED probes for a sidecar created during inspection and an absolute path
+embedded inside a global warning; both are now GREEN.
+
+```text
+python -m pytest tests/parity/test_migration.py tests/parity/test_security.py -q -rs
+46 passed, 2 skipped in 7.42s
+
+python -m pytest -q -rs
+533 passed, 2 skipped, 1 warning, 60 subtests passed in 71.79s
+```
+
+`python -m compileall -q app/parity tests/parity` and `git diff --check` also
+exit 0. The diff contains no VoiceStudio imports or vendor changes, retains the
+exact SQLite `mode=ro` URI, extracts only into `TemporaryDirectory`, and does
+not invoke Galaxy persistence repositories.
+
+### Fix Round Files
+
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/migration.py`
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/security.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_migration.py`
+- `.scratch/native-voice-workspace/issues/17-voicestudio-data-migration-policy.md`
+- `.superpowers/sdd/2026-08-30-native-parity-validation/task-2-report.md`
+
+### Remaining Concerns
+
+- M1 (aggregate database/report limits) and M2 (module decomposition) remain
+  explicitly deferred to final review, as permitted by Fix Round 1.
+- Two ordinary-symlink tests are skipped because this Windows account lacks
+  symlink privilege (`WinError 1314`); privilege-free junction/reparse coverage
+  passes. The full suite also retains one pre-existing Starlette `httpx`
+  deprecation warning.

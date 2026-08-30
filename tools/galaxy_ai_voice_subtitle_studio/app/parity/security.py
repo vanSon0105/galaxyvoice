@@ -162,10 +162,7 @@ def redact_report_value(value: Any) -> Any:
 def _redact_home_prefix(value: str) -> str:
     home = os.fspath(Path.home())
     variants = (home, home.replace("\\", "/"), home.replace("/", "\\"))
+    redacted = value
     for prefix in dict.fromkeys(variants):
-        if value.casefold() == prefix.casefold():
-            return "<home>"
-        if len(value) > len(prefix) and value[: len(prefix)].casefold() == prefix.casefold():
-            if value[len(prefix)] in ("/", "\\"):
-                return f"<home>{value[len(prefix):]}"
-    return value
+        redacted = re.sub(re.escape(prefix), "<home>", redacted, flags=re.IGNORECASE)
+    return redacted

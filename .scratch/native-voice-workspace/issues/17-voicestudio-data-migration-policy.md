@@ -18,26 +18,30 @@ specified against fixture copies of the vendored snapshot's data structures.
 
 ## Answer
 
-Phase 15A now has a Galaxy-owned, read-only migration rehearsal for copied
+Phase 15A has a Galaxy-owned, read-only migration rehearsal for typed copied
 SQLite databases, copied data directories, and portable persona bundles. It
-does not apply an import or write to Galaxy repositories.
+rejects live VoiceStudio, vendor, Galaxy runtime, top-level link/reparse, and
+untyped SQLite sources. It does not apply an import or write to Galaxy
+repositories.
 
-The fixture-backed tests prove that supported records map into explicit dry-run
-groups; incomplete consent is downgraded for local re-attestation; managed,
-linked, missing, and unsafe assets remain distinct; unknown schemas and
-unsupported settings/jobs/logs/model caches are inventoried; oversized JSON
-and archive members are rejected; traversal is blocked; temporary sandbox
-content is removed; and source fingerprints, table inventory, and row counts
-remain unchanged.
+Fixture-backed tests now prove strict consent types, valid timestamps, coherent
+attestation, and real recording validation for SQLite and the published
+`.ovsvoice` shape. They also cover WAL/journal fail-closed behavior and
+unchanged sidecar bytes, deterministic SQLite close, full-bundle archive
+limits, duplicate/control/traversal defenses, streamed byte bounds, sandbox
+cleanup, source fingerprints, redaction, allowlisted dub/studio/export and
+discovered-document mappings, unsupported-field warnings, and all four asset
+states. Settings, secrets, raw engine payloads, logs, caches, and unsafe exports
+do not enter candidates.
 
 Verification run from `tools/galaxy_ai_voice_subtitle_studio`:
 
 ```text
 python -m pytest tests/parity/test_migration.py tests/parity/test_security.py -q -rs
-17 passed, 2 skipped in 1.95s
+46 passed, 2 skipped in 7.42s
 
-python -m pytest -q
-504 passed, 2 skipped, 1 warning, 60 subtests passed in 36.28s
+python -m pytest -q -rs
+533 passed, 2 skipped, 1 warning, 60 subtests passed in 71.79s
 ```
 
 The two skips are the existing Windows symlink-privilege cases in Task 1

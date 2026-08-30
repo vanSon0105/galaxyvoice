@@ -3,21 +3,27 @@
 from __future__ import annotations
 
 import json
+import math
 import os
+import re
 import sqlite3
 import stat
+import wave
 import zipfile
 from collections.abc import Mapping, Sequence
+from contextlib import closing
 from dataclasses import asdict, dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 from types import MappingProxyType
 from typing import Any, Literal
 from urllib.parse import quote
 
+from ..common.paths import repository_root
 from ..voice_library.models import ConsentRecord, VoiceProfileRecord
 from .models import SourceFingerprint
-from .security import fingerprint_source, resolve_approved_path
+from .security import fingerprint_source, redact_report_value, resolve_approved_path
 
 
 MAX_JSON_BYTES = 1024 * 1024
@@ -27,6 +33,7 @@ MAX_ARCHIVE_MEMBERS = 512
 MAX_COMPRESSION_RATIO = 200
 
 AssetState = Literal["managed", "linked", "missing", "unsafe"]
+MigrationSourceKind = Literal["directory", "sqlite", "persona_bundle"]
 
 _MEDIA_SUFFIXES = {
     ".aac",
@@ -148,6 +155,9 @@ class MigrationAsset:
     expected_sha256: str = ""
     byte_size: int = 0
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "hint", _text(redact_report_value(self.hint)))
+
 
 @dataclass(frozen=True)
 class MigrationCandidate:
@@ -159,15 +169,24 @@ class MigrationCandidate:
     consent: ConsentRecord = field(default_factory=ConsentRecord)
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "data", MappingProxyType(dict(self.data)))
+        safe_data = redact_report_value(dict(self.data))
+        object.__setattr__(self, "data", MappingProxyType(dict(safe_data)))
         object.__setattr__(self, "assets", tuple(self.assets))
-        object.__setattr__(self, "warnings", tuple(self.warnings))
+        object.__setattr__(
+            self,
+            "warnings",
+            tuple(_text(redact_report_value(item)) for item in self.warnings),
+        )
 
 
 @dataclass(frozen=True)
 class MigrationFinding:
     source: str
     reason: str
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "source", _text(redact_report_value(self.source)))
+        object.__setattr__(self, "reason", _text(redact_report_value(self.reason)))
 
 
 @dataclass(frozen=True)
@@ -187,9 +206,22 @@ class MigrationDryRun:
     unsupported: tuple[MigrationFinding, ...] = ()
     warnings: tuple[str, ...] = ()
 
+    def __post_init__(self) -> None:
+        object.__setattr__(
+            self,
+            "warnings",
+            tuple(_text(redact_report_value(item)) for item in self.warnings),
+        )
+
 
 class SourceChangedError(RuntimeError):
     """Raised when source bytes change during a read-only rehearsal."""
+
+
+@dataclass(frozen=True)
+class _MigrationSourceSelection:
+    path: Path
+    kind: MigrationSourceKind
 
 
 @dataclass
@@ -216,7 +248,8 @@ def inspect_migration_source(
 ) -> MigrationDryRun:
     """Inspect a copied database, data directory, or persona bundle without writes."""
 
-    resolved_source = resolve_approved_path(Path(source), approved_roots)
+    selection = _select_migration_source(Path(source), approved_roots)
+    resolved_source = selection.path
     before = fingerprint_source(resolved_source)
     approved = tuple(Path(root).expanduser().resolve(strict=False) for root in approved_roots)
     inspection = _Inspection()
@@ -230,16 +263,16 @@ def inspect_migration_source(
 
     with TemporaryDirectory(dir=sandbox_parent) as temporary:
         sandbox = Path(temporary)
-        if resolved_source.is_dir():
+        if selection.kind == "directory":
             _inspect_directory(resolved_source, approved, sandbox, inspection)
-        elif resolved_source.suffix.casefold() in _BUNDLE_SUFFIXES:
+        elif selection.kind == "persona_bundle":
             _inspect_bundle(resolved_source, sandbox, inspection)
-        elif _is_sqlite_file(resolved_source):
+        elif selection.kind == "sqlite":
             _inspect_database(resolved_source, resolved_source.parent, approved, inspection)
-        else:
-            raise ValueError(f"Unsupported migration source: {resolved_source.name}")
         _validate_normalized_candidates(sandbox, inspection)
 
+    if selection.kind == "sqlite":
+        _reject_sqlite_sidecars(resolved_source)
     after = fingerprint_source(resolved_source)
     if after != before:
         raise SourceChangedError("Migration source changed during read-only inspection")
@@ -260,6 +293,64 @@ def inspect_migration_source(
         unsupported=tuple(inspection.unsupported),
         warnings=tuple(inspection.warnings),
     )
+
+
+def _select_migration_source(
+    source: Path,
+    approved_roots: Sequence[Path],
+) -> _MigrationSourceSelection:
+    requested = source.expanduser().absolute()
+    try:
+        requested_info = requested.lstat()
+    except FileNotFoundError:
+        raise FileNotFoundError(f"Migration source does not exist: {source}") from None
+    if _is_link_like(requested_info):
+        raise ValueError("Migration source cannot be a top-level link or reparse point")
+    resolved = resolve_approved_path(requested, approved_roots)
+    _reject_live_or_protected_source(resolved)
+    if resolved.is_dir():
+        database = resolved / "omnivoice.db"
+        if not _is_sqlite_file(database):
+            raise ValueError(
+                "Copied VoiceStudio directory must contain a readable omnivoice.db"
+            )
+        return _MigrationSourceSelection(resolved, "directory")
+    if resolved.suffix.casefold() in _BUNDLE_SUFFIXES:
+        return _MigrationSourceSelection(resolved, "persona_bundle")
+    if resolved.name.casefold() != "omnivoice.db":
+        raise ValueError(
+            "Copied SQLite source type must retain the published name omnivoice.db"
+        )
+    if not _is_sqlite_file(resolved):
+        raise ValueError("Copied omnivoice.db does not have a SQLite header")
+    return _MigrationSourceSelection(resolved, "sqlite")
+
+
+def _reject_live_or_protected_source(source: Path) -> None:
+    protected: list[Path] = [repository_root()]
+    local_app_data = os.environ.get("LOCALAPPDATA", "").strip()
+    if local_app_data:
+        local_root = Path(local_app_data).expanduser()
+        protected.extend((local_root / "GalaxyAIStudio", local_root / "OmniVoice"))
+    app_data = os.environ.get("APPDATA", "").strip()
+    if app_data:
+        protected.append(Path(app_data).expanduser() / "OmniVoice")
+    for variable in ("OMNIVOICE_DATA_DIR", "VOICESTUDIO_RUNTIME_ROOT"):
+        override = os.environ.get(variable, "").strip()
+        if override:
+            protected.append(Path(override).expanduser())
+    home = Path.home()
+    protected.extend(
+        (
+            home / ".omnivoice",
+            home / "Library" / "Application Support" / "OmniVoice",
+        )
+    )
+    for root in protected:
+        if _is_within(source, root):
+            raise ValueError(
+                f"Migration source is a live or protected repository path: {source.name}"
+            )
 
 
 def _inspect_directory(
@@ -307,8 +398,11 @@ def _inspect_database(
     approved_roots: tuple[Path, ...],
     inspection: _Inspection,
 ) -> None:
+    _reject_sqlite_sidecars(database)
     quoted_path = quote(database.resolve().as_posix(), safe="/:")
-    with sqlite3.connect(f"file:{quoted_path}?mode=ro", uri=True) as connection:
+    with closing(
+        sqlite3.connect(f"file:{quoted_path}?mode=ro", uri=True)
+    ) as connection:
         connection.row_factory = sqlite3.Row
         connection.execute("PRAGMA query_only = ON")
         tables = {
@@ -338,6 +432,18 @@ def _inspect_database(
             selected = tuple(column for column in known_columns if column in actual_columns)
             rows = _select_known_rows(connection, table, selected)
             _map_table(table, rows, data_root, approved_roots, inspection)
+
+
+def _reject_sqlite_sidecars(database: Path) -> None:
+    sidecars = tuple(
+        Path(f"{database}{suffix}") for suffix in ("-wal", "-shm", "-journal")
+    )
+    present = tuple(path.name for path in sidecars if path.exists())
+    if present:
+        raise ValueError(
+            "SQLite WAL/journal sidecars are not supported by read-only rehearsal: "
+            + ", ".join(present)
+        )
 
 
 def _table_columns(connection: sqlite3.Connection, table: str) -> set[str]:
@@ -378,6 +484,19 @@ def _map_table(
     target = getattr(inspection, table)
     for row in rows:
         candidate = mapper(row, data_root, approved_roots)
+        if table == "export_history" and (
+            not candidate.assets
+            or any(asset.state == "unsafe" for asset in candidate.assets)
+        ):
+            source_id = _text(row.get("id"))
+            inspection.assets.extend(candidate.assets)
+            inspection.warnings.append(
+                f"export_history {source_id} is unsafe or has no relinkable output"
+            )
+            inspection.unsupported.append(
+                MigrationFinding(source_id, "unsafe or absent export output")
+            )
+            continue
         target.append(candidate)
         inspection.assets.extend(candidate.assets)
 
@@ -399,20 +518,26 @@ def _map_voice_profile(
         approved_roots,
     )
     consent_asset = next((asset for asset in assets if asset.role == "consent_recording"), None)
+    consent_path, _ = _resolve_asset_path(
+        row.get("consent_audio_path"), data_root, approved_roots
+    )
+    recorded_at = _normalize_timestamp(row.get("consent_recorded_at"))
     confirmed = bool(
-        row.get("verified_own_voice")
+        _is_strict_true(row.get("verified_own_voice"))
         and _text(row.get("consent_text")).strip()
-        and row.get("consent_recorded_at") is not None
+        and recorded_at
         and consent_asset is not None
         and consent_asset.state in {"managed", "linked"}
+        and consent_path is not None
+        and _is_valid_audio(consent_path)
     )
     if not confirmed:
         warnings.append("Consent evidence is incomplete; local re-attestation is required")
     consent = ConsentRecord(
         confirmed=confirmed,
-        basis="voicestudio-attestation" if confirmed else "",
+        basis="self-recorded-statement" if confirmed else "",
         statement=_text(row.get("consent_text")),
-        recorded_at=_text(row.get("consent_recorded_at")) if confirmed else "",
+        recorded_at=recorded_at if confirmed else "",
         provenance=consent_asset.hint if consent_asset else "",
     )
     data: dict[str, Any] = {
@@ -424,9 +549,11 @@ def _map_voice_profile(
         "instruction": _text(row.get("instruct")),
         "personality": _text(row.get("personality")),
         "seed": row.get("seed"),
-        "is_locked": bool(row.get("is_locked")),
-        "is_demo": bool(row.get("is_demo")),
-        "verified_own_voice_evidence": bool(row.get("verified_own_voice")),
+        "is_locked": _is_strict_true(row.get("is_locked")),
+        "is_demo": _is_strict_true(row.get("is_demo")),
+        "verified_own_voice_evidence": _is_strict_true(
+            row.get("verified_own_voice")
+        ),
         "created_at": row.get("created_at"),
     }
     design_state = _bounded_json(row.get("vd_states"), "vd_states", warnings)
@@ -470,8 +597,8 @@ def _map_generation_history(
 def _map_dub_history(
     row: dict[str, Any], data_root: Path, approved_roots: tuple[Path, ...]
 ) -> MigrationCandidate:
-    del data_root, approved_roots
     warnings: list[str] = []
+    assets: list[MigrationAsset] = []
     data: dict[str, Any] = {
         "filename": _text(row.get("filename")),
         "duration": row.get("duration"),
@@ -481,14 +608,27 @@ def _map_dub_history(
         "content_hash": _text(row.get("content_hash")),
         "created_at": row.get("created_at"),
     }
-    for column in ("tracks", "job_data"):
-        parsed = _bounded_json(row.get(column), column, warnings)
-        if parsed is not None:
-            data[column] = parsed
+    tracks_payload = _bounded_json(row.get("tracks"), "tracks", warnings)
+    if tracks_payload is not None:
+        tracks, track_assets = _normalize_dub_tracks(
+            tracks_payload, data_root, approved_roots, warnings
+        )
+        if tracks is not None:
+            data["tracks"] = tracks
+            assets.extend(track_assets)
+    job_payload = _bounded_json(row.get("job_data"), "job_data", warnings)
+    if job_payload is not None:
+        job, job_assets = _normalize_dub_job(
+            job_payload, data_root, approved_roots, warnings
+        )
+        if job is not None:
+            data["job"] = job
+            assets.extend(job_assets)
     return MigrationCandidate(
         source_id=_text(row.get("id")),
         target="dubbing_project",
         data=data,
+        assets=tuple(assets),
         warnings=tuple(warnings),
     )
 
@@ -511,7 +651,12 @@ def _map_studio_project(
     }
     state = _bounded_json(row.get("state_json"), "state_json", warnings)
     if state is not None:
-        data["state"] = state
+        normalized_state, state_assets = _normalize_studio_state(
+            state, data_root, approved_roots, warnings
+        )
+        if normalized_state is not None:
+            data["state"] = normalized_state
+            assets = (*assets, *state_assets)
     return MigrationCandidate(
         source_id=_text(row.get("id")),
         target="studio_project",
@@ -519,6 +664,208 @@ def _map_studio_project(
         assets=assets,
         warnings=tuple(warnings),
     )
+
+
+def _normalize_dub_tracks(
+    value: Any,
+    data_root: Path,
+    approved_roots: tuple[Path, ...],
+    warnings: list[str],
+) -> tuple[list[dict[str, Any]] | None, tuple[MigrationAsset, ...]]:
+    if not isinstance(value, list):
+        warnings.append("tracks: expected a list; unsupported payload omitted")
+        return None, ()
+    normalized: list[dict[str, Any]] = []
+    assets: list[MigrationAsset] = []
+    allowed = {"id", "track_id", "language", "language_code", "speaker", "segments"}
+    paths = {
+        "output_path": "dub_output",
+        "audio_path": "dub_output",
+        "path": "dub_output",
+        "dubbed_path": "dub_output",
+    }
+    for index, raw_track in enumerate(value):
+        if not isinstance(raw_track, Mapping):
+            warnings.append(f"tracks[{index}]: unsupported non-object track omitted")
+            continue
+        track: dict[str, Any] = {}
+        track_id = raw_track.get("id") or raw_track.get("track_id")
+        if track_id is not None:
+            track["id"] = _text(track_id)
+        for key in ("language", "language_code", "speaker"):
+            if raw_track.get(key) is not None:
+                track[key] = _text(raw_track[key])
+        if "segments" in raw_track:
+            track["segments"] = _normalize_segments(
+                raw_track.get("segments"), f"tracks[{index}].segments", warnings
+            )
+        for field, role in paths.items():
+            asset = _classify_asset(
+                role, raw_track.get(field), data_root, approved_roots
+            )
+            if asset:
+                assets.append(asset)
+        extras = sorted(set(raw_track) - allowed - set(paths))
+        if extras:
+            warnings.append(
+                f"tracks[{index}]: unsupported fields omitted: {', '.join(extras)}"
+            )
+        normalized.append(track)
+    return normalized, tuple(assets)
+
+
+def _normalize_dub_job(
+    value: Any,
+    data_root: Path,
+    approved_roots: tuple[Path, ...],
+    warnings: list[str],
+) -> tuple[dict[str, Any] | None, tuple[MigrationAsset, ...]]:
+    if not isinstance(value, Mapping):
+        warnings.append("job_data: expected an object; unsupported payload omitted")
+        return None, ()
+    normalized: dict[str, Any] = {}
+    allowed = {
+        "id",
+        "job_id",
+        "source_language",
+        "target_language",
+        "language",
+        "language_code",
+        "status",
+        "segments",
+    }
+    for key in (
+        "source_language",
+        "target_language",
+        "language",
+        "language_code",
+        "status",
+    ):
+        if value.get(key) is not None:
+            normalized[key] = _text(value[key])
+    if "segments" in value:
+        normalized["segments"] = _normalize_segments(
+            value.get("segments"), "job_data.segments", warnings
+        )
+    paths = {
+        "source_path": "dub_source",
+        "video_path": "dub_source",
+        "audio_path": "dub_source",
+        "output_path": "dub_output",
+        "final_output_path": "dub_output",
+        "final_audio_path": "dub_output",
+        "final_video_path": "dub_output",
+        "vocals_path": "dub_stem",
+        "instrumental_path": "dub_stem",
+    }
+    assets = tuple(
+        asset
+        for field, role in paths.items()
+        if (asset := _classify_asset(role, value.get(field), data_root, approved_roots))
+        is not None
+    )
+    extras = sorted(set(value) - allowed - set(paths))
+    if extras:
+        warnings.append(
+            f"job_data: unsupported fields omitted: {', '.join(extras)}"
+        )
+    return normalized, assets
+
+
+def _normalize_studio_state(
+    value: Any,
+    data_root: Path,
+    approved_roots: tuple[Path, ...],
+    warnings: list[str],
+) -> tuple[dict[str, Any] | None, tuple[MigrationAsset, ...]]:
+    if not isinstance(value, Mapping):
+        warnings.append("state_json: expected an object; unsupported payload omitted")
+        return None, ()
+    normalized: dict[str, Any] = {}
+    scalar_keys = (
+        "language",
+        "source_language",
+        "target_language",
+        "version",
+        "playhead",
+    )
+    for key in scalar_keys:
+        item = value.get(key)
+        if isinstance(item, (str, int, float)) and not isinstance(item, bool):
+            normalized[key] = item
+    for key in ("timeline", "segments"):
+        if key in value:
+            normalized[key] = _normalize_segments(
+                value.get(key), f"state_json.{key}", warnings
+            )
+    paths = {
+        "output_path": "studio_output",
+        "preview_path": "studio_preview",
+    }
+    assets = tuple(
+        asset
+        for field, role in paths.items()
+        if (asset := _classify_asset(role, value.get(field), data_root, approved_roots))
+        is not None
+    )
+    allowed = set(scalar_keys) | {"timeline", "segments"} | set(paths)
+    extras = sorted(set(value) - allowed)
+    if extras:
+        warnings.append(
+            f"state_json: unsupported fields omitted: {', '.join(extras)}"
+        )
+    return normalized, assets
+
+
+def _normalize_segments(
+    value: Any,
+    label: str,
+    warnings: list[str],
+) -> list[dict[str, Any]]:
+    if not isinstance(value, list):
+        warnings.append(f"{label}: unsupported non-list segments omitted")
+        return []
+    allowed = {
+        "id",
+        "segment_id",
+        "start",
+        "end",
+        "duration",
+        "text",
+        "translated_text",
+        "speaker",
+        "language",
+        "voice_profile_id",
+    }
+    normalized: list[dict[str, Any]] = []
+    for index, raw_segment in enumerate(value):
+        if not isinstance(raw_segment, Mapping):
+            warnings.append(f"{label}[{index}]: unsupported segment omitted")
+            continue
+        segment: dict[str, Any] = {}
+        segment_id = raw_segment.get("id") or raw_segment.get("segment_id")
+        if segment_id is not None:
+            segment["id"] = _text(segment_id)
+        for key in ("start", "end", "duration"):
+            item = raw_segment.get(key)
+            if isinstance(item, (int, float)) and not isinstance(item, bool):
+                segment[key] = item
+        for key in (
+            "text",
+            "translated_text",
+            "speaker",
+            "language",
+            "voice_profile_id",
+        ):
+            if raw_segment.get(key) is not None:
+                segment[key] = _text(raw_segment[key])
+        extras = sorted(set(raw_segment) - allowed)
+        if extras:
+            warnings.append(
+                f"{label}[{index}]: unsupported fields omitted: {', '.join(extras)}"
+            )
+        normalized.append(segment)
+    return normalized
 
 
 def _map_export_history(
@@ -598,6 +945,20 @@ def _classify_asset(
     hint = _text(raw_hint).strip()
     if not hint:
         return None
+    resolved, state = _resolve_asset_path(hint, data_root, approved_roots)
+    assert resolved is not None
+    byte_size = resolved.stat().st_size if state in {"managed", "linked"} else 0
+    return MigrationAsset(role=role, hint=hint, state=state, byte_size=byte_size)
+
+
+def _resolve_asset_path(
+    raw_hint: Any,
+    data_root: Path,
+    approved_roots: tuple[Path, ...],
+) -> tuple[Path | None, AssetState]:
+    hint = _text(raw_hint).strip()
+    if not hint:
+        return None, "missing"
     path = Path(hint).expanduser()
     if path.is_absolute():
         resolved = path.resolve(strict=False)
@@ -615,49 +976,46 @@ def _classify_asset(
             state = "managed"
         else:
             state = "missing"
-    byte_size = resolved.stat().st_size if state in {"managed", "linked"} else 0
-    return MigrationAsset(role=role, hint=hint, state=state, byte_size=byte_size)
+    return resolved, state
 
 
 def _inspect_bundle(bundle: Path, sandbox: Path, inspection: _Inspection) -> None:
     bundle_sandbox = sandbox / f"bundle-{len(inspection.persona_bundles)}"
-    bundle_sandbox.mkdir()
     safe_members: dict[str, Path] = {}
     bundle_assets: list[MigrationAsset] = []
     with zipfile.ZipFile(bundle) as archive:
         infos = archive.infolist()
-        if len(infos) > MAX_ARCHIVE_MEMBERS:
-            inspection.warnings.append(
-                f"Archive member count exceeds size limit: {bundle.name}"
-            )
-        total = 0
-        for info in infos[:MAX_ARCHIVE_MEMBERS]:
+        rejection = _archive_rejection(infos)
+        if rejection:
+            inspection.warnings.append(f"Bundle rejected ({bundle.name}): {rejection}")
+            inspection.unsupported.append(MigrationFinding(bundle.name, rejection))
+            inspection.assets.extend(_unsafe_archive_assets(infos))
+            return
+        bundle_sandbox.mkdir()
+        streamed_total = 0
+        for info in infos:
             if info.is_dir():
                 continue
             role = _bundle_asset_role(info.filename)
-            unsafe_reason = _unsafe_archive_member(info)
-            total += max(0, info.file_size)
-            if total > MAX_ARCHIVE_TOTAL_BYTES:
-                unsafe_reason = "archive total size limit exceeded"
-            if unsafe_reason:
-                inspection.warnings.append(f"{bundle.name}:{info.filename}: {unsafe_reason}")
-                if role:
-                    bundle_assets.append(
-                        MigrationAsset(role=role, hint=info.filename, state="unsafe")
-                    )
-                continue
             destination = (bundle_sandbox / PurePosixPath(info.filename)).resolve()
             if not _is_within(destination, bundle_sandbox):
-                inspection.warnings.append(
-                    f"{bundle.name}:{info.filename}: archive path traversal"
+                inspection.warnings.append(f"Bundle rejected ({bundle.name}): path traversal")
+                inspection.unsupported.append(
+                    MigrationFinding(bundle.name, "archive path traversal")
                 )
-                if role:
-                    bundle_assets.append(
-                        MigrationAsset(role=role, hint=info.filename, state="unsafe")
-                    )
-                continue
+                return
             destination.parent.mkdir(parents=True, exist_ok=True)
-            _copy_bounded_member(archive, info, destination)
+            try:
+                streamed_total += _copy_bounded_member(
+                    archive,
+                    info,
+                    destination,
+                    remaining_total=MAX_ARCHIVE_TOTAL_BYTES - streamed_total,
+                )
+            except (OSError, ValueError, zipfile.BadZipFile) as error:
+                inspection.warnings.append(f"Bundle rejected ({bundle.name}): {error}")
+                inspection.unsupported.append(MigrationFinding(bundle.name, str(error)))
+                return
             safe_members[info.filename] = destination
             if role:
                 bundle_assets.append(
@@ -694,9 +1052,10 @@ def _inspect_bundle(bundle: Path, sandbox: Path, inspection: _Inspection) -> Non
 
     legacy = bundle.suffix.casefold() == ".omnivoice"
     warnings: list[str] = []
-    consent = _bundle_consent(safe_members, legacy, warnings)
+    consent = _bundle_consent(safe_members, manifest, legacy, warnings)
     persona = manifest.get("persona") if isinstance(manifest.get("persona"), dict) else manifest
-    data = _persona_data(persona, manifest, legacy)
+    data = _persona_data(persona, manifest, legacy, warnings)
+    data["verified_own_voice_evidence"] = consent.confirmed
     inspection.persona_bundles.append(
         MigrationCandidate(
             source_id=_text(persona.get("id") or persona.get("profile_id") or bundle.stem),
@@ -706,6 +1065,51 @@ def _inspect_bundle(bundle: Path, sandbox: Path, inspection: _Inspection) -> Non
             warnings=tuple(warnings),
             consent=consent,
         )
+    )
+
+
+def _archive_rejection(infos: list[zipfile.ZipInfo]) -> str:
+    members = [info for info in infos if not info.is_dir()]
+    if len(members) > MAX_ARCHIVE_MEMBERS:
+        return "archive member count limit exceeded"
+    total = sum(max(0, info.file_size) for info in members)
+    if total > MAX_ARCHIVE_TOTAL_BYTES:
+        return "archive total size limit exceeded"
+    seen_names: set[str] = set()
+    seen_controls: set[str] = set()
+    for info in members:
+        name_key = info.filename.casefold()
+        if name_key in seen_names:
+            return f"duplicate archive member: {info.filename}"
+        seen_names.add(name_key)
+        if any(ord(character) < 32 or ord(character) == 127 for character in info.filename):
+            return f"archive member contains control characters: {info.filename!r}"
+        control = _archive_control_key(info.filename)
+        if control and control in seen_controls:
+            return f"duplicate archive control member: {control}"
+        if control:
+            seen_controls.add(control)
+        unsafe = _unsafe_archive_member(info)
+        if unsafe:
+            return f"{info.filename}: {unsafe}"
+    return ""
+
+
+def _archive_control_key(name: str) -> str:
+    basename = PurePosixPath(name).name.casefold()
+    if basename in {"manifest.json", "metadata.json", "consent.json"}:
+        return basename
+    for prefix in ("ref_audio", "locked_audio", "consent_audio", "preview"):
+        if basename.startswith(prefix):
+            return prefix
+    return ""
+
+
+def _unsafe_archive_assets(infos: list[zipfile.ZipInfo]) -> tuple[MigrationAsset, ...]:
+    return tuple(
+        MigrationAsset(role=role, hint=info.filename, state="unsafe")
+        for info in infos
+        if not info.is_dir() and (role := _bundle_asset_role(info.filename))
     )
 
 
@@ -727,15 +1131,22 @@ def _unsafe_archive_member(info: zipfile.ZipInfo) -> str:
 
 
 def _copy_bounded_member(
-    archive: zipfile.ZipFile, info: zipfile.ZipInfo, destination: Path
-) -> None:
+    archive: zipfile.ZipFile,
+    info: zipfile.ZipInfo,
+    destination: Path,
+    *,
+    remaining_total: int,
+) -> int:
     written = 0
     with archive.open(info) as source, destination.open("wb") as output:
         while chunk := source.read(64 * 1024):
             written += len(chunk)
             if written > MAX_ARCHIVE_MEMBER_BYTES:
                 raise ValueError(f"Archive member exceeded size limit: {info.filename}")
+            if written > remaining_total:
+                raise ValueError("Archive streamed total size limit exceeded")
             output.write(chunk)
+    return written
 
 
 def _bundle_asset_role(name: str) -> str:
@@ -755,6 +1166,18 @@ def _declared_bundle_assets(
     manifest: Mapping[str, Any],
 ) -> tuple[tuple[str, str, str], ...]:
     declared: list[tuple[str, str, str]] = []
+    members = manifest.get("members")
+    if isinstance(members, Mapping):
+        member_roles = {
+            "ref_audio": "reference_audio",
+            "locked_audio": "locked_audio",
+            "consent_audio": "consent_recording",
+            "preview": "preview",
+        }
+        for key, role in member_roles.items():
+            value = members.get(key)
+            if isinstance(value, str) and value.strip():
+                declared.append((role, value, ""))
     assets = manifest.get("assets")
     if isinstance(assets, Mapping):
         for role, value in assets.items():
@@ -796,15 +1219,21 @@ def _unsafe_declared_member(name: str) -> bool:
 
 
 def _bundle_consent(
-    safe_members: Mapping[str, Path], legacy: bool, warnings: list[str]
+    safe_members: Mapping[str, Path],
+    manifest: Mapping[str, Any],
+    legacy: bool,
+    warnings: list[str],
 ) -> ConsentRecord:
     if legacy:
         warnings.append("Legacy persona consent is unverified; local re-attestation is required")
         return ConsentRecord()
     consent_path = safe_members.get("consent.json")
-    consent_audio = next(
-        (name for name in safe_members if PurePosixPath(name).name.startswith("consent_audio.")),
-        "",
+    members = manifest.get("members")
+    declared_consent = members.get("consent_audio") if isinstance(members, Mapping) else None
+    consent_audio = (
+        declared_consent
+        if isinstance(declared_consent, str) and declared_consent in safe_members
+        else ""
     )
     if consent_path is None:
         warnings.append("Persona consent attestation is missing; local re-attestation is required")
@@ -813,15 +1242,18 @@ def _bundle_consent(
     payload = _load_json_file(consent_path, "consent attestation", warnings_sink)
     warnings.extend(warnings_sink)
     data = payload if isinstance(payload, dict) else {}
-    statement = _text(data.get("statement") or data.get("consent_text"))
-    recorded_at = _text(data.get("recorded_at") or data.get("timestamp"))
+    statement = _text(data.get("consent_text"))
     method = _text(data.get("method"))
+    normalized_timestamp = _normalize_timestamp(data.get("recorded_at"))
+    consent_audio_path = safe_members.get(consent_audio) if consent_audio else None
     confirmed = bool(
-        data.get("verified")
+        _is_strict_true(data.get("verified_own_voice"))
+        and _is_strict_true(data.get("has_recording"))
+        and method == "self-recorded-statement"
         and statement.strip()
-        and recorded_at.strip()
-        and method.strip()
-        and consent_audio
+        and normalized_timestamp
+        and consent_audio_path is not None
+        and _is_valid_audio(consent_audio_path)
     )
     if not confirmed:
         warnings.append("Persona consent evidence is incomplete; local re-attestation is required")
@@ -829,28 +1261,73 @@ def _bundle_consent(
         confirmed=confirmed,
         basis=method if confirmed else "",
         statement=statement,
-        recorded_at=recorded_at if confirmed else "",
+        recorded_at=normalized_timestamp if confirmed else "",
         provenance=consent_audio,
     )
 
 
 def _persona_data(
-    persona: Mapping[str, Any], manifest: Mapping[str, Any], legacy: bool
+    persona: Mapping[str, Any],
+    manifest: Mapping[str, Any],
+    legacy: bool,
+    warnings: list[str],
 ) -> dict[str, Any]:
     kind = persona.get("kind") or persona.get("voice_kind")
-    tags = persona.get("tags") if isinstance(persona.get("tags"), list) else []
+    tags = manifest.get("tags") if isinstance(manifest.get("tags"), list) else []
     license_data = manifest.get("license") if isinstance(manifest.get("license"), dict) else {}
-    return {
+    engine = manifest.get("engine") if isinstance(manifest.get("engine"), dict) else {}
+    data: dict[str, Any] = {
         "name": _text(persona.get("name") or persona.get("profile_name") or "Untitled voice"),
         "source": _voice_kind(kind),
         "language": _text(persona.get("language") or "auto"),
         "description": _text(persona.get("description")),
+        "personality": _text(persona.get("personality")),
         "reference_text": _text(persona.get("reference_text") or persona.get("ref_text")),
         "instruction": _text(persona.get("instruction") or persona.get("instruct")),
+        "seed": persona.get("seed") if type(persona.get("seed")) is int else None,
+        "is_locked": _is_strict_true(persona.get("is_locked")),
+        "engine_id": _text(engine.get("id")),
+        "design_params": _normalize_design_params(engine.get("design_params")),
         "tags": [_text(tag) for tag in tags if _text(tag).strip()],
         "license_spdx": _text(license_data.get("spdx") or manifest.get("license_spdx")),
+        "license_custom_text": _text(license_data.get("custom_text")),
+        "preview": _normalize_preview(manifest.get("preview")),
         "legacy": legacy,
     }
+    design_state = _bounded_json(persona.get("vd_states"), "persona.vd_states", warnings)
+    if design_state is not None:
+        data["design_state"] = design_state
+    return data
+
+
+def _normalize_design_params(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    allowed = ("gender", "age", "pitch", "style", "accent", "dialect")
+    return {
+        key: value[key]
+        for key in allowed
+        if isinstance(value.get(key), (str, int, float))
+        and not isinstance(value.get(key), bool)
+    }
+
+
+def _normalize_preview(value: Any) -> dict[str, Any]:
+    if not isinstance(value, Mapping):
+        return {}
+    preview: dict[str, Any] = {}
+    filename = value.get("file")
+    if isinstance(filename, str) and not _unsafe_declared_member(filename):
+        preview["file"] = filename
+    if isinstance(value.get("watermarked"), bool):
+        preview["watermarked"] = value["watermarked"]
+    duration = value.get("duration_s")
+    if isinstance(duration, (int, float)) and not isinstance(duration, bool) and duration >= 0:
+        preview["duration_s"] = duration
+    sample_rate = value.get("sample_rate")
+    if type(sample_rate) is int and sample_rate > 0:
+        preview["sample_rate"] = sample_rate
+    return preview
 
 
 def _inspect_discovered_files(
@@ -891,13 +1368,19 @@ def _inspect_discovered_files(
             continue
         if path.suffix.casefold() == ".json":
             payload = _load_json_file(path, relative, inspection.warnings)
-            target = _document_target(payload)
-            if target:
+            if _is_unsupported_json(relative, payload):
+                inspection.unsupported.append(
+                    MigrationFinding(relative, "settings, credentials, or sensitive JSON")
+                )
+                continue
+            document = _normalize_document(payload, relative, inspection.warnings)
+            if document:
+                target, data = document
                 inspection.discovered_documents.append(
                     MigrationCandidate(
                         source_id=relative,
                         target=target,
-                        data={"relative_path": relative, "payload": payload},
+                        data={"relative_path": relative, **data},
                     )
                 )
             else:
@@ -905,41 +1388,229 @@ def _inspect_discovered_files(
                     MigrationFinding(relative, "unknown JSON document signature")
                 )
             continue
-        if path.suffix.casefold() in {".epub", ".pdf", ".srt"}:
-            target = (
-                "transcript_document"
-                if path.suffix.casefold() == ".srt"
-                else "longform_document"
-            )
+        suffix = path.suffix.casefold()
+        if suffix == ".srt":
+            cue_count = _srt_cue_count(path)
+            if cue_count <= 0:
+                inspection.unsupported.append(
+                    MigrationFinding(relative, "invalid or empty SRT timing structure")
+                )
+                continue
             inspection.discovered_documents.append(
                 MigrationCandidate(
                     source_id=relative,
-                    target=target,
-                    data={"relative_path": relative},
+                    target="transcript_document",
+                    data={"relative_path": relative, "cue_count": cue_count},
                 )
             )
-        elif path.suffix.casefold() in _MEDIA_SUFFIXES:
+        elif suffix == ".pdf":
+            if not _is_valid_pdf(path):
+                inspection.unsupported.append(
+                    MigrationFinding(relative, "invalid PDF signature")
+                )
+                continue
+            inspection.discovered_documents.append(
+                MigrationCandidate(
+                    source_id=relative,
+                    target="longform_document",
+                    data={"relative_path": relative, "format": "pdf"},
+                )
+            )
+        elif suffix == ".epub":
+            if not _is_valid_epub(path):
+                inspection.unsupported.append(
+                    MigrationFinding(relative, "invalid EPUB structure")
+                )
+                continue
+            inspection.discovered_documents.append(
+                MigrationCandidate(
+                    source_id=relative,
+                    target="longform_document",
+                    data={"relative_path": relative, "format": "epub"},
+                )
+            )
+        elif suffix in _MEDIA_SUFFIXES:
+            if not _is_valid_media(path):
+                inspection.unsupported.append(
+                    MigrationFinding(relative, "invalid media signature")
+                )
+                continue
+            asset = MigrationAsset(
+                role="generated_media",
+                hint=relative,
+                state="managed",
+                byte_size=path.stat().st_size,
+            )
+            inspection.assets.append(asset)
             inspection.discovered_documents.append(
                 MigrationCandidate(
                     source_id=relative,
                     target="generated_asset",
                     data={"relative_path": relative},
+                    assets=(asset,),
                 )
             )
         else:
             inspection.unsupported.append(MigrationFinding(relative, "unknown source file"))
 
 
-def _document_target(payload: Any) -> str:
-    if not isinstance(payload, dict):
-        return ""
-    if isinstance(payload.get("segments"), list) or isinstance(payload.get("cues"), list):
-        return "transcript_document"
-    if isinstance(payload.get("chapters"), list) or isinstance(payload.get("cast"), list):
-        return "longform_document"
-    if isinstance(payload.get("items"), list):
-        return "batch_manifest"
-    return ""
+def _is_unsupported_json(relative: str, payload: Any) -> bool:
+    name = PurePosixPath(relative).name.casefold()
+    if name in {
+        "config.json",
+        "credentials.json",
+        "secrets.json",
+        "settings.json",
+        "tokens.json",
+    }:
+        return True
+    return _contains_sensitive_key(payload)
+
+
+def _contains_sensitive_key(value: Any) -> bool:
+    if isinstance(value, Mapping):
+        for key, item in value.items():
+            if re.search(
+                r"(?:api[_-]?key|token|secret|password|authorization|credential|cookie)",
+                _text(key),
+                re.IGNORECASE,
+            ):
+                return True
+            if _contains_sensitive_key(item):
+                return True
+    elif isinstance(value, list):
+        return any(_contains_sensitive_key(item) for item in value)
+    return False
+
+
+def _normalize_document(
+    payload: Any,
+    label: str,
+    warnings: list[str],
+) -> tuple[str, dict[str, Any]] | None:
+    if not isinstance(payload, Mapping):
+        return None
+    segments = payload.get("segments") or payload.get("cues")
+    if isinstance(segments, list) and segments:
+        normalized = _normalize_timed_document_segments(segments)
+        if normalized is not None:
+            return "transcript_document", {"segments": normalized}
+        warnings.append(f"{label}: invalid transcript timing structure")
+        return None
+    chapters = payload.get("chapters")
+    if isinstance(chapters, list) and chapters:
+        normalized_chapters: list[dict[str, str]] = []
+        for chapter in chapters:
+            if not isinstance(chapter, Mapping):
+                return None
+            title = _text(chapter.get("title")).strip()
+            text = _text(chapter.get("text") or chapter.get("content")).strip()
+            if not title or not text:
+                return None
+            normalized_chapters.append({"title": title, "text": text})
+        return "longform_document", {"chapters": normalized_chapters}
+    items = payload.get("items")
+    if isinstance(items, list) and items:
+        normalized_items: list[dict[str, str]] = []
+        for index, item in enumerate(items):
+            if isinstance(item, str) and item.strip():
+                normalized_items.append({"id": str(index + 1), "text": item.strip()})
+            elif isinstance(item, Mapping):
+                text = _text(item.get("text")).strip()
+                if not text:
+                    return None
+                normalized_items.append(
+                    {"id": _text(item.get("id") or index + 1), "text": text}
+                )
+            else:
+                return None
+        return "batch_manifest", {"items": normalized_items}
+    return None
+
+
+def _normalize_timed_document_segments(
+    segments: list[Any],
+) -> list[dict[str, Any]] | None:
+    normalized: list[dict[str, Any]] = []
+    for index, segment in enumerate(segments):
+        if not isinstance(segment, Mapping):
+            return None
+        start = segment.get("start")
+        end = segment.get("end")
+        text = _text(segment.get("text")).strip()
+        if (
+            not isinstance(start, (int, float))
+            or isinstance(start, bool)
+            or not isinstance(end, (int, float))
+            or isinstance(end, bool)
+            or start < 0
+            or end < start
+            or not text
+        ):
+            return None
+        item: dict[str, Any] = {
+            "id": _text(segment.get("id") or index + 1),
+            "start": start,
+            "end": end,
+            "text": text,
+        }
+        if segment.get("speaker") is not None:
+            item["speaker"] = _text(segment["speaker"])
+        normalized.append(item)
+    return normalized
+
+
+_SRT_TIMING = re.compile(
+    r"^\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[,.]\d{3}$"
+)
+
+
+def _srt_cue_count(path: Path) -> int:
+    try:
+        lines = path.read_text(encoding="utf-8-sig").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return 0
+    return sum(1 for line in lines if _SRT_TIMING.fullmatch(line.strip()))
+
+
+def _is_valid_pdf(path: Path) -> bool:
+    try:
+        if path.stat().st_size < 12:
+            return False
+        with path.open("rb") as source:
+            header = source.read(8)
+            source.seek(max(0, path.stat().st_size - 1024))
+            tail = source.read(1024)
+        return header.startswith(b"%PDF-") and b"%%EOF" in tail
+    except OSError:
+        return False
+
+
+def _is_valid_epub(path: Path) -> bool:
+    try:
+        with zipfile.ZipFile(path) as archive:
+            names = set(archive.namelist())
+            if "mimetype" not in names or "META-INF/container.xml" not in names:
+                return False
+            return archive.read("mimetype") == b"application/epub+zip"
+    except (OSError, KeyError, zipfile.BadZipFile):
+        return False
+
+
+def _is_valid_media(path: Path) -> bool:
+    if path.suffix.casefold() in {".aac", ".flac", ".m4a", ".mp3", ".ogg", ".opus", ".wav"}:
+        return _is_valid_audio(path)
+    try:
+        with path.open("rb") as source:
+            header = source.read(16)
+    except OSError:
+        return False
+    suffix = path.suffix.casefold()
+    if suffix in {".mp4", ".mov"}:
+        return len(header) >= 12 and header[4:8] == b"ftyp"
+    if suffix in {".mkv", ".webm"}:
+        return header.startswith(b"\x1aE\xdf\xa3")
+    return False
 
 
 def _load_json_file(path: Path, label: str, warnings: list[str]) -> Any | None:
@@ -1039,6 +1710,68 @@ def _voice_kind(value: Any) -> str:
     if kind in {"design", "designed", "voice_design", "voice-design"}:
         return "designed"
     return "imported"
+
+
+def _is_strict_true(value: Any) -> bool:
+    return value is True or (type(value) is int and value == 1)
+
+
+def _normalize_timestamp(value: Any) -> str:
+    if isinstance(value, bool) or value is None:
+        return ""
+    parsed: datetime
+    if isinstance(value, (int, float)):
+        number = float(value)
+        if not math.isfinite(number) or number <= 0:
+            return ""
+        try:
+            parsed = datetime.fromtimestamp(number, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError):
+            return ""
+    elif isinstance(value, str) and value.strip():
+        text = value.strip()
+        if text.endswith("Z"):
+            text = f"{text[:-1]}+00:00"
+        try:
+            parsed = datetime.fromisoformat(text)
+        except ValueError:
+            return ""
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        parsed = parsed.astimezone(timezone.utc)
+    else:
+        return ""
+    return parsed.isoformat()
+
+
+def _is_valid_audio(path: Path) -> bool:
+    try:
+        if not path.is_file() or path.stat().st_size < 1000:
+            return False
+        suffix = path.suffix.casefold()
+        if suffix == ".wav":
+            with wave.open(str(path), "rb") as audio:
+                return bool(
+                    audio.getnchannels() > 0
+                    and audio.getsampwidth() > 0
+                    and audio.getframerate() > 0
+                    and audio.getnframes() > 0
+                )
+        with path.open("rb") as source:
+            header = source.read(16)
+        if suffix == ".flac":
+            return header.startswith(b"fLaC")
+        if suffix in {".ogg", ".opus"}:
+            return header.startswith(b"OggS")
+        if suffix == ".mp3":
+            return header.startswith(b"ID3") or (
+                len(header) >= 2 and header[0] == 0xFF and header[1] & 0xE0 == 0xE0
+            )
+        if suffix in {".m4a", ".mp4"}:
+            return len(header) >= 12 and header[4:8] == b"ftyp"
+    except (OSError, EOFError, wave.Error):
+        return False
+    return False
 
 
 def _text(value: Any) -> str:

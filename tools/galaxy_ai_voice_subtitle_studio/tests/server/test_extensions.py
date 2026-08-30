@@ -79,6 +79,36 @@ class ExtensionCapabilitiesApiTests(unittest.TestCase):
 
         self.assertEqual(response.status_code, 405)
 
+    def test_catalogue_has_an_explicit_openapi_contract(self) -> None:
+        schema = self.client.get("/openapi.json").json()
+        response_schema = schema["paths"]["/api/extensions/capabilities"]["get"][
+            "responses"
+        ]["200"]["content"]["application/json"]["schema"]
+        self.assertEqual(
+            response_schema,
+            {"$ref": "#/components/schemas/ExtensionCapabilitiesResponse"},
+        )
+
+        capability_schema = schema["components"]["schemas"][
+            "ExtensionCapabilityResponse"
+        ]
+        self.assertEqual(
+            set(capability_schema["properties"]),
+            {
+                "capability_id",
+                "label",
+                "category",
+                "disposition",
+                "summary",
+                "boundary",
+                "constraints",
+                "revisit_triggers",
+                "extension_capability_ids",
+                "default_enabled",
+            },
+        )
+        self.assertFalse(capability_schema["additionalProperties"])
+
 
 if __name__ == "__main__":
     unittest.main()

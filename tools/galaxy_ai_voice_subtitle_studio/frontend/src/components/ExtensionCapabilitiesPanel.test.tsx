@@ -103,6 +103,14 @@ describe('ExtensionCapabilitiesPanel', () => {
     expect(await screen.findByRole('alert')).toHaveTextContent('Không thể tải danh mục tính năng mở rộng')
   })
 
+  it('contains a malformed successful response inside the panel error state', async () => {
+    respondWith({})
+
+    renderPanel()
+
+    expect(await screen.findByRole('alert')).toHaveTextContent('Không thể tải danh mục tính năng mở rộng')
+  })
+
   it('shows text labels for every disposition without enable controls', async () => {
     respondWith(CAPABILITIES_RESPONSE)
 

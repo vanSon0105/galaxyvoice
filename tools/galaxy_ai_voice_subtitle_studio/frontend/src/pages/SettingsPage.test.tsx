@@ -90,6 +90,27 @@ describe('SettingsPage', () => {
     expect(screen.getByText('Remote service.')).toBeInTheDocument()
   })
 
+  it('keeps editable settings usable when the extension catalogue fails', async () => {
+    vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({ output_dir: 'D:/ready' })
+    vi.spyOn(settingsApi, 'fetchSettingsMeta').mockResolvedValue(EMPTY_META)
+    vi.mocked(extensionsApi.fetchExtensionCapabilities).mockRejectedValue(
+      new Error('catalogue unavailable'),
+    )
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <SettingsPage />
+      </QueryClientProvider>,
+    )
+
+    const input = await screen.findByDisplayValue('D:/ready')
+    expect(input).toBeEnabled()
+    expect(await screen.findByRole('alert')).toHaveTextContent(
+      'Không thể tải danh mục tính năng mở rộng',
+    )
+  })
+
   it('keeps the latest draft when save responses arrive out of order', async () => {
     vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({ output_dir: 'D:/old' })
     vi.spyOn(settingsApi, 'fetchSettingsMeta').mockResolvedValue(EMPTY_META)

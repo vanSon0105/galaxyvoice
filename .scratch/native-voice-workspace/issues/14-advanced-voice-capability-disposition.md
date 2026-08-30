@@ -51,8 +51,8 @@ capabilities into implemented parity.
 
 ## Verification
 
-- `python -m pytest -q` (484 tests and 60 subtests passed)
-- `npm test` (23 files and 72 tests passed)
+- `python -m pytest -q` (485 tests and 60 subtests passed)
+- `npm test` (23 files and 74 tests passed)
 - `npm run lint`
 - `npm run typecheck`
 - `npm run build` (126 modules transformed)

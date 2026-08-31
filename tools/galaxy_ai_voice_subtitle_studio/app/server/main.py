@@ -14,8 +14,9 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.staticfiles import StaticFiles
 
-from .tasks import task_registry
+from ..parity import ParityRepository, ParityService, get_catalogue
 from ..reliability.service import InsufficientDiskSpaceError
+from .tasks import task_registry
 
 STUDIO_ROOT = Path(__file__).resolve().parent.parent.parent
 FRONTEND_DIST = STUDIO_ROOT / "frontend" / "dist"
@@ -57,12 +58,17 @@ def health_ping_age() -> float:
         return time.time() - _last_health_ping
 
 
-
-
-
-def create_app(config_path: Path | None = None) -> FastAPI:
+def create_app(
+    config_path: Path | None = None,
+    parity_service: ParityService | None = None,
+) -> FastAPI:
     app = FastAPI(title="Galaxy AI Voice & Subtitle Studio")
     app.state.settings_path = config_path
+    app.state.parity_service = parity_service or ParityService(
+        get_catalogue(),
+        ParityRepository(),
+        task_registry,
+    )
 
     @app.exception_handler(InsufficientDiskSpaceError)
     async def insufficient_disk_space(
@@ -85,6 +91,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     from .routers import extensions as extensions_router
     from .routers import omnivoice as omnivoice_router
     from .routers import omnivoice_workspaces as workspaces_router
+    from .routers import parity as parity_router
     from .routers import project_graph as project_graph_router
     from .routers import reliability as reliability_router
     from .routers import runtime as runtime_router
@@ -115,6 +122,7 @@ def create_app(config_path: Path | None = None) -> FastAPI:
     app.include_router(voice_library_router.router)
     app.include_router(omnivoice_router.router)
     app.include_router(workspaces_router.router)
+    app.include_router(parity_router.router)
     app.include_router(project_graph_router.router)
     app.include_router(voicestudio_router.router)
     app.include_router(files_router)

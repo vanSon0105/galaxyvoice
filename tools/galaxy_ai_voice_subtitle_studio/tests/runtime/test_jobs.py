@@ -160,6 +160,12 @@ class PersistentJobRunnerTests(unittest.TestCase):
             self.assertEqual(restored.recovery_route, "/voice/longform")
             self.assertEqual(restored.recovery_hint, "Mở project và tiếp tục từ checkpoint.")
 
+    def test_native_parity_validation_has_settings_recovery_default(self) -> None:
+        record = TaskRegistry().create("native-parity-validation")
+
+        self.assertEqual(record.recovery_route, "/settings/parity")
+        self.assertIn("đối chiếu", record.recovery_hint.casefold())
+
     def test_task_logs_are_bounded_and_secrets_are_redacted(self) -> None:
         registry = TaskRegistry()
         record = registry.create("secure")

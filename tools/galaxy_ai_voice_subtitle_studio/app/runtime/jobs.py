@@ -35,6 +35,10 @@ MAX_TASK_LOG_LINES = 100
 MAX_TASK_RECORDS = 200
 PROGRESS_PERSIST_INTERVAL_SECONDS = 1.0
 _RECOVERY_DEFAULTS: dict[str, tuple[str, str]] = {
+    "native-parity-validation": (
+        "/settings/parity",
+        "Mở Thiết lập đối chiếu native để xem bằng chứng và chạy lại phần chưa hoàn tất.",
+    ),
     "studio-generate": ("/voice", "Mở Studio và chạy lại bản đọc từ nội dung đã lưu."),
     "voice-batch": ("/voice/batch", "Mở Batch để tiếp tục hoặc chạy lại các mục chưa xong."),
     "omnivoice-batch": ("/voice/batch", "Mở Batch để tiếp tục từ checkpoint gần nhất."),

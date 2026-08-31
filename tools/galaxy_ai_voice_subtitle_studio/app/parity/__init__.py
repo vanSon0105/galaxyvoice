@@ -31,6 +31,17 @@ from .security import (
     redact_report_value,
     resolve_approved_path,
 )
+from .repository import (
+    AcceptanceRecord,
+    ImmutableRunError,
+    ManualAnswer,
+    ManualItem,
+    ParityRepository,
+    ParityRun,
+    default_parity_store_path,
+)
+from .reports import RenderedReports, render_reports
+from .service import ParityNotReadyError, ParityService, StartParityRun
 
 __all__ = [
     "CATALOGUE_VERSION",
@@ -53,10 +64,22 @@ __all__ = [
     "SourceChangedError",
     "SourceFingerprint",
     "UnsafePathError",
+    "AcceptanceRecord",
+    "ImmutableRunError",
+    "ManualAnswer",
+    "ManualItem",
+    "ParityNotReadyError",
+    "ParityRepository",
+    "ParityRun",
+    "ParityService",
+    "RenderedReports",
+    "StartParityRun",
+    "default_parity_store_path",
     "fingerprint_source",
     "get_catalogue",
     "inspect_migration_source",
     "inspect_corpus",
     "redact_report_value",
     "resolve_approved_path",
+    "render_reports",
 ]

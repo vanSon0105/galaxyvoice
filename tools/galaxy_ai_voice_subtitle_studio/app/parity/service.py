@@ -251,8 +251,11 @@ class ParityService:
     def accept_run(self, run_id: str, *, note: str) -> ParityRun:
         if not note.strip():
             raise ParityNotReadyError("Final acceptance requires a note")
+        self._require_run(run_id)
         try:
             snapshot = self.repository.acceptance_snapshot(run_id)
+        except FileNotFoundError as error:
+            raise KeyError(run_id) from error
         except (ImmutableRunError, ParityRepositoryError, ValueError) as error:
             raise ParityNotReadyError(str(error)) from error
         run = snapshot.run

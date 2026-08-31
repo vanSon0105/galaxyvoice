@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from pathlib import Path
 
@@ -25,12 +26,14 @@ from app.parity import (
     ParityCatalogue,
     ParityFixtureManifest,
     ParityNotReadyError,
+    ParityRepository,
+    ParityService,
     SourceFingerprint,
     StartParityRun,
 )
 from app.parity.repository import ManualAnswer, ManualItem, ParityRun
 from app.parity.security import UnsafePathError
-from app.runtime.jobs import TaskRecord
+from app.runtime.jobs import TaskRecord, TaskRegistry
 from app.server.main import create_app
 
 
@@ -41,6 +44,29 @@ def _fingerprint(seed: str) -> SourceFingerprint:
         byte_size=12,
         entry_count=1,
     )
+
+
+def _manifest(tmp_path: Path, *, schema_version: int = 1) -> Path:
+    path = tmp_path / "manifest.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": schema_version,
+                "corpus_id": "api-corpus",
+                "created_at": "2026-08-30T00:00:00Z",
+                "cases": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+def _start_payload(manifest: Path) -> dict[str, object]:
+    return {
+        "manifest_path": str(manifest),
+        "approved_roots": [str(manifest.parent)],
+    }
 
 
 def _catalogue() -> ParityCatalogue:
@@ -250,6 +276,11 @@ class StubParityService:
         return self.run
 
 
+class FalseyParityService(StubParityService):
+    def __bool__(self) -> bool:
+        return False
+
+
 @pytest.fixture
 def service() -> StubParityService:
     return StubParityService()
@@ -263,6 +294,15 @@ def client(tmp_path: Path, service: StubParityService):
     )
     with TestClient(app) as test_client:
         yield test_client
+
+
+@pytest.fixture
+def real_service(
+    tmp_path: Path,
+) -> tuple[ParityService, ParityRepository, TaskRegistry]:
+    repository = ParityRepository(tmp_path / "parity-state")
+    registry = TaskRegistry()
+    return ParityService(_catalogue(), repository, registry), repository, registry
 
 
 def test_catalogue_and_openapi_contract(client: TestClient) -> None:
@@ -435,6 +475,42 @@ def test_unknown_runs_and_reports_return_404(client: TestClient) -> None:
     )
 
 
+@pytest.mark.parametrize(
+    ("route", "payload"),
+    [
+        (
+            "/api/parity/runs/not-found/manual-items/item-1",
+            {"accepted": True, "note": "reviewed"},
+        ),
+        (
+            "/api/parity/runs/not-found/accept",
+            {"note": "reviewed"},
+        ),
+        (
+            "/api/parity/runs/bad!id/manual-items/item-1",
+            {"accepted": True, "note": "reviewed"},
+        ),
+        (
+            "/api/parity/runs/bad!id/accept",
+            {"note": "reviewed"},
+        ),
+    ],
+)
+def test_real_service_unknown_run_mutations_return_sanitized_404(
+    real_service: tuple[ParityService, ParityRepository, TaskRegistry],
+    route: str,
+    payload: dict[str, object],
+) -> None:
+    service, _, _ = real_service
+    app = create_app(parity_service=service)
+
+    with TestClient(app, raise_server_exceptions=False) as real_client:
+        response = real_client.post(route, json=payload)
+
+    assert response.status_code == 404
+    assert response.json() == {"detail": "Không tìm thấy lần chạy parity."}
+
+
 def test_report_content_types_are_pinned(client: TestClient) -> None:
     json_report = client.get("/api/parity/runs/run-1/report?format=json")
     markdown_report = client.get("/api/parity/runs/run-1/report?format=markdown")
@@ -486,6 +562,184 @@ def test_accept_returns_the_accepted_run(client: TestClient) -> None:
 
 
 @pytest.mark.parametrize(
+    ("collection", "fingerprint_id", "fingerprint"),
+    [
+        (
+            "source_fingerprints",
+            "source",
+            {"kind": "wat", "sha256": "a" * 64, "byte_size": 1, "entry_count": 1},
+        ),
+        (
+            "source_fingerprints",
+            "source",
+            {"kind": "file", "sha256": "x", "byte_size": 1, "entry_count": 1},
+        ),
+        (
+            "source_fingerprints",
+            "source",
+            {"kind": "file", "sha256": "A" * 64, "byte_size": 1, "entry_count": 1},
+        ),
+        (
+            "source_fingerprints",
+            "source",
+            {"kind": "file", "sha256": "a" * 64, "byte_size": -1, "entry_count": 1},
+        ),
+        (
+            "source_fingerprints",
+            "source",
+            {"kind": "file", "sha256": "a" * 64, "byte_size": True, "entry_count": 1},
+        ),
+        (
+            "source_fingerprints",
+            "source",
+            {"kind": "file", "sha256": "a" * 64, "byte_size": 1, "entry_count": 0},
+        ),
+        (
+            "reference_fingerprints",
+            "",
+            {"kind": "directory", "sha256": "b" * 64, "byte_size": 0, "entry_count": 0},
+        ),
+        (
+            "reference_fingerprints",
+            "reference",
+            {"kind": "directory", "sha256": "b" * 64, "byte_size": 0, "entry_count": "0"},
+        ),
+    ],
+)
+def test_malformed_fingerprint_creates_no_run_or_task(
+    tmp_path: Path,
+    real_service: tuple[ParityService, ParityRepository, TaskRegistry],
+    collection: str,
+    fingerprint_id: str,
+    fingerprint: dict[str, object],
+) -> None:
+    service, repository, registry = real_service
+    payload = _start_payload(_manifest(tmp_path))
+    payload[collection] = {fingerprint_id: fingerprint}
+    app = create_app(parity_service=service)
+
+    with TestClient(app) as real_client:
+        response = real_client.post("/api/parity/runs", json=payload)
+
+    assert response.status_code == 422
+    assert repository.list_runs() == ()
+    assert registry.snapshot() == []
+
+
+@pytest.mark.parametrize("case", ["missing", "schema"])
+def test_invalid_manifest_creates_no_run_or_task_and_hides_selected_path(
+    tmp_path: Path,
+    real_service: tuple[ParityService, ParityRepository, TaskRegistry],
+    case: str,
+) -> None:
+    service, repository, registry = real_service
+    manifest = (
+        tmp_path / "private" / "missing.json"
+        if case == "missing"
+        else _manifest(tmp_path, schema_version=999)
+    )
+    app = create_app(parity_service=service)
+
+    with TestClient(app) as real_client:
+        response = real_client.post(
+            "/api/parity/runs",
+            json=_start_payload(manifest),
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Dữ liệu parity đầu vào không hợp lệ."}
+    assert str(tmp_path) not in response.text
+    assert repository.list_runs() == ()
+    assert registry.snapshot() == []
+
+
+def test_unapproved_manifest_path_creates_no_run_or_task(
+    tmp_path: Path,
+    real_service: tuple[ParityService, ParityRepository, TaskRegistry],
+) -> None:
+    service, repository, registry = real_service
+    manifest = _manifest(tmp_path)
+    approved_root = tmp_path / "approved"
+    approved_root.mkdir()
+    app = create_app(parity_service=service)
+
+    with TestClient(app) as real_client:
+        response = real_client.post(
+            "/api/parity/runs",
+            json={
+                "manifest_path": str(manifest),
+                "approved_roots": [str(approved_root)],
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json() == {"detail": "Đường dẫn parity không được phép."}
+    assert str(tmp_path) not in response.text
+    assert repository.list_runs() == ()
+    assert registry.snapshot() == []
+
+
+@pytest.mark.parametrize(
+    ("route", "payload", "method_name"),
+    [
+        (
+            "/api/parity/corpus/inspect",
+            {"manifest_path": "C:/fixtures/manifest.json", "approved_roots": ["C:/fixtures"]},
+            "inspect_corpus",
+        ),
+        (
+            "/api/parity/migration/inspect",
+            {
+                "source": "C:/copies/omnivoice.db",
+                "approved_roots": ["C:/copies"],
+                "copied_source_confirmed": True,
+            },
+            "inspect_migration",
+        ),
+        (
+            "/api/parity/runs",
+            {"manifest_path": "C:/fixtures/manifest.json", "approved_roots": ["C:/fixtures"]},
+            "start_run",
+        ),
+        (
+            "/api/parity/runs/run-1/report?format=json",
+            None,
+            "read_report",
+        ),
+    ],
+)
+def test_path_io_failures_return_sanitized_500(
+    service: StubParityService,
+    monkeypatch: pytest.MonkeyPatch,
+    route: str,
+    payload: dict[str, object] | None,
+    method_name: str,
+) -> None:
+    private_path = r"C:\Users\Rom\private\manifest.json"
+
+    def fail(*_args: object, **_kwargs: object) -> object:
+        raise PermissionError(13, "access denied", private_path)
+
+    monkeypatch.setattr(service, method_name, fail)
+    app = create_app(parity_service=service)
+
+    with TestClient(app, raise_server_exceptions=False) as real_client:
+        response = real_client.post(route, json=payload) if payload else real_client.get(route)
+
+    assert response.status_code == 500
+    assert response.json() == {"detail": "Không thể truy cập dữ liệu parity."}
+    assert private_path not in response.text
+
+
+def test_falsey_injected_service_is_preserved() -> None:
+    service = FalseyParityService()
+
+    app = create_app(parity_service=service)
+
+    assert app.state.parity_service is service
+
+
+@pytest.mark.parametrize(
     ("route", "payload"),
     [
         (
@@ -520,4 +774,4 @@ def test_path_traversal_maps_to_422(
     response = client.post(route, json=payload)
 
     assert response.status_code == 422
-    assert "outside the approved roots" in response.json()["detail"]
+    assert response.json() == {"detail": "Đường dẫn parity không được phép."}

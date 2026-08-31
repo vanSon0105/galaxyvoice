@@ -64,11 +64,13 @@ def create_app(
 ) -> FastAPI:
     app = FastAPI(title="Galaxy AI Voice & Subtitle Studio")
     app.state.settings_path = config_path
-    app.state.parity_service = parity_service or ParityService(
-        get_catalogue(),
-        ParityRepository(),
-        task_registry,
-    )
+    if parity_service is None:
+        parity_service = ParityService(
+            get_catalogue(),
+            ParityRepository(),
+            task_registry,
+        )
+    app.state.parity_service = parity_service
 
     @app.exception_handler(InsufficientDiskSpaceError)
     async def insufficient_disk_space(

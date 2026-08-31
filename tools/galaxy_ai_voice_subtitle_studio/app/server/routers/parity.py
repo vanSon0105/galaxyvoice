@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Annotated, Literal
+from typing import Annotated, Literal, NoReturn
 
 from fastapi import APIRouter, HTTPException, Query, Request, Response, status
 from pydantic import (
@@ -12,10 +12,13 @@ from pydantic import (
     Field,
     JsonValue,
     StrictBool,
+    StrictInt,
     StringConstraints,
+    model_validator,
 )
 
 from ... import __version__
+from ...common.diagnostics import get_logger, log_operation_failure
 from ...parity import (
     ParityNotReadyError,
     ParityService,
@@ -29,8 +32,19 @@ from ...parity.repository import ParityRun
 
 
 router = APIRouter(prefix="/api/parity", tags=["parity"])
+LOGGER = get_logger("server.parity")
 
 NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+FingerprintId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+Sha256Text = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+NonNegativeStrictInt = Annotated[StrictInt, Field(ge=0)]
+
+_INVALID_INPUT_DETAIL = "Dữ liệu parity đầu vào không hợp lệ."
+_UNSAFE_PATH_DETAIL = "Đường dẫn parity không được phép."
+_IO_FAILURE_DETAIL = "Không thể truy cập dữ liệu parity."
+_RUN_NOT_FOUND_DETAIL = "Không tìm thấy lần chạy parity."
+_REPORT_NOT_FOUND_DETAIL = "Không tìm thấy báo cáo parity."
+_SOURCE_CHANGED_DETAIL = "Nguồn migration đã thay đổi trong lúc kiểm tra."
 
 
 class RequestModel(BaseModel):
@@ -42,10 +56,10 @@ class ResponseModel(BaseModel):
 
 
 class SourceFingerprintModel(ResponseModel):
-    kind: str
-    sha256: str
-    byte_size: int
-    entry_count: int
+    kind: Literal["file", "directory"]
+    sha256: Sha256Text
+    byte_size: NonNegativeStrictInt
+    entry_count: NonNegativeStrictInt
 
 
 class ParityCaseResponse(ResponseModel):
@@ -193,10 +207,16 @@ class MigrationInspectRequest(RequestModel):
 
 
 class SourceFingerprintRequest(RequestModel):
-    kind: NonEmptyText
-    sha256: NonEmptyText
-    byte_size: int = Field(ge=0)
-    entry_count: int = Field(ge=0)
+    kind: Literal["file", "directory"]
+    sha256: Sha256Text
+    byte_size: NonNegativeStrictInt
+    entry_count: NonNegativeStrictInt
+
+    @model_validator(mode="after")
+    def validate_file_entry_count(self) -> SourceFingerprintRequest:
+        if self.kind == "file" and self.entry_count != 1:
+            raise ValueError("File fingerprints must contain exactly one entry")
+        return self
 
 
 class ThresholdOverrideBody(RequestModel):
@@ -212,8 +232,12 @@ class StartRunRequest(RequestModel):
     approved_roots: list[NonEmptyText] = Field(min_length=1)
     measurements_by_case: dict[str, dict[str, JsonValue]] = Field(default_factory=dict)
     threshold_overrides: list[ThresholdOverrideBody] = Field(default_factory=list)
-    source_fingerprints: dict[str, SourceFingerprintRequest] = Field(default_factory=dict)
-    reference_fingerprints: dict[str, SourceFingerprintRequest] = Field(default_factory=dict)
+    source_fingerprints: dict[FingerprintId, SourceFingerprintRequest] = Field(
+        default_factory=dict
+    )
+    reference_fingerprints: dict[FingerprintId, SourceFingerprintRequest] = Field(
+        default_factory=dict
+    )
 
 
 class StartRunResponse(ResponseModel):
@@ -326,11 +350,42 @@ def _approved_roots(values: list[str]) -> tuple[Path, ...]:
     return tuple(Path(value) for value in values)
 
 
-def _unprocessable(error: Exception) -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-        detail=str(error),
+def _input_failure(error: Exception, operation: str) -> NoReturn:
+    os_error = _caused_os_error(error)
+    if os_error is not None and not isinstance(os_error, FileNotFoundError):
+        log_operation_failure(LOGGER, operation, os_error)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=_IO_FAILURE_DETAIL,
+        ) from error
+    detail = (
+        _UNSAFE_PATH_DETAIL
+        if isinstance(error, UnsafePathError)
+        else _INVALID_INPUT_DETAIL
     )
+    raise HTTPException(
+        status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
+        detail=detail,
+    ) from error
+
+
+def _io_failure(error: OSError, operation: str) -> NoReturn:
+    log_operation_failure(LOGGER, operation, error)
+    raise HTTPException(
+        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+        detail=_IO_FAILURE_DETAIL,
+    ) from error
+
+
+def _caused_os_error(error: BaseException) -> OSError | None:
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if isinstance(current, OSError):
+            return current
+        current = current.__cause__ or current.__context__
+    return None
 
 
 def _run_response(run: ParityRun) -> ParityRunResponse:
@@ -350,7 +405,7 @@ def inspect_corpus(body: CorpusInspectRequest, request: Request) -> CorpusInspec
             approved_roots=_approved_roots(body.approved_roots),
         )
     except (FileNotFoundError, OSError, UnsafePathError, ValueError) as error:
-        raise _unprocessable(error) from error
+        _input_failure(error, "parity corpus inspection")
     return CorpusInspectionResponse.model_validate(result)
 
 
@@ -366,9 +421,12 @@ def inspect_migration(
             copied_source_confirmed=body.copied_source_confirmed,
         )
     except SourceChangedError as error:
-        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_SOURCE_CHANGED_DETAIL,
+        ) from error
     except (FileNotFoundError, OSError, UnsafePathError, ValueError) as error:
-        raise _unprocessable(error) from error
+        _input_failure(error, "parity migration inspection")
     return MigrationInspectionResponse.model_validate(result)
 
 
@@ -398,7 +456,7 @@ def start_run(body: StartRunRequest, request: Request) -> StartRunResponse:
     try:
         task = _service(request).start_run(domain_request)
     except (FileNotFoundError, OSError, UnsafePathError, ValueError) as error:
-        raise _unprocessable(error) from error
+        _input_failure(error, "parity run start")
     return StartRunResponse(task_id=task.task_id, run_id=task.run_id)
 
 
@@ -427,7 +485,7 @@ def get_run(run_id: str, request: Request) -> ParityRunResponse:
     if run is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Parity run not found",
+            detail=_RUN_NOT_FOUND_DETAIL,
         )
     return _run_response(run)
 
@@ -452,7 +510,12 @@ def report(
     try:
         content = _service(request).read_report(run_id, report_format)
     except FileNotFoundError as error:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(error)) from error
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=_REPORT_NOT_FOUND_DETAIL,
+        ) from error
+    except OSError as error:
+        _io_failure(error, "parity report read")
     media_type = "application/json" if report_format == "json" else "text/markdown"
     return Response(content=content, media_type=media_type)
 
@@ -477,12 +540,12 @@ def record_manual_item(
     except KeyError as error:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Parity run or item not found",
+            detail=_RUN_NOT_FOUND_DETAIL,
         ) from error
     except ParityNotReadyError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     except ValueError as error:
-        raise _unprocessable(error) from error
+        _input_failure(error, "parity manual evidence")
     return _run_response(run)
 
 
@@ -497,10 +560,10 @@ def accept_run(
     except KeyError as error:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Parity run not found",
+            detail=_RUN_NOT_FOUND_DETAIL,
         ) from error
     except ParityNotReadyError as error:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     except ValueError as error:
-        raise _unprocessable(error) from error
+        _input_failure(error, "parity acceptance")
     return _run_response(run)

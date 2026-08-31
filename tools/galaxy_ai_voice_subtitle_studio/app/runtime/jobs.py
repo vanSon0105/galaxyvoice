@@ -293,6 +293,7 @@ class TaskRegistry:
         pausable: bool = False,
         project_id: str = "",
         workflow_id: str = "",
+        run_id: str | None = None,
         resource_keys: tuple[str, ...] = (),
         recovery_route: str = "",
         recovery_hint: str = "",
@@ -306,14 +307,19 @@ class TaskRegistry:
             pausable=pausable,
             project_id=project_id,
             workflow_id=workflow_id,
+            run_id=run_id or uuid.uuid4().hex,
             resource_keys=tuple(resource_keys),
             recovery_route=recovery_route or default_route,
             recovery_hint=recovery_hint or default_hint,
         )
         with self._lock:
             self._tasks[record.task_id] = record
-            self._prune_locked()
-            self._persist_locked()
+            try:
+                self._prune_locked()
+                self._persist_locked()
+            except Exception:
+                self._tasks.pop(record.task_id, None)
+                raise
         return record
 
     def _prune_locked(self) -> None:

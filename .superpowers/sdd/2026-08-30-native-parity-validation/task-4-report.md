@@ -133,3 +133,106 @@ exit 0
 ## Commit
 
 Commit subject: `feat: persist native parity evidence`
+
+---
+
+# Fix Round 1/5 - Independent Review
+
+## Resolution
+
+- **C1:** Acceptance now reconstructs the current catalogue's exact required
+  case, check, and manual contract. Missing, duplicate, extra, reordered, and
+  aggregate-inconsistent evidence is rejected fail-closed.
+- **C2:** `start_run` copies the exact hashed manifest bytes into the immutable
+  run directory before submission. The worker inspects that snapshot, resolves
+  assets from the original approved root, and verifies the snapshot digest;
+  acceptance binds the exact input revision.
+- **C3:** Acceptance uses a repository compare-and-commit transaction over the
+  run envelope, manual overlay, manifest revision, override evidence, hashes,
+  and an exactly matching `DONE` parity task. Concurrent manual/input changes
+  invalidate the commit.
+- **C4:** All run and report reads, writes, and enumeration use resolved,
+  confined managed paths and reject symlinks, reparse points, and Windows
+  junctions. Corrupt or unsafe entries are isolated from independent runs.
+- **C5:** Finalization compares complete checkpointed `CaseResult` values, so a
+  previously appended result cannot be replaced under the same case ID.
+- **I1:** JSON and Markdown are written into one content-addressed revision
+  directory and published through one atomic pointer. Readers resolve one
+  pointer revision and cannot observe a mixed pair.
+- **I2:** Threshold overrides persist catalogue/override values, provenance,
+  note, and relaxation classification; reports project the evidence.
+  Acceptance recomputes effective thresholds. Relaxation requires explicit
+  local acceptance evidence, while tightening remains eligible normally.
+- **I3:** Strict JSON parsing rejects duplicate keys and overlay duplicates;
+  semantic parsers validate IDs, hashes, statuses, field sets, counts, and
+  revisions. `list_runs` skips each bad run independently.
+- **I4:** The workflow run ID is assigned before `TaskRegistry.create` persists
+  the task. Create/persistence and submit failures cannot leave an active task
+  or running parity run orphan.
+
+The minor non-string-key issue is also confined naturally: persisted evidence
+maps reject non-string keys before canonical report rendering.
+
+## Reviewer Probes
+
+Added regressions for exact contract reconstruction, missing checks, empty and
+extra indexes, running task rejection, manifest swap-back, mutated run-owned
+input, manual-answer acceptance races, privilege-free junction confinement,
+checkpoint content rewrites, atomic report-pair failure, corrupt-run isolation,
+duplicate and malformed overlays, submit failure terminalization, persisted
+run IDs, threshold relaxation/tightening, and explicit validator relaxation.
+
+TDD RED evidence included 12 initial repository/runtime failures for missing
+snapshot and run-ID persistence APIs, three acceptance-state failures, and a
+validator regression proving relaxed values remained clamped without explicit
+override authorization. Each probe passed after its scoped implementation.
+
+## Verification
+
+```text
+python -m pytest tests/parity/test_repository.py tests/parity/test_reports.py tests/parity/test_service.py tests/runtime/test_jobs.py -q
+50 passed in 6.17s
+
+python -m pytest tests/parity tests/runtime -q -rs
+211 passed, 2 skipped in 17.90s
+
+python -m pytest -q -rs
+673 passed, 2 skipped, 1 warning, 60 subtests passed in 53.10s
+
+python -m compileall -q app/parity app/runtime tests/parity tests/runtime
+exit 0
+
+git diff --check
+exit 0
+```
+
+One additional semantic-status isolation probe was added during self-review;
+it passed directly through the existing domain status validation.
+
+## Concerns
+
+- Two existing security probes remain skipped because this Windows account
+  lacks symlink privilege (`WinError 1314`). The new privilege-free Windows
+  junction probe ran and passed.
+- The full suite retains the existing Starlette/httpx deprecation warning.
+- `ruff` and `black` remain unavailable; focused/full tests, `compileall`, and
+  `git diff --check` cover this round's verification.
+- No vendor code, network service, or fabricated real corpus/manual acceptance
+  was introduced. Real corpus execution and human acceptance remain the user
+  gate.
+
+## Files Changed In Round 1
+
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/__init__.py`
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/corpus.py`
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/reports.py`
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/repository.py`
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/service.py`
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/validators.py`
+- `tools/galaxy_ai_voice_subtitle_studio/app/runtime/jobs.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_reports.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_repository.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_service.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_validators.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/runtime/test_jobs.py`
+- `.superpowers/sdd/2026-08-30-native-parity-validation/task-4-report.md`

@@ -18,6 +18,7 @@ def _fixed_run() -> ParityRun:
         catalogue_hash="a" * 64,
         manifest_path=str(Path.home() / "private" / "manifest.json"),
         manifest_hash="b" * 64,
+        manifest_snapshot_path="inputs/manifest.json",
         app_version="15.0",
         created_at="2026-08-30T10:00:00+00:00",
         completed_at="2026-08-30T10:05:00+00:00",

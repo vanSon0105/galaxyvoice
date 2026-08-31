@@ -59,6 +59,18 @@ def _report_payload(run: ParityRun) -> dict[str, Any]:
             case_id: dict(values)
             for case_id, values in sorted(run.thresholds.items())
         },
+        "threshold_overrides": [
+            {
+                "case_id": item.case_id,
+                "threshold_id": item.threshold_id,
+                "catalogue_value": item.catalogue_value,
+                "override_value": item.override_value,
+                "provenance": item.provenance,
+                "note": item.note,
+                "relaxation": item.relaxation,
+            }
+            for item in run.threshold_overrides
+        ],
         "case_results": [
             {
                 "case_id": result.case_id,
@@ -100,6 +112,9 @@ def _report_payload(run: ParityRun) -> dict[str, Any]:
                 "accepted_at": run.acceptance.accepted_at,
                 "catalogue_hash": run.acceptance.catalogue_hash,
                 "manifest_hash": run.acceptance.manifest_hash,
+                "run_revision": run.acceptance.run_revision,
+                "manual_revision": run.acceptance.manual_revision,
+                "input_revision": run.acceptance.input_revision,
             }
             if run.acceptance is not None
             else None
@@ -192,6 +207,18 @@ def _render_markdown(payload: Mapping[str, Any]) -> str:
         )
         if answer is not None and answer.get("note"):
             lines.append(f"  Note: {_text(answer['note'])}")
+    overrides = payload.get("threshold_overrides", [])
+    if overrides:
+        lines.extend(("", "## Threshold Overrides", ""))
+        for item in overrides:
+            kind = "relaxation" if item["relaxation"] else "tightening"
+            lines.append(
+                f"- `{_text(item['case_id'])}.{_text(item['threshold_id'])}` "
+                f"[{kind}]: {_text(item['catalogue_value'])} -> "
+                f"{_text(item['override_value'])}"
+            )
+            lines.append(f"  Provenance: {_text(item['provenance'])}")
+            lines.append(f"  Note: {_text(item['note'])}")
     if acceptance:
         lines.extend(
             (

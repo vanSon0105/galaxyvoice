@@ -166,6 +166,17 @@ class PersistentJobRunnerTests(unittest.TestCase):
         self.assertEqual(record.recovery_route, "/settings/parity")
         self.assertIn("đối chiếu", record.recovery_hint.casefold())
 
+    def test_create_persists_explicit_workflow_run_id_before_return(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = JobStore(Path(temp_dir) / "jobs.json")
+            registry = TaskRegistry(store=store)
+
+            record = registry.create("native-parity-validation", run_id="parity-run-1")
+            restored = TaskRegistry(store=store).get(record.task_id)
+
+            self.assertEqual(record.run_id, "parity-run-1")
+            self.assertEqual(restored.run_id, "parity-run-1")
+
     def test_task_logs_are_bounded_and_secrets_are_redacted(self) -> None:
         registry = TaskRegistry()
         record = registry.create("secure")

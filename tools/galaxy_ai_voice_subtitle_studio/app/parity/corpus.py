@@ -45,6 +45,7 @@ def inspect_corpus(
     manifest_path: Path,
     *,
     approved_roots: Sequence[Path],
+    asset_root: Path | None = None,
 ) -> CorpusInspection:
     resolved_manifest = resolve_approved_path(manifest_path, approved_roots)
     manifest = _read_manifest(resolved_manifest)
@@ -59,7 +60,11 @@ def inspect_corpus(
         for asset in manifest_case.assets:
             assets_by_role[asset.role] = _inspect_asset(
                 asset,
-                manifest_root=resolved_manifest.parent,
+                manifest_root=(
+                    Path(asset_root).expanduser().resolve(strict=False)
+                    if asset_root is not None
+                    else resolved_manifest.parent
+                ),
                 approved_roots=approved_roots,
                 probe=probe,
             )

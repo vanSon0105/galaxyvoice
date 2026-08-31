@@ -453,6 +453,7 @@ def validate_case(
     *,
     probe: MediaProbe,
     measurements: Mapping[str, Any],
+    allow_threshold_relaxation: bool = False,
 ) -> CaseResult:
     missing_roles = tuple(role for role in case.fixture_roles if role not in assets)
     if missing_roles:
@@ -473,6 +474,7 @@ def validate_case(
             probe=probe,
             measurements=measurements,
             thresholds=case.thresholds,
+            allow_threshold_relaxation=allow_threshold_relaxation,
         )
         for check_id in case.checks
     )
@@ -530,6 +532,7 @@ def _validate_check(
     probe: MediaProbe,
     measurement: Any,
     thresholds: Mapping[str, Any],
+    allow_threshold_relaxation: bool,
 ) -> CheckResult:
     if check_id in {"output_format", "output_streams"}:
         return _judge_output_format(
@@ -560,8 +563,18 @@ def _validate_check(
         return judge_duration(
             measurement.get("native_seconds"),
             measurement.get("reference_seconds"),
-            absolute_ms=_tightened_threshold(thresholds, "duration_absolute_ms", DEFAULT_DURATION_ABSOLUTE_MS),
-            relative_ratio=_tightened_threshold(thresholds, "duration_relative_ratio", DEFAULT_DURATION_RELATIVE_RATIO),
+            absolute_ms=_tightened_threshold(
+                thresholds,
+                "duration_absolute_ms",
+                DEFAULT_DURATION_ABSOLUTE_MS,
+                allow_relaxation=allow_threshold_relaxation,
+            ),
+            relative_ratio=_tightened_threshold(
+                thresholds,
+                "duration_relative_ratio",
+                DEFAULT_DURATION_RELATIVE_RATIO,
+                allow_relaxation=allow_threshold_relaxation,
+            ),
         )
     if check_id in {"subtitle_order", "subtitle_timing"}:
         return _with_check_id(
@@ -587,7 +600,12 @@ def _validate_check(
         return judge_loudness(
             measurement.get("measured_lufs"),
             target_lufs=float(thresholds.get("narration_loudness_target_lufs", DEFAULT_LOUDNESS_TARGET_LUFS)),
-            tolerance_lu=_tightened_threshold(thresholds, "loudness_tolerance_lu", DEFAULT_LOUDNESS_TOLERANCE_LU),
+            tolerance_lu=_tightened_threshold(
+                thresholds,
+                "loudness_tolerance_lu",
+                DEFAULT_LOUDNESS_TOLERANCE_LU,
+                allow_relaxation=allow_threshold_relaxation,
+            ),
         )
     if check_id in {"performance", "interaction_responsiveness"}:
         return _with_check_id(
@@ -599,11 +617,13 @@ def _validate_check(
                     thresholds,
                     "reference_performance_ratio",
                     DEFAULT_PERFORMANCE_RATIO,
+                    allow_relaxation=allow_threshold_relaxation,
                 ),
                 max_response_p95_ms=_tightened_threshold(
                     thresholds,
                     "interaction_p95_ms",
                     DEFAULT_RESPONSE_P95_MS,
+                    allow_relaxation=allow_threshold_relaxation,
                 ),
             ),
         )
@@ -617,11 +637,13 @@ def _validate_check(
                     thresholds,
                     "cpu_cancellation_seconds",
                     DEFAULT_CPU_CANCELLATION_SECONDS,
+                    allow_relaxation=allow_threshold_relaxation,
                 ),
                 accelerator_seconds=_tightened_threshold(
                     thresholds,
                     "accelerator_cancellation_seconds",
                     DEFAULT_ACCELERATOR_CANCELLATION_SECONDS,
+                    allow_relaxation=allow_threshold_relaxation,
                 ),
             ),
         )
@@ -896,9 +918,15 @@ def _aggregate_status(results: Sequence[CheckResult]) -> CheckStatus:
     return "not_applicable"
 
 
-def _tightened_threshold(thresholds: Mapping[str, Any], name: str, default: float) -> float:
+def _tightened_threshold(
+    thresholds: Mapping[str, Any],
+    name: str,
+    default: float,
+    *,
+    allow_relaxation: bool,
+) -> float:
     value = float(thresholds.get(name, default))
-    return min(value, default)
+    return value if allow_relaxation else min(value, default)
 
 
 def _percentile_95(samples: Sequence[float]) -> float:
@@ -953,6 +981,7 @@ def _validate_check_safely(
     probe: MediaProbe,
     measurements: Mapping[str, Any],
     thresholds: Mapping[str, Any],
+    allow_threshold_relaxation: bool,
 ) -> CheckResult:
     try:
         measurement = measurements.get(check_id)
@@ -962,6 +991,7 @@ def _validate_check_safely(
             probe=probe,
             measurement=measurement,
             thresholds=thresholds,
+            allow_threshold_relaxation=allow_threshold_relaxation,
         )
     except Exception as error:
         return _result(

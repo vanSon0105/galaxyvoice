@@ -2,23 +2,34 @@
 
 from __future__ import annotations
 
+import hashlib
+import math
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any, Mapping, Sequence
 
-from ..common.cache import file_digest, stable_digest
+from ..common.cache import stable_digest
 from ..common.diagnostics import redact_sensitive_text
 from ..common.errors import TaskCancelledError
-from ..runtime.jobs import CANCELLED, FAILED, INTERRUPTED, TaskContext, TaskRecord, TaskRegistry
+from ..runtime.jobs import (
+    CANCELLED,
+    DONE,
+    FAILED,
+    INTERRUPTED,
+    TaskContext,
+    TaskRecord,
+    TaskRegistry,
+)
 from .corpus import inspect_corpus
 from .migration import MigrationDryRun, inspect_migration_source
 from .models import (
     CaseResult,
     CheckResult,
     CorpusInspection,
+    ParityCase,
     ParityCatalogue,
     SourceFingerprint,
 )
@@ -29,8 +40,10 @@ from .repository import (
     ManualAnswer,
     ManualItem,
     ParityRepository,
+    ParityRepositoryError,
     ParityRun,
     RunStatus,
+    ThresholdOverride,
 )
 from .security import resolve_approved_path
 from .validators import DefaultMediaProbe, validate_case
@@ -38,10 +51,31 @@ from .validators import DefaultMediaProbe, validate_case
 
 PARITY_TASK_KIND = "native-parity-validation"
 PARITY_RECOVERY_ROUTE = "/settings/parity"
+_UPPER_BOUND_THRESHOLDS = frozenset(
+    {
+        "duration_absolute_ms",
+        "duration_relative_ratio",
+        "subtitle_timing_tolerance_ms",
+        "loudness_tolerance_lu",
+        "reference_performance_ratio",
+        "interaction_p95_ms",
+        "cpu_cancellation_seconds",
+        "accelerator_cancellation_seconds",
+    }
+)
 
 
 class ParityNotReadyError(RuntimeError):
     """Raised when evidence does not satisfy the local acceptance gate."""
+
+
+@dataclass(frozen=True)
+class ThresholdOverrideRequest:
+    case_id: str
+    threshold_id: str
+    value: object
+    provenance: str
+    note: str
 
 
 @dataclass(frozen=True)
@@ -50,6 +84,7 @@ class StartParityRun:
     approved_roots: tuple[Path, ...]
     app_version: str
     measurements_by_case: Mapping[str, Mapping[str, Any]] = field(default_factory=dict)
+    threshold_overrides: tuple[ThresholdOverrideRequest, ...] = ()
     source_fingerprints: Mapping[str, SourceFingerprint] = field(default_factory=dict)
     reference_fingerprints: Mapping[str, SourceFingerprint] = field(default_factory=dict)
 
@@ -70,6 +105,7 @@ class StartParityRun:
                 }
             ),
         )
+        object.__setattr__(self, "threshold_overrides", tuple(self.threshold_overrides))
         object.__setattr__(
             self,
             "source_fingerprints",
@@ -121,14 +157,19 @@ class ParityService:
 
     def start_run(self, request: StartParityRun) -> TaskRecord:
         manifest_path = resolve_approved_path(request.manifest_path, request.approved_roots)
-        manifest_hash = file_digest(manifest_path)
+        manifest_bytes = manifest_path.read_bytes()
+        manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
+        effective_thresholds, overrides = _resolve_requested_overrides(
+            self.catalogue,
+            request.threshold_overrides,
+        )
         run_id = uuid.uuid4().hex
         task = self.task_registry.create(
             PARITY_TASK_KIND,
+            run_id=run_id,
             resource_keys=("cpu", "disk"),
             recovery_route=PARITY_RECOVERY_ROUTE,
         )
-        task.run_id = run_id
         run = ParityRun(
             run_id=run_id,
             task_id=task.task_id,
@@ -137,37 +178,35 @@ class ParityService:
             catalogue_hash=catalogue_digest(self.catalogue),
             manifest_path=str(manifest_path),
             manifest_hash=manifest_hash,
+            manifest_snapshot_path="inputs/manifest.json",
             app_version=request.app_version,
             created_at=_now(),
-            report_json_path=f"reports/{run_id}.json",
-            report_markdown_path=f"reports/{run_id}.md",
+            report_json_path=f"reports/{run_id}/current.json",
+            report_markdown_path=f"reports/{run_id}/current.md",
             required_case_ids=tuple(
                 case.case_id for case in self.catalogue.cases if case.required
             ),
-            manual_items=tuple(
-                ManualItem(
-                    item_id=f"{case.case_id}.manual.{index}",
-                    case_id=case.case_id,
-                    prompt=prompt,
-                    required=case.required,
-                )
-                for case in self.catalogue.cases
-                for index, prompt in enumerate(case.manual_prompts, start=1)
-            ),
-            thresholds={case.case_id: dict(case.thresholds) for case in self.catalogue.cases},
+            manual_items=_manual_contract(self.catalogue),
+            thresholds=effective_thresholds,
+            threshold_overrides=overrides,
             source_fingerprints=request.source_fingerprints,
             reference_fingerprints=request.reference_fingerprints,
         )
         try:
-            self.repository.create_run(run)
+            self.repository.create_run(run, manifest_bytes=manifest_bytes)
         except Exception as error:
             self.task_registry.finish(task.task_id, status=FAILED, error=str(error))
             raise
-        self.task_registry.submit(
-            task,
-            lambda context: self._execute_run(context, request, run_id),
-            lambda completed_run_id: {"run_id": completed_run_id},
-        )
+        try:
+            self.task_registry.submit(
+                task,
+                lambda context: self._execute_run(context, request, run_id),
+                lambda completed_run_id: {"run_id": completed_run_id},
+            )
+        except Exception as error:
+            self.task_registry.finish(task.task_id, status=FAILED, error=str(error))
+            self._terminalize_submit_failure(run_id, error)
+            raise
         return task
 
     def list_runs(self) -> tuple[ParityRun, ...]:
@@ -203,18 +242,31 @@ class ParityService:
                     answered_at=_now(),
                 ),
             )
-        except ImmutableRunError as error:
+        except (ImmutableRunError, ParityRepositoryError, ValueError) as error:
             raise ParityNotReadyError(str(error)) from error
         self._write_reports(updated)
         return updated
 
     def accept_run(self, run_id: str, *, note: str) -> ParityRun:
-        run = self._require_run(run_id)
-        if run.acceptance is not None:
-            raise ParityNotReadyError("Parity run is already accepted")
         if not note.strip():
             raise ParityNotReadyError("Final acceptance requires a note")
-        self._assert_ready(run)
+        try:
+            snapshot = self.repository.acceptance_snapshot(run_id)
+        except (ImmutableRunError, ParityRepositoryError, ValueError) as error:
+            raise ParityNotReadyError(str(error)) from error
+        run = snapshot.run
+        if run.acceptance is not None:
+            raise ParityNotReadyError("Parity run is already accepted")
+        if run.status != "completed":
+            raise ParityNotReadyError(
+                f"Parity run status {run.status} cannot be accepted"
+            )
+        task = self.task_registry.get(run.task_id)
+        if task is None or task.kind != PARITY_TASK_KIND or task.run_id != run.run_id:
+            raise ParityNotReadyError("Matching parity task must be terminal done")
+        if task.status != DONE:
+            raise ParityNotReadyError("Parity task must be terminal done")
+        self._assert_ready(run, acceptance_note=note)
         acceptance = AcceptanceRecord(
             note=note.strip(),
             accepted_at=_now(),
@@ -222,8 +274,8 @@ class ParityService:
             manifest_hash=run.manifest_hash,
         )
         try:
-            accepted = self.repository.record_acceptance(run_id, acceptance)
-        except ImmutableRunError as error:
+            accepted = self.repository.commit_acceptance(snapshot, acceptance)
+        except (ImmutableRunError, ParityRepositoryError, ValueError) as error:
             raise ParityNotReadyError(str(error)) from error
         self._write_reports(accepted)
         return accepted
@@ -239,31 +291,49 @@ class ParityService:
         try:
             context.report("Đang kiểm tra corpus đối chiếu.", progress=0.0)
             context.check_cancelled()
+            run = self.repository.get_run(run_id)
+            if run is None:
+                raise RuntimeError("Parity run snapshot is unavailable")
+            snapshot_path = self.repository.manifest_snapshot_path(run_id)
             corpus = inspect_corpus(
-                request.manifest_path,
-                approved_roots=request.approved_roots,
+                snapshot_path,
+                approved_roots=(*request.approved_roots, snapshot_path.parent),
+                asset_root=Path(run.manifest_path).parent,
             )
+            if hashlib.sha256(snapshot_path.read_bytes()).hexdigest() != run.manifest_hash:
+                raise RuntimeError("Run-owned manifest changed during inspection")
             probe = DefaultMediaProbe()
             total = max(1, len(self.catalogue.cases))
-            for index, case in enumerate(self.catalogue.cases):
+            relaxed_cases = {
+                item.case_id for item in run.threshold_overrides if item.relaxation
+            }
+            for index, catalogue_case in enumerate(self.catalogue.cases):
                 context.check_cancelled()
                 context.report(
-                    f"Đang đối chiếu {case.title}.",
+                    f"Đang đối chiếu {catalogue_case.title}.",
                     progress=index / total,
                 )
                 assets = {
                     role: inspection.path
-                    for role in case.fixture_roles
+                    for role in catalogue_case.fixture_roles
                     if (inspection := corpus.assets_by_role.get(role)) is not None
                     and inspection.status == "ready"
                     and inspection.path is not None
                 }
+                case = replace(
+                    catalogue_case,
+                    thresholds=run.thresholds[catalogue_case.case_id],
+                )
                 try:
+                    kwargs: dict[str, Any] = {}
+                    if case.case_id in relaxed_cases:
+                        kwargs["allow_threshold_relaxation"] = True
                     result = validate_case(
                         case,
                         assets,
                         probe=probe,
                         measurements=request.measurements_by_case.get(case.case_id, {}),
+                        **kwargs,
                     )
                 except TaskCancelledError:
                     raise
@@ -298,12 +368,31 @@ class ParityService:
             raise
         except Exception as error:
             warnings.append(
-                redact_sensitive_text(
-                    f"Run failed: {type(error).__name__}: {error}"
-                )
+                redact_sensitive_text(f"Run failed: {type(error).__name__}: {error}")
             )
             self._finish_if_running(run_id, "failed", case_results, warnings)
             raise
+
+    def _terminalize_submit_failure(self, run_id: str, error: Exception) -> None:
+        run = self.repository.get_run(run_id)
+        if run is None or run.status != "running":
+            return
+        try:
+            failed = self.repository.finish_run(
+                run_id,
+                status="failed",
+                case_results=run.case_results,
+                warnings=(
+                    redact_sensitive_text(
+                        f"Task submission failed: {type(error).__name__}: {error}"
+                    ),
+                ),
+                completed_at=_now(),
+            )
+            self._write_reports(failed)
+        except Exception:
+            # The original submission error remains the caller-visible failure.
+            pass
 
     def _finish_run(
         self,
@@ -347,7 +436,7 @@ class ParityService:
         if run.status != "running":
             return run
         task = self.task_registry.get(run.task_id)
-        status_by_task = {
+        status_by_task: dict[str, RunStatus] = {
             CANCELLED: "cancelled",
             INTERRUPTED: "interrupted",
             FAILED: "failed",
@@ -357,20 +446,15 @@ class ParityService:
             return run
         return self._finish_run(
             run.run_id,
-            status,  # type: ignore[arg-type]
+            status,
             list(run.case_results),
             list(run.warnings),
         )
 
-    def _assert_ready(self, run: ParityRun) -> None:
+    def _assert_ready(self, run: ParityRun, *, acceptance_note: str) -> None:
         if run.status != "completed":
             raise ParityNotReadyError(
                 f"Parity run status {run.status} cannot be accepted"
-            )
-        task = self.task_registry.get(run.task_id)
-        if task is not None and task.status in {CANCELLED, INTERRUPTED, FAILED}:
-            raise ParityNotReadyError(
-                f"Parity task status {task.status} cannot be accepted"
             )
         current_catalogue_hash = catalogue_digest(self.catalogue)
         if (
@@ -378,30 +462,23 @@ class ParityService:
             or run.catalogue_hash != current_catalogue_hash
         ):
             raise ParityNotReadyError("Parity catalogue hash changed after the run")
-        try:
-            current_manifest_hash = file_digest(Path(run.manifest_path))
-        except OSError as error:
-            raise ParityNotReadyError("Parity manifest is unavailable") from error
-        if current_manifest_hash != run.manifest_hash:
-            raise ParityNotReadyError("Parity manifest hash changed after the run")
-        results = {result.case_id: result for result in run.case_results}
-        for case_id in run.required_case_ids:
-            result = results.get(case_id)
-            if result is None:
-                raise ParityNotReadyError(f"Required case {case_id} is incomplete")
-            effective_status = _case_status_from_checks(result)
-            if effective_status != "pass":
-                raise ParityNotReadyError(
-                    f"Required case {case_id} is {effective_status}"
-                )
-        for item in run.manual_items:
-            if not item.required:
-                continue
-            answer = run.manual_answers.get(item.item_id)
-            if answer is None or not answer.accepted:
-                raise ParityNotReadyError(
-                    f"Required manual item {item.item_id} is not accepted"
-                )
+        _assert_catalogue_contract(self.catalogue, run)
+        _, expected_overrides = _resolve_evidence_overrides(
+            self.catalogue,
+            run.threshold_overrides,
+        )
+        if expected_overrides != run.threshold_overrides:
+            raise ParityNotReadyError("Threshold override evidence is malformed")
+        expected_thresholds, _ = _resolve_evidence_overrides(
+            self.catalogue,
+            run.threshold_overrides,
+        )
+        if _plain_thresholds(run.thresholds) != expected_thresholds:
+            raise ParityNotReadyError("Effective threshold evidence changed")
+        if any(item.relaxation for item in run.threshold_overrides) and not acceptance_note.strip():
+            raise ParityNotReadyError(
+                "Relaxed threshold overrides require an explicit manual acceptance note"
+            )
 
 
 def catalogue_digest(catalogue: ParityCatalogue) -> str:
@@ -423,6 +500,148 @@ def catalogue_digest(catalogue: ParityCatalogue) -> str:
             ],
         }
     )
+
+
+def _assert_catalogue_contract(catalogue: ParityCatalogue, run: ParityRun) -> None:
+    case_ids = tuple(case.case_id for case in catalogue.cases)
+    if len(case_ids) != len(set(case_ids)):
+        raise ParityNotReadyError("Current catalogue contains duplicate case IDs")
+    expected_required = tuple(case.case_id for case in catalogue.cases if case.required)
+    if run.required_case_ids != expected_required:
+        raise ParityNotReadyError("Required case contract does not match the catalogue")
+    expected_manual = _manual_contract(catalogue)
+    if run.manual_items != expected_manual:
+        raise ParityNotReadyError("Required manual contract does not match the catalogue")
+    result_ids = tuple(result.case_id for result in run.case_results)
+    if result_ids != case_ids:
+        raise ParityNotReadyError("Case evidence is missing, duplicate, extra, or out of order")
+    results = dict(zip(result_ids, run.case_results, strict=True))
+    for case in catalogue.cases:
+        if len(case.checks) != len(set(case.checks)):
+            raise ParityNotReadyError(f"Catalogue case {case.case_id} has duplicate checks")
+        result = results[case.case_id]
+        check_ids = tuple(check.check_id for check in result.checks)
+        if check_ids != case.checks:
+            raise ParityNotReadyError(f"Case {case.case_id} check contract does not match")
+        effective_status = _case_status_from_checks(result)
+        if result.status != effective_status:
+            raise ParityNotReadyError(
+                f"Case {case.case_id} aggregate status is malformed ({effective_status})"
+            )
+        if case.required and effective_status != "pass":
+            raise ParityNotReadyError(
+                f"Required case {case.case_id} is {effective_status}"
+            )
+    expected_item_ids = {item.item_id for item in expected_manual}
+    answer_ids = set(run.manual_answers)
+    if not answer_ids.issubset(expected_item_ids):
+        raise ParityNotReadyError("Manual evidence contains extra item IDs")
+    for item in expected_manual:
+        answer = run.manual_answers.get(item.item_id)
+        if item.required and (answer is None or not answer.accepted):
+            raise ParityNotReadyError(
+                f"Required manual item {item.item_id} is not accepted"
+            )
+
+
+def _manual_contract(catalogue: ParityCatalogue) -> tuple[ManualItem, ...]:
+    return tuple(
+        ManualItem(
+            item_id=f"{case.case_id}.manual.{index}",
+            case_id=case.case_id,
+            prompt=prompt,
+            required=case.required,
+        )
+        for case in catalogue.cases
+        for index, prompt in enumerate(case.manual_prompts, start=1)
+    )
+
+
+def _resolve_requested_overrides(
+    catalogue: ParityCatalogue,
+    requested: tuple[ThresholdOverrideRequest, ...],
+) -> tuple[dict[str, dict[str, object]], tuple[ThresholdOverride, ...]]:
+    evidence: list[ThresholdOverride] = []
+    seen: set[tuple[str, str]] = set()
+    cases = {case.case_id: case for case in catalogue.cases}
+    effective = {case.case_id: dict(case.thresholds) for case in catalogue.cases}
+    for item in requested:
+        key = (item.case_id, item.threshold_id)
+        if key in seen:
+            raise ValueError("Duplicate threshold override")
+        seen.add(key)
+        case = cases.get(item.case_id)
+        if case is None or item.threshold_id not in case.thresholds:
+            raise ValueError("Threshold override does not match the catalogue")
+        if not item.provenance.strip() or not item.note.strip():
+            raise ValueError("Threshold override provenance and note are required")
+        value = _threshold_scalar(item.value)
+        catalogue_value = case.thresholds[item.threshold_id]
+        if value == catalogue_value:
+            raise ValueError("Threshold override must change the catalogue value")
+        relaxation = _is_relaxation(item.threshold_id, catalogue_value, value)
+        evidence.append(
+            ThresholdOverride(
+                case_id=item.case_id,
+                threshold_id=item.threshold_id,
+                catalogue_value=catalogue_value,
+                override_value=value,
+                provenance=item.provenance.strip(),
+                note=item.note.strip(),
+                relaxation=relaxation,
+            )
+        )
+        effective[item.case_id][item.threshold_id] = value
+    return effective, tuple(evidence)
+
+
+def _resolve_evidence_overrides(
+    catalogue: ParityCatalogue,
+    evidence: tuple[ThresholdOverride, ...],
+) -> tuple[dict[str, dict[str, object]], tuple[ThresholdOverride, ...]]:
+    requested = tuple(
+        ThresholdOverrideRequest(
+            case_id=item.case_id,
+            threshold_id=item.threshold_id,
+            value=item.override_value,
+            provenance=item.provenance,
+            note=item.note,
+        )
+        for item in evidence
+    )
+    return _resolve_requested_overrides(catalogue, requested)
+
+
+def _is_relaxation(threshold_id: str, catalogue_value: object, value: object) -> bool:
+    if (
+        threshold_id in _UPPER_BOUND_THRESHOLDS
+        and _finite_number(catalogue_value)
+        and _finite_number(value)
+    ):
+        return float(value) > float(catalogue_value)
+    return value != catalogue_value
+
+
+def _threshold_scalar(value: object) -> object:
+    if isinstance(value, float) and not math.isfinite(value):
+        raise ValueError("Threshold override must be finite")
+    if value is None or not isinstance(value, (bool, int, float, str)):
+        raise ValueError("Threshold override must be a JSON scalar")
+    return value
+
+
+def _finite_number(value: object) -> bool:
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def _plain_thresholds(
+    value: Mapping[str, Mapping[str, object]],
+) -> dict[str, dict[str, object]]:
+    return {case_id: dict(thresholds) for case_id, thresholds in value.items()}
 
 
 def _case_status_from_checks(result: CaseResult) -> str:

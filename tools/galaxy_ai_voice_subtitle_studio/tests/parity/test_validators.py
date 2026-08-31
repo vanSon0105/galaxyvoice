@@ -58,6 +58,40 @@ def test_duration_uses_larger_of_250ms_or_five_percent(
     assert judge_duration(native, reference).status == expected
 
 
+def test_validate_case_relaxes_threshold_only_for_explicit_override() -> None:
+    case = ParityCase(
+        case_id="duration.override",
+        area="studio",
+        title="Duration override",
+        required=True,
+        checks=("duration",),
+        thresholds={
+            "duration_absolute_ms": 300,
+            "duration_relative_ratio": 0.01,
+        },
+    )
+    measurements = {
+        "duration": {"native_seconds": 10.28, "reference_seconds": 10.0}
+    }
+
+    default_result = validate_case(
+        case,
+        {},
+        probe=validators_module.DefaultMediaProbe(),
+        measurements=measurements,
+    )
+    override_result = validate_case(
+        case,
+        {},
+        probe=validators_module.DefaultMediaProbe(),
+        measurements=measurements,
+        allow_threshold_relaxation=True,
+    )
+
+    assert default_result.status == "fail"
+    assert override_result.status == "pass"
+
+
 def test_subtitles_require_exact_count_and_order_after_whitespace_normalization() -> None:
     reference = (
         {"start_ms": 0, "end_ms": 800, "text": "Xin chao"},

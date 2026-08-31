@@ -33,15 +33,22 @@ from .security import (
 )
 from .repository import (
     AcceptanceRecord,
+    AcceptanceSnapshot,
     ImmutableRunError,
     ManualAnswer,
     ManualItem,
     ParityRepository,
     ParityRun,
+    ThresholdOverride,
     default_parity_store_path,
 )
 from .reports import RenderedReports, render_reports
-from .service import ParityNotReadyError, ParityService, StartParityRun
+from .service import (
+    ParityNotReadyError,
+    ParityService,
+    StartParityRun,
+    ThresholdOverrideRequest,
+)
 
 __all__ = [
     "CATALOGUE_VERSION",
@@ -65,6 +72,7 @@ __all__ = [
     "SourceFingerprint",
     "UnsafePathError",
     "AcceptanceRecord",
+    "AcceptanceSnapshot",
     "ImmutableRunError",
     "ManualAnswer",
     "ManualItem",
@@ -74,6 +82,8 @@ __all__ = [
     "ParityService",
     "RenderedReports",
     "StartParityRun",
+    "ThresholdOverride",
+    "ThresholdOverrideRequest",
     "default_parity_store_path",
     "fingerprint_source",
     "get_catalogue",

@@ -2,20 +2,22 @@ from __future__ import annotations
 
 import json
 import threading
+from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
 from app.common.cache import file_digest
 from app.parity import CaseResult, CheckResult, ParityCase, ParityCatalogue
-from app.parity.repository import ManualItem, ParityRepository, ParityRun
+from app.parity.repository import ManualAnswer, ManualItem, ParityRepository, ParityRun
 from app.parity.service import (
     ParityNotReadyError,
     ParityService,
     StartParityRun,
+    ThresholdOverrideRequest,
     catalogue_digest,
 )
-from app.runtime.jobs import CANCELLED, DONE, INTERRUPTED, TaskRegistry
+from app.runtime.jobs import CANCELLED, DONE, FAILED, INTERRUPTED, TaskRegistry
 
 
 def _catalogue(*, case_count: int = 1, version: str = "v1") -> ParityCatalogue:
@@ -55,6 +57,7 @@ def _start(
     manifest: Path,
     *,
     measurements: dict[str, dict[str, object]] | None = None,
+    threshold_overrides: tuple[ThresholdOverrideRequest, ...] = (),
 ):
     return service.start_run(
         StartParityRun(
@@ -62,6 +65,7 @@ def _start(
             approved_roots=(manifest.parent,),
             app_version="15.0",
             measurements_by_case=measurements or {},
+            threshold_overrides=threshold_overrides,
         )
     )
 
@@ -72,17 +76,21 @@ def _join(task) -> None:
     assert not task.thread.is_alive()
 
 
+def _passing_validator(case, assets, *, probe, measurements, **_kwargs):
+    return CaseResult(
+        case.case_id,
+        "pass",
+        tuple(CheckResult(check_id, "pass", "ok") for check_id in case.checks),
+    )
+
+
 def test_start_run_uses_task_registry_contract_and_serializes_run_id(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(
         "app.parity.service.validate_case",
-        lambda case, assets, *, probe, measurements: CaseResult(
-            case.case_id,
-            "pass",
-            (CheckResult("output_format", "pass", "ok"),),
-        ),
+        _passing_validator,
     )
     registry = TaskRegistry()
     service = ParityService(_catalogue(), ParityRepository(tmp_path / "state"), registry)
@@ -108,7 +116,7 @@ def test_start_run_persistence_failure_does_not_leave_active_task(
     monkeypatch.setattr(
         repository,
         "create_run",
-        lambda _run: (_ for _ in ()).throw(PermissionError("state is locked")),
+        lambda _run, **_kwargs: (_ for _ in ()).throw(PermissionError("state is locked")),
     )
 
     with pytest.raises(PermissionError, match="state is locked"):
@@ -190,7 +198,7 @@ def test_cancellation_persists_partial_evidence_and_cannot_be_accepted(
         service.accept_run(run.run_id, note="reviewed")
 
 
-def test_acceptance_recomputes_readiness_hashes_and_manual_answers(
+def test_acceptance_recomputes_snapshot_hashes_and_manual_answers(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -220,7 +228,7 @@ def test_acceptance_recomputes_readiness_hashes_and_manual_answers(
         accepted=True,
         note="listened",
     )
-    manifest.write_text(manifest.read_text(encoding="utf-8") + "\n", encoding="utf-8")
+    service.repository.manifest_snapshot_path(task.run_id).write_bytes(b"tampered")
     with pytest.raises(ParityNotReadyError, match="manifest"):
         service.accept_run(task.run_id, note="reviewed")
 
@@ -257,7 +265,7 @@ def test_acceptance_rejects_blocked_or_changed_catalogue_run(
     changed_service = ParityService(
         _catalogue(version="v2"),
         repository,
-        TaskRegistry(),
+        service.task_registry,
     )
     with pytest.raises(ParityNotReadyError, match="catalogue"):
         changed_service.accept_run(task.run_id, note="reviewed")
@@ -338,7 +346,7 @@ def test_interrupted_task_reconciles_partial_run_and_rejects_acceptance(
     tmp_path: Path,
 ) -> None:
     registry = TaskRegistry()
-    task = registry.create("native-parity-validation")
+    task = registry.create("native-parity-validation", run_id="interrupted-run")
     catalogue = _catalogue()
     repository = ParityRepository(tmp_path / "state")
     service = ParityService(
@@ -356,6 +364,7 @@ def test_interrupted_task_reconciles_partial_run_and_rejects_acceptance(
             catalogue_hash=catalogue_digest(catalogue),
             manifest_path=str(manifest),
             manifest_hash=file_digest(manifest),
+            manifest_snapshot_path="inputs/manifest.json",
             app_version="15.0",
             created_at="2026-08-30T10:00:00+00:00",
             report_json_path="reports/interrupted-run.json",
@@ -369,7 +378,8 @@ def test_interrupted_task_reconciles_partial_run_and_rejects_acceptance(
                 ),
             ),
             thresholds={"case.0": {"duration_absolute_ms": 250}},
-        )
+        ),
+        manifest_bytes=manifest.read_bytes(),
     )
     registry.finish(task.task_id, status=INTERRUPTED)
 
@@ -379,3 +389,299 @@ def test_interrupted_task_reconciles_partial_run_and_rejects_acceptance(
     assert run.status == "interrupted"
     with pytest.raises(ParityNotReadyError, match="interrupted"):
         service.accept_run(run.run_id, note="reviewed")
+
+
+def test_acceptance_reconstructs_required_case_check_and_manual_contract(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    catalogue = ParityCatalogue(
+        version="v1",
+        cases=(
+            ParityCase(
+                case_id="case.0",
+                area="studio",
+                title="Case 0",
+                required=True,
+                checks=("output_format", "duration"),
+                manual_prompts=("Confirm case 0",),
+                thresholds={"duration_absolute_ms": 250},
+            ),
+        ),
+    )
+    monkeypatch.setattr(
+        "app.parity.service.validate_case",
+        lambda case, assets, *, probe, measurements, **_kwargs: CaseResult(
+            case.case_id,
+            "pass",
+            (CheckResult("output_format", "pass", "only one check"),),
+        ),
+    )
+    service = ParityService(
+        catalogue,
+        ParityRepository(tmp_path / "state"),
+        TaskRegistry(),
+    )
+    task = _start(service, _manifest(tmp_path))
+    _join(task)
+    service.record_manual_item(
+        task.run_id,
+        "case.0.manual.1",
+        accepted=True,
+        note="listened",
+    )
+
+    with pytest.raises(ParityNotReadyError, match="check contract"):
+        service.accept_run(task.run_id, note="reviewed")
+
+
+def test_acceptance_rejects_tampered_empty_and_extra_contract_indexes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.parity.service.validate_case", _passing_validator)
+    repository = ParityRepository(tmp_path / "state")
+    service = ParityService(_catalogue(), repository, TaskRegistry())
+    task = _start(service, _manifest(tmp_path))
+    _join(task)
+    run_path = repository.root / "runs" / task.run_id / "run.json"
+    payload = json.loads(run_path.read_text(encoding="utf-8"))
+    payload["required_case_ids"] = []
+    payload["manual_items"] = []
+    payload["case_results"].append(
+        {
+            "case_id": "extra.case",
+            "status": "pass",
+            "checks": [],
+        }
+    )
+    run_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    with pytest.raises((KeyError, ParityNotReadyError)):
+        service.accept_run(task.run_id, note="reviewed")
+
+
+def test_acceptance_requires_matching_task_to_be_terminal_done(
+    tmp_path: Path,
+) -> None:
+    catalogue = _catalogue()
+    registry = TaskRegistry()
+    task = registry.create("native-parity-validation", run_id="run-running-task")
+    repository = ParityRepository(tmp_path / "state")
+    manifest = _manifest(tmp_path)
+    manifest_bytes = manifest.read_bytes()
+    run = ParityRun(
+        run_id="run-running-task",
+        task_id=task.task_id,
+        status="running",
+        catalogue_version=catalogue.version,
+        catalogue_hash=catalogue_digest(catalogue),
+        manifest_path=str(manifest),
+        manifest_hash=sha256(manifest_bytes).hexdigest(),
+        manifest_snapshot_path="inputs/manifest.json",
+        app_version="15.0",
+        created_at="2026-08-30T10:00:00+00:00",
+        report_json_path="reports/run-running-task/current.json",
+        report_markdown_path="reports/run-running-task/current.md",
+        required_case_ids=("case.0",),
+        manual_items=(ManualItem("case.0.manual.1", "case.0", "Confirm case 0"),),
+        thresholds={"case.0": {"duration_absolute_ms": 250}},
+    )
+    repository.create_run(run, manifest_bytes=manifest_bytes)
+    repository.record_case_result(
+        run.run_id,
+        CaseResult("case.0", "pass", (CheckResult("output_format", "pass", "ok"),)),
+    )
+    repository.finish_run(
+        run.run_id,
+        status="completed",
+        case_results=repository.get_run(run.run_id).case_results,  # type: ignore[union-attr]
+        warnings=(),
+        completed_at="2026-08-30T10:05:00+00:00",
+    )
+    repository.record_manual_answer(
+        run.run_id,
+        ManualAnswer("case.0.manual.1", True, "listened", "2026-08-30T10:06:00+00:00"),
+    )
+
+    service = ParityService(catalogue, repository, registry)
+    with pytest.raises(ParityNotReadyError, match="done"):
+        service.accept_run(run.run_id, note="reviewed")
+
+
+def test_worker_inspects_run_owned_manifest_snapshot_not_swapped_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _manifest(tmp_path)
+    original_bytes = source.read_bytes()
+    inspected: list[Path] = []
+    real_inspect = __import__("app.parity.corpus", fromlist=["inspect_corpus"]).inspect_corpus
+
+    def inspect_snapshot(path, *, approved_roots, asset_root=None):
+        inspected.append(Path(path))
+        assert Path(path) != source
+        assert Path(path).read_bytes() == original_bytes
+        source.write_text("replacement corpus", encoding="utf-8")
+        source.write_bytes(original_bytes)
+        return real_inspect(path, approved_roots=approved_roots, asset_root=asset_root)
+
+    monkeypatch.setattr("app.parity.service.inspect_corpus", inspect_snapshot)
+    monkeypatch.setattr("app.parity.service.validate_case", _passing_validator)
+    service = ParityService(
+        _catalogue(),
+        ParityRepository(tmp_path / "state"),
+        TaskRegistry(),
+    )
+
+    task = _start(service, source)
+    _join(task)
+
+    assert task.status == DONE
+    assert inspected == [service.repository.manifest_snapshot_path(task.run_id)]
+
+
+def test_acceptance_compare_and_commit_detects_manual_race(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.parity.service.validate_case", _passing_validator)
+    repository = ParityRepository(tmp_path / "state")
+    service = ParityService(_catalogue(), repository, TaskRegistry())
+    task = _start(service, _manifest(tmp_path))
+    _join(task)
+    service.record_manual_item(
+        task.run_id,
+        "case.0.manual.1",
+        accepted=True,
+        note="positive",
+    )
+    real_commit = repository.commit_acceptance
+
+    def race(snapshot, acceptance):
+        repository.record_manual_answer(
+            task.run_id,
+            ManualAnswer(
+                "case.0.manual.1",
+                False,
+                "raced negative",
+                "2026-08-30T10:07:00+00:00",
+            ),
+        )
+        return real_commit(snapshot, acceptance)
+
+    monkeypatch.setattr(repository, "commit_acceptance", race)
+
+    with pytest.raises(ParityNotReadyError, match="changed"):
+        service.accept_run(task.run_id, note="approved")
+    assert repository.get_run(task.run_id).acceptance is None  # type: ignore[union-attr]
+
+
+def test_submit_failure_terminalizes_task_and_run_with_same_persisted_run_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    registry = TaskRegistry()
+    repository = ParityRepository(tmp_path / "state")
+    service = ParityService(_catalogue(), repository, registry)
+
+    def fail_submit(*_args, **_kwargs):
+        raise RuntimeError("thread creation failed")
+
+    monkeypatch.setattr(registry, "submit", fail_submit)
+    with pytest.raises(RuntimeError, match="thread creation failed"):
+        _start(service, _manifest(tmp_path))
+
+    task_payload = registry.snapshot()[0]
+    assert task_payload["status"] == FAILED
+    run = repository.get_run(task_payload["run_id"])
+    assert run is not None
+    assert run.status == "failed"
+    assert run.run_id == task_payload["run_id"]
+
+
+def test_threshold_overrides_record_provenance_and_gate_relaxation(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.parity.service.validate_case", _passing_validator)
+    service = ParityService(
+        _catalogue(),
+        ParityRepository(tmp_path / "state"),
+        TaskRegistry(),
+    )
+    override = ThresholdOverrideRequest(
+        case_id="case.0",
+        threshold_id="duration_absolute_ms",
+        value=300,
+        provenance="local reviewer",
+        note="Reference has a deliberate trailing pause",
+    )
+    task = _start(service, _manifest(tmp_path), threshold_overrides=(override,))
+    _join(task)
+    run = service.get_run(task.run_id)
+
+    assert run is not None
+    assert run.threshold_overrides[0].relaxation is True
+    assert run.threshold_overrides[0].provenance == "local reviewer"
+    assert b'"relaxation":true' in service.read_report(task.run_id, "json")
+    service.record_manual_item(
+        task.run_id,
+        "case.0.manual.1",
+        accepted=True,
+        note="listened",
+    )
+    accepted = service.accept_run(task.run_id, note="Explicitly accept relaxed threshold")
+    assert accepted.acceptance is not None
+
+
+def test_threshold_override_requires_provenance_and_note(tmp_path: Path) -> None:
+    service = ParityService(
+        _catalogue(),
+        ParityRepository(tmp_path / "state"),
+        TaskRegistry(),
+    )
+    override = ThresholdOverrideRequest(
+        case_id="case.0",
+        threshold_id="duration_absolute_ms",
+        value=300,
+        provenance="",
+        note="",
+    )
+
+    with pytest.raises(ValueError, match="provenance|note"):
+        _start(service, _manifest(tmp_path), threshold_overrides=(override,))
+
+
+def test_tightening_threshold_remains_eligible_for_normal_acceptance(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.parity.service.validate_case", _passing_validator)
+    service = ParityService(
+        _catalogue(),
+        ParityRepository(tmp_path / "state"),
+        TaskRegistry(),
+    )
+    override = ThresholdOverrideRequest(
+        case_id="case.0",
+        threshold_id="duration_absolute_ms",
+        value=200,
+        provenance="local reviewer",
+        note="Use the stricter release tolerance",
+    )
+    task = _start(service, _manifest(tmp_path), threshold_overrides=(override,))
+    _join(task)
+    run = service.get_run(task.run_id)
+
+    assert run is not None
+    assert run.threshold_overrides[0].relaxation is False
+    assert run.thresholds["case.0"]["duration_absolute_ms"] == 200
+    service.record_manual_item(
+        task.run_id,
+        "case.0.manual.1",
+        accepted=True,
+        note="listened",
+    )
+    accepted = service.accept_run(task.run_id, note="Accept stricter evidence")
+    assert accepted.acceptance is not None

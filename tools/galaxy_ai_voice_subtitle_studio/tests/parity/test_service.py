@@ -756,6 +756,94 @@ def test_acceptance_holds_matching_done_task_through_repository_commit(
     assert task_present_at_commit == [True]
 
 
+def test_acceptance_rechecks_selected_source_inside_guarded_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.parity.service.validate_case", _passing_validator)
+    manifest = _manifest(tmp_path)
+    repository = ParityRepository(tmp_path / "state")
+    service = ParityService(_catalogue(), repository, TaskRegistry())
+    task = _start(service, manifest)
+    _join(task)
+    service.record_manual_item(
+        task.run_id,
+        "case.0.manual.1",
+        accepted=True,
+        note="listened",
+    )
+
+    commit_entered = threading.Event()
+    mutation_finished = threading.Event()
+    real_commit = repository.commit_acceptance
+
+    def commit_after_mutation(snapshot, acceptance):
+        commit_entered.set()
+        assert mutation_finished.wait(timeout=5)
+        return real_commit(snapshot, acceptance)
+
+    def mutate_source() -> None:
+        assert commit_entered.wait(timeout=5)
+        manifest.write_text('{"changed":true}', encoding="utf-8")
+        mutation_finished.set()
+
+    monkeypatch.setattr(repository, "commit_acceptance", commit_after_mutation)
+    mutator = threading.Thread(target=mutate_source)
+    mutator.start()
+    try:
+        with pytest.raises(ParityNotReadyError, match="manifest source"):
+            service.accept_run(task.run_id, note="approved")
+    finally:
+        mutator.join(timeout=5)
+
+    assert not mutator.is_alive()
+    assert repository.get_run(task.run_id).acceptance is None  # type: ignore[union-attr]
+
+
+def test_acceptance_fails_closed_on_selected_source_io_inside_guarded_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.parity.service.validate_case", _passing_validator)
+    manifest = _manifest(tmp_path)
+    repository = ParityRepository(tmp_path / "state")
+    service = ParityService(_catalogue(), repository, TaskRegistry())
+    task = _start(service, manifest)
+    _join(task)
+    service.record_manual_item(
+        task.run_id,
+        "case.0.manual.1",
+        accepted=True,
+        note="listened",
+    )
+
+    commit_entered = threading.Event()
+    removal_finished = threading.Event()
+    real_commit = repository.commit_acceptance
+
+    def commit_after_removal(snapshot, acceptance):
+        commit_entered.set()
+        assert removal_finished.wait(timeout=5)
+        return real_commit(snapshot, acceptance)
+
+    def remove_source() -> None:
+        assert commit_entered.wait(timeout=5)
+        manifest.unlink()
+        removal_finished.set()
+
+    monkeypatch.setattr(repository, "commit_acceptance", commit_after_removal)
+    remover = threading.Thread(target=remove_source)
+    remover.start()
+    try:
+        with pytest.raises(ParityNotReadyError, match="manifest source"):
+            service.accept_run(task.run_id, note="approved")
+    finally:
+        remover.join(timeout=5)
+
+    assert not remover.is_alive()
+    assert repository.get_run(task.run_id).acceptance is None  # type: ignore[union-attr]
+
+
 def test_acceptance_compare_and_commit_detects_manual_race(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

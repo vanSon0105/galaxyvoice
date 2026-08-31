@@ -46,7 +46,7 @@ from .repository import (
     RunStatus,
     ThresholdOverride,
 )
-from .security import UnsafePathError, fingerprint_source, resolve_approved_path
+from .security import resolve_approved_path
 from .validators import DefaultMediaProbe, validate_case
 
 
@@ -488,14 +488,6 @@ class ParityService:
             or run.catalogue_hash != current_catalogue_hash
         ):
             raise ParityNotReadyError("Parity catalogue hash changed after the run")
-        try:
-            source = fingerprint_source(Path(run.manifest_path))
-        except (FileNotFoundError, OSError, UnsafePathError) as error:
-            raise ParityNotReadyError(
-                "Selected manifest source is unavailable or unsafe"
-            ) from error
-        if source.kind != "file" or source.sha256 != run.manifest_hash:
-            raise ParityNotReadyError("Selected manifest source changed after the run")
         _assert_catalogue_contract(self.catalogue, run)
         _, expected_overrides = _resolve_evidence_overrides(
             self.catalogue,

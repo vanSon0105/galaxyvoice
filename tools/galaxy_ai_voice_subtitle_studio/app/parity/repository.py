@@ -18,7 +18,7 @@ from types import MappingProxyType
 from typing import Any, Literal, Mapping
 
 from .models import CaseResult, CheckResult, SourceFingerprint
-from .security import redact_report_value
+from .security import UnsafePathError, fingerprint_source, redact_report_value
 
 
 RunStatus = Literal["running", "completed", "failed", "cancelled", "interrupted"]
@@ -140,6 +140,8 @@ class AcceptanceSnapshot:
     run_revision: str
     manual_revision: str
     input_revision: str
+    selected_source_path: str
+    selected_source_fingerprint: SourceFingerprint
 
 
 def default_parity_store_path() -> Path:
@@ -307,6 +309,9 @@ class ParityRepository:
                 current.run_revision != snapshot.run_revision
                 or current.manual_revision != snapshot.manual_revision
                 or current.input_revision != snapshot.input_revision
+                or current.selected_source_path != snapshot.selected_source_path
+                or current.selected_source_fingerprint
+                != snapshot.selected_source_fingerprint
             ):
                 raise ImmutableRunError("Parity evidence changed during acceptance")
             if acceptance.catalogue_hash != current.run.catalogue_hash:
@@ -420,11 +425,14 @@ class ParityRepository:
         input_revision = _digest(input_bytes)
         if input_revision != run.manifest_hash:
             raise ImmutableRunError("Run-owned manifest revision changed")
+        selected_source_fingerprint = _fingerprint_selected_manifest(run)
         return AcceptanceSnapshot(
             run=run,
             run_revision=_digest(run_bytes),
             manual_revision=_digest(manual_bytes),
             input_revision=input_revision,
+            selected_source_path=run.manifest_path,
+            selected_source_fingerprint=selected_source_fingerprint,
         )
 
     def _require_run(self, run_id: str) -> ParityRun:
@@ -1132,6 +1140,18 @@ def _validate_run_id(run_id: str) -> str:
 
 def _digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _fingerprint_selected_manifest(run: ParityRun) -> SourceFingerprint:
+    try:
+        source = fingerprint_source(Path(run.manifest_path))
+    except (FileNotFoundError, OSError, UnsafePathError) as error:
+        raise ImmutableRunError(
+            "Selected manifest source is unavailable or unsafe"
+        ) from error
+    if source.kind != "file" or source.sha256 != run.manifest_hash:
+        raise ImmutableRunError("Selected manifest source changed after the run")
+    return source
 
 
 def _absolute_path_prefixes(path: Path) -> tuple[Path, ...]:

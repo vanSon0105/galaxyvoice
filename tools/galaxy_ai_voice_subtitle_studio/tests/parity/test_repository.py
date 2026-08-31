@@ -50,6 +50,9 @@ def _running_run(root: Path, *, run_id: str = "run-1") -> ParityRun:
 
 
 def _create(repository: ParityRepository, run: ParityRun) -> ParityRun:
+    source = Path(run.manifest_path)
+    if source.parent.is_dir() and not source.exists():
+        source.write_bytes(MANIFEST_BYTES)
     return repository.create_run(run, manifest_bytes=MANIFEST_BYTES)
 
 

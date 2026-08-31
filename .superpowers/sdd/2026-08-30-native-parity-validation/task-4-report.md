@@ -330,3 +330,86 @@ exit 0
 ## Commit
 
 Commit subject: `fix: close parity acceptance rereview gaps`
+
+---
+
+# Fix Round 3/5 - Selected Source Acceptance Transaction
+
+## Resolution
+
+- `AcceptanceSnapshot` now binds the selected source path and complete
+  `SourceFingerprint` alongside the run, manual, and run-owned input
+  revisions.
+- `_acceptance_snapshot_unlocked` fingerprints the selected source as its last
+  snapshot operation and fails closed when the source is missing, unsafe, not
+  a regular file, unreadable, or does not match the captured manifest hash.
+- `commit_acceptance` rebuilds that snapshot while both the TaskRegistry guard
+  and repository lock are held, then compares the selected source identity and
+  fingerprint before writing acceptance. The earlier service-level source
+  pre-check was removed, so source validation is no longer separated from the
+  guarded compare-and-commit transaction.
+- Lock order remains `TaskRegistry -> ParityRepository`. Repository code does
+  not call TaskRegistry, so the change adds no reverse acquisition path.
+
+## TDD Evidence
+
+Both exact-interval probes failed against Round 2 for the intended reason:
+
+```text
+FAILED test_acceptance_rechecks_selected_source_inside_guarded_commit
+  DID NOT RAISE ParityNotReadyError
+FAILED test_acceptance_fails_closed_on_selected_source_io_inside_guarded_commit
+  DID NOT RAISE ParityNotReadyError
+```
+
+Each probe starts a concurrent thread after the guarded repository callback is
+entered but before the real compare-and-commit. One replaces the source bytes;
+the other removes the source. After the repository snapshot fix, those probes
+plus the existing source-change, task-prune, and manual-race regressions passed:
+
+```text
+5 passed in 3.97s
+```
+
+Both concurrent threads joined within their bounds, and acceptance remained
+absent after each failure.
+
+## Verification
+
+```text
+python -m pytest tests/parity/test_repository.py tests/parity/test_reports.py tests/parity/test_service.py tests/parity/test_validators.py tests/runtime/test_jobs.py -q
+111 passed in 20.13s
+
+python -m pytest tests/parity tests/runtime -q -rs
+219 passed, 2 skipped in 38.36s
+
+python -m pytest -q -rs
+680 passed, 2 skipped, 1 warning, 60 subtests passed in 99.39s
+
+python -m compileall -q app/parity app/runtime tests/parity tests/runtime
+exit 0
+
+git diff --check
+exit 0
+```
+
+## Concerns
+
+- The same two symlink tests remain skipped because this Windows account lacks
+  symlink privilege (`WinError 1314`); the privilege-free junction regressions
+  continue to run in the focused suite.
+- The full suite retains the pre-existing Starlette/httpx deprecation warning.
+- No vendor source, network service, real corpus, fabricated acceptance
+  evidence, or subagent was used.
+
+## Files Changed In Round 3
+
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/repository.py`
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/service.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_repository.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_service.py`
+- `.superpowers/sdd/2026-08-30-native-parity-validation/task-4-report.md`
+
+## Commit
+
+Commit subject: `fix: bind parity source to acceptance commit`

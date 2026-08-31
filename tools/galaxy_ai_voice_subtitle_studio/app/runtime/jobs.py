@@ -10,7 +10,7 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, TypeVar
 
 from ..common.cache import read_json, write_json_atomic
 from ..common.diagnostics import get_logger, redact_sensitive_text
@@ -192,6 +192,7 @@ class TaskContext:
 
 
 ResumeHandler = Callable[[TaskContext], Any]
+_T = TypeVar("_T")
 
 
 class TaskRegistry:
@@ -340,6 +341,18 @@ class TaskRegistry:
     def get(self, task_id: str) -> TaskRecord | None:
         with self._lock:
             return self._tasks.get(task_id)
+
+    def run_with_task_guard(
+        self,
+        task_id: str,
+        operation: Callable[[TaskRecord], _T],
+    ) -> _T:
+        """Keep a task stable while a guarded cross-repository operation commits."""
+        with self._lock:
+            record = self._tasks.get(task_id)
+            if record is None:
+                raise KeyError(task_id)
+            return operation(record)
 
     def register_resume_handler(
         self,

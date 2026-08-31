@@ -23,7 +23,7 @@ from ..runtime.jobs import (
     TaskRecord,
     TaskRegistry,
 )
-from .corpus import inspect_corpus
+from .corpus import inspect_corpus, inspect_manifest, parse_manifest_bytes
 from .migration import MigrationDryRun, inspect_migration_source
 from .models import (
     CaseResult,
@@ -31,6 +31,7 @@ from .models import (
     CorpusInspection,
     ParityCase,
     ParityCatalogue,
+    ParityFixtureManifest,
     SourceFingerprint,
 )
 from .reports import render_reports
@@ -45,7 +46,7 @@ from .repository import (
     RunStatus,
     ThresholdOverride,
 )
-from .security import resolve_approved_path
+from .security import UnsafePathError, fingerprint_source, resolve_approved_path
 from .validators import DefaultMediaProbe, validate_case
 
 
@@ -158,6 +159,7 @@ class ParityService:
     def start_run(self, request: StartParityRun) -> TaskRecord:
         manifest_path = resolve_approved_path(request.manifest_path, request.approved_roots)
         manifest_bytes = manifest_path.read_bytes()
+        manifest = parse_manifest_bytes(manifest_bytes)
         manifest_hash = hashlib.sha256(manifest_bytes).hexdigest()
         effective_thresholds, overrides = _resolve_requested_overrides(
             self.catalogue,
@@ -200,7 +202,7 @@ class ParityService:
         try:
             self.task_registry.submit(
                 task,
-                lambda context: self._execute_run(context, request, run_id),
+                lambda context: self._execute_run(context, request, run_id, manifest),
                 lambda completed_run_id: {"run_id": completed_run_id},
             )
         except Exception as error:
@@ -244,8 +246,7 @@ class ParityService:
             )
         except (ImmutableRunError, ParityRepositoryError, ValueError) as error:
             raise ParityNotReadyError(str(error)) from error
-        self._write_reports(updated)
-        return updated
+        return self._write_reports(updated)
 
     def accept_run(self, run_id: str, *, note: str) -> ParityRun:
         if not note.strip():
@@ -261,11 +262,6 @@ class ParityService:
             raise ParityNotReadyError(
                 f"Parity run status {run.status} cannot be accepted"
             )
-        task = self.task_registry.get(run.task_id)
-        if task is None or task.kind != PARITY_TASK_KIND or task.run_id != run.run_id:
-            raise ParityNotReadyError("Matching parity task must be terminal done")
-        if task.status != DONE:
-            raise ParityNotReadyError("Parity task must be terminal done")
         self._assert_ready(run, acceptance_note=note)
         acceptance = AcceptanceRecord(
             note=note.strip(),
@@ -273,18 +269,31 @@ class ParityService:
             catalogue_hash=run.catalogue_hash,
             manifest_hash=run.manifest_hash,
         )
+
+        def commit_with_task_guard(task: TaskRecord) -> ParityRun:
+            if task.kind != PARITY_TASK_KIND or task.run_id != run.run_id:
+                raise ParityNotReadyError("Matching parity task must be terminal done")
+            if task.status != DONE:
+                raise ParityNotReadyError("Parity task must be terminal done")
+            return self.repository.commit_acceptance(snapshot, acceptance)
+
         try:
-            accepted = self.repository.commit_acceptance(snapshot, acceptance)
+            accepted = self.task_registry.run_with_task_guard(
+                run.task_id,
+                commit_with_task_guard,
+            )
+        except KeyError as error:
+            raise ParityNotReadyError("Matching parity task must be terminal done") from error
         except (ImmutableRunError, ParityRepositoryError, ValueError) as error:
             raise ParityNotReadyError(str(error)) from error
-        self._write_reports(accepted)
-        return accepted
+        return self._write_reports(accepted)
 
     def _execute_run(
         self,
         context: TaskContext,
         request: StartParityRun,
         run_id: str,
+        manifest: ParityFixtureManifest,
     ) -> str:
         case_results: list[CaseResult] = []
         warnings: list[str] = []
@@ -294,14 +303,11 @@ class ParityService:
             run = self.repository.get_run(run_id)
             if run is None:
                 raise RuntimeError("Parity run snapshot is unavailable")
-            snapshot_path = self.repository.manifest_snapshot_path(run_id)
-            corpus = inspect_corpus(
-                snapshot_path,
-                approved_roots=(*request.approved_roots, snapshot_path.parent),
+            corpus = inspect_manifest(
+                manifest,
+                approved_roots=request.approved_roots,
                 asset_root=Path(run.manifest_path).parent,
             )
-            if hashlib.sha256(snapshot_path.read_bytes()).hexdigest() != run.manifest_hash:
-                raise RuntimeError("Run-owned manifest changed during inspection")
             probe = DefaultMediaProbe()
             total = max(1, len(self.catalogue.cases))
             relaxed_cases = {
@@ -408,8 +414,7 @@ class ParityService:
             warnings=tuple(warnings),
             completed_at=_now(),
         )
-        self._write_reports(run)
-        return run
+        return self._write_reports(run)
 
     def _finish_if_running(
         self,
@@ -422,9 +427,30 @@ class ParityService:
         if current is not None and current.status == "running":
             self._finish_run(run_id, status, case_results, warnings)
 
-    def _write_reports(self, run: ParityRun) -> None:
-        rendered = render_reports(run)
-        self.repository.write_reports(run.run_id, rendered.json_bytes, rendered.markdown)
+    def _write_reports(self, run: ParityRun) -> ParityRun:
+        revision_input = render_reports(
+            replace(run, report_json_path="", report_markdown_path="")
+        )
+        revision = hashlib.sha256(
+            revision_input.json_bytes + b"\0" + revision_input.markdown.encode("utf-8")
+        ).hexdigest()
+        json_path, markdown_path = self.repository.report_revision_paths(
+            run.run_id,
+            revision,
+        )
+        published = replace(
+            run,
+            report_json_path=json_path,
+            report_markdown_path=markdown_path,
+        )
+        rendered = render_reports(published)
+        self.repository.write_reports(
+            run.run_id,
+            rendered.json_bytes,
+            rendered.markdown,
+            revision=revision,
+        )
+        return published
 
     def _require_run(self, run_id: str) -> ParityRun:
         run = self.get_run(run_id)
@@ -462,6 +488,14 @@ class ParityService:
             or run.catalogue_hash != current_catalogue_hash
         ):
             raise ParityNotReadyError("Parity catalogue hash changed after the run")
+        try:
+            source = fingerprint_source(Path(run.manifest_path))
+        except (FileNotFoundError, OSError, UnsafePathError) as error:
+            raise ParityNotReadyError(
+                "Selected manifest source is unavailable or unsafe"
+            ) from error
+        if source.kind != "file" or source.sha256 != run.manifest_hash:
+            raise ParityNotReadyError("Selected manifest source changed after the run")
         _assert_catalogue_contract(self.catalogue, run)
         _, expected_overrides = _resolve_evidence_overrides(
             self.catalogue,

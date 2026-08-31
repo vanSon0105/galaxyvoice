@@ -330,11 +330,30 @@ class ParityRepository:
         snapshot = self.acceptance_snapshot(run_id)
         return self.commit_acceptance(snapshot, acceptance)
 
-    def write_reports(self, run_id: str, json_bytes: bytes, markdown: str) -> None:
+    def report_revision_paths(self, run_id: str, revision: str) -> tuple[str, str]:
+        validated_run_id = _validate_run_id(run_id)
+        validated_revision = _hash_string(revision, "report revision")
+        base = Path("reports") / validated_run_id / "revisions" / validated_revision
+        return (
+            (base / "report.json").as_posix(),
+            (base / "report.md").as_posix(),
+        )
+
+    def write_reports(
+        self,
+        run_id: str,
+        json_bytes: bytes,
+        markdown: str,
+        *,
+        revision: str | None = None,
+    ) -> tuple[str, str]:
         markdown_bytes = markdown.encode("utf-8")
-        revision = _digest(json_bytes + b"\0" + markdown_bytes)
+        revision = revision or _digest(json_bytes + b"\0" + markdown_bytes)
+        json_path, markdown_path = self.report_revision_paths(run_id, revision)
         with self._lock:
-            if self.get_run(run_id) is None:
+            try:
+                self._require_run(run_id)
+            except (KeyError, OSError, ParityRepositoryError, ValueError):
                 raise KeyError(run_id)
             report_root = self._mkdir_managed("reports", _validate_run_id(run_id))
             revisions = self._mkdir_managed("reports", run_id, "revisions")
@@ -362,8 +381,14 @@ class ParityRepository:
             self._require_regular_file(revision_dir / "report.md", "Markdown report")
             _write_json_atomic(
                 report_root / "current.json",
-                {"schema_version": _SCHEMA_VERSION, "revision": revision},
+                {
+                    "schema_version": _SCHEMA_VERSION,
+                    "revision": revision,
+                    "json_path": json_path,
+                    "markdown_path": markdown_path,
+                },
             )
+        return json_path, markdown_path
 
     def read_report(self, run_id: str, report_format: str) -> bytes:
         suffixes = {"json": "report.json", "markdown": "report.md"}
@@ -374,14 +399,12 @@ class ParityRepository:
         with self._lock:
             if self.get_run(run_id) is None:
                 raise FileNotFoundError(f"Parity report not found: {run_id}")
-            pointer_path = self._managed_path("reports", _validate_run_id(run_id), "current.json")
             try:
-                pointer = _read_object(pointer_path, {"schema_version", "revision"})
-                revision = _hash_string(pointer["revision"], "report revision")
+                pointer = self._report_pointer_unlocked(run_id)
+                if pointer is None:
+                    raise FileNotFoundError(run_id)
+                revision, _, _ = pointer
                 revision_dir = self._managed_path("reports", run_id, "revisions", revision)
-                self._require_plain_directory(revision_dir, "Report revision")
-                self._require_regular_file(revision_dir / "report.json", "JSON report")
-                self._require_regular_file(revision_dir / "report.md", "Markdown report")
                 return (revision_dir / filename).read_bytes()
             except (FileNotFoundError, OSError, ParityRepositoryError, ValueError):
                 raise FileNotFoundError(f"Parity report not found: {run_id}") from None
@@ -412,6 +435,14 @@ class ParityRepository:
         return run
 
     def _with_overlays(self, run: ParityRun, *, run_bytes: bytes | None = None) -> ParityRun:
+        report_pointer = self._report_pointer_unlocked(run.run_id)
+        if report_pointer is not None:
+            _, json_path, markdown_path = report_pointer
+            run = replace(
+                run,
+                report_json_path=json_path,
+                report_markdown_path=markdown_path,
+            )
         answers = self._load_manual_answers(run)
         acceptance: AcceptanceRecord | None = None
         path = self._acceptance_path(run.run_id)
@@ -442,6 +473,31 @@ class ParityRepository:
             if acceptance.input_revision != _digest(input_bytes):
                 raise ParityRepositoryError("Accepted input revision changed")
         return replace(run, manual_answers=answers, acceptance=acceptance)
+
+    def _report_pointer_unlocked(
+        self,
+        run_id: str,
+    ) -> tuple[str, str, str] | None:
+        pointer_path = self._managed_path(
+            "reports",
+            _validate_run_id(run_id),
+            "current.json",
+        )
+        if not _lexists(pointer_path):
+            return None
+        pointer = _read_object(
+            pointer_path,
+            {"schema_version", "revision", "json_path", "markdown_path"},
+        )
+        revision = _hash_string(pointer["revision"], "report revision")
+        expected_json, expected_markdown = self.report_revision_paths(run_id, revision)
+        if pointer["json_path"] != expected_json or pointer["markdown_path"] != expected_markdown:
+            raise ParityRepositoryError("Published report paths do not match the revision")
+        revision_dir = self._managed_path("reports", run_id, "revisions", revision)
+        self._require_plain_directory(revision_dir, "Report revision")
+        self._require_regular_file(revision_dir / "report.json", "JSON report")
+        self._require_regular_file(revision_dir / "report.md", "Markdown report")
+        return revision, expected_json, expected_markdown
 
     def _load_manual_answers(self, run: ParityRun) -> Mapping[str, ManualAnswer]:
         path = self._manual_path(run.run_id)
@@ -474,8 +530,33 @@ class ParityRepository:
         return self._managed_path("runs", _validate_run_id(run_id), "acceptance.json")
 
     def _prepare_root(self) -> Path:
-        self.root.mkdir(parents=True, exist_ok=True)
-        self._require_plain_directory(self.root, "Parity state root")
+        prefixes = _absolute_path_prefixes(self.root)
+        missing_ancestor = False
+        for ancestor in prefixes:
+            if missing_ancestor:
+                if _lexists(ancestor):
+                    raise ParityRepositoryError(
+                        "Parity state ancestor appeared beneath a missing parent"
+                    )
+                continue
+            try:
+                info = ancestor.lstat()
+            except FileNotFoundError:
+                missing_ancestor = True
+                continue
+            if _is_link_like(info):
+                raise ParityRepositoryError(
+                    f"Parity state ancestor is a link or reparse point: {ancestor}"
+                )
+            if not stat.S_ISDIR(info.st_mode):
+                raise ParityRepositoryError(
+                    f"Parity state ancestor is not a directory: {ancestor}"
+                )
+
+        for ancestor in prefixes:
+            if not _lexists(ancestor):
+                ancestor.mkdir()
+            self._require_plain_directory(ancestor, "Parity state ancestor")
         return self.root.resolve(strict=True)
 
     def _managed_path(self, *parts: str) -> Path:
@@ -1051,6 +1132,18 @@ def _validate_run_id(run_id: str) -> str:
 
 def _digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
+
+
+def _absolute_path_prefixes(path: Path) -> tuple[Path, ...]:
+    absolute = Path(path)
+    if not absolute.is_absolute() or not absolute.anchor:
+        raise ValueError("Parity state root must be absolute")
+    current = Path(absolute.anchor)
+    prefixes = [current]
+    for part in absolute.parts[1:]:
+        current = current / part
+        prefixes.append(current)
+    return tuple(prefixes)
 
 
 def _lexists(path: Path) -> bool:

@@ -425,3 +425,29 @@ def test_run_and_report_paths_reject_privilege_free_junctions(tmp_path: Path) ->
         for junction in (run_junction, report_junction, reports / "safe"):
             if junction.exists():
                 os.rmdir(junction)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows junction probe")
+def test_repository_rejects_junction_in_existing_ancestor_before_root_creation(
+    tmp_path: Path,
+) -> None:
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    state_link = tmp_path / "state-link"
+    result = subprocess.run(
+        ["cmd", "/c", "mklink", "/J", str(state_link), str(outside)],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode != 0:
+        pytest.skip(f"Junctions are unavailable: {result.stderr or result.stdout}")
+
+    try:
+        repository = ParityRepository(state_link / "parity")
+        with pytest.raises((ValueError, ParityRepositoryError), match="link|reparse"):
+            _create(repository, _running_run(repository.root))
+        assert not (outside / "parity" / "runs" / "run-1" / "run.json").exists()
+    finally:
+        if state_link.exists():
+            os.rmdir(state_link)

@@ -236,3 +236,97 @@ it passed directly through the existing domain status validation.
 - `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_validators.py`
 - `tools/galaxy_ai_voice_subtitle_studio/tests/runtime/test_jobs.py`
 - `.superpowers/sdd/2026-08-30-native-parity-validation/task-4-report.md`
+
+---
+
+# Fix Round 2/5 - Scoped Re-review Remediation
+
+## Resolution
+
+- **C2:** `start_run` now parses the exact source bytes before creating the
+  task. The immutable manifest object is captured by the worker closure, so
+  execution never re-reads the mutable run-owned snapshot. The original bytes
+  and SHA-256 remain persisted as evidence, snapshot integrity remains part of
+  acceptance, and acceptance also rejects a selected source whose current hash
+  differs from the captured hash.
+- **C3:** `TaskRegistry.run_with_task_guard` keeps the matching task stable
+  while the service validates `kind`, `run_id`, and `DONE` and commits the
+  repository acceptance. The only nested lock order is TaskRegistry then
+  ParityRepository; no repository path calls back into TaskRegistry.
+- **C4:** Repository root preparation inspects every existing absolute path
+  prefix top-down with `lstat` before creating anything. Symlinks, junctions,
+  reparse points, and non-directory ancestors are rejected; missing components
+  are then created one at a time and verified, while existing descendant
+  confinement checks remain in force.
+- **Important report paths:** The atomic report pointer now persists the exact
+  JSON and Markdown paths for its immutable revision. Runs project those paths
+  from the same pointer, reports are rendered with the final revision paths,
+  and direct path reads identify the same canonical bytes as `read_report`.
+  Both files are still staged together before one pointer replace publishes
+  the pair.
+
+## TDD Evidence
+
+The five new probes failed against the Round 1 implementation for the intended
+behavioral reasons:
+
+```text
+FAILED test_published_report_paths_identify_current_canonical_revision
+  current.json contained pointer metadata instead of canonical report JSON
+FAILED test_acceptance_rejects_changed_selected_manifest_source
+  DID NOT RAISE ParityNotReadyError
+FAILED test_worker_uses_captured_manifest_when_snapshot_swaps_inside_inspection
+  observed asset roles were empty instead of {"original-role"}
+FAILED test_acceptance_holds_matching_done_task_through_repository_commit
+  task_present_at_commit was False
+FAILED test_repository_rejects_junction_in_existing_ancestor_before_root_creation
+  DID NOT RAISE ParityRepositoryError
+```
+
+After the scoped fixes, the C2 probes passed `4 passed`, the C3/runtime probes
+passed `19 passed`, both Windows junction probes passed `2 passed`, and the
+report publication probes passed `4 passed`. A focused-suite interaction then
+exposed one masked junction error in `write_reports`; its existing security
+test failed before the direct run-envelope check restored the intended error.
+
+## Verification
+
+```text
+python -m pytest tests/parity/test_repository.py tests/parity/test_reports.py tests/parity/test_service.py tests/parity/test_validators.py tests/runtime/test_jobs.py -q
+109 passed in 18.22s
+
+python -m pytest tests/parity tests/runtime -q -rs
+217 passed, 2 skipped in 36.57s
+
+python -m pytest -q -rs
+678 passed, 2 skipped, 1 warning, 60 subtests passed in 101.12s
+
+python -m compileall -q app/parity app/runtime tests/parity tests/runtime
+exit 0
+
+git diff --check
+exit 0
+```
+
+## Concerns
+
+- The same two symlink tests remain skipped because this Windows account lacks
+  symlink privilege (`WinError 1314`). Both privilege-free junction probes,
+  including the new ancestor-junction regression, ran and passed.
+- The full suite retains the pre-existing Starlette/httpx deprecation warning.
+- No vendor source, network service, real corpus, manual acceptance evidence,
+  or subagent was used in this round.
+
+## Files Changed In Round 2
+
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/corpus.py`
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/repository.py`
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/service.py`
+- `tools/galaxy_ai_voice_subtitle_studio/app/runtime/jobs.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_repository.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_service.py`
+- `.superpowers/sdd/2026-08-30-native-parity-validation/task-4-report.md`
+
+## Commit
+
+Commit subject: `fix: close parity acceptance rereview gaps`

@@ -49,6 +49,20 @@ def inspect_corpus(
 ) -> CorpusInspection:
     resolved_manifest = resolve_approved_path(manifest_path, approved_roots)
     manifest = _read_manifest(resolved_manifest)
+    return inspect_manifest(
+        manifest,
+        approved_roots=approved_roots,
+        asset_root=asset_root or resolved_manifest.parent,
+    )
+
+
+def inspect_manifest(
+    manifest: ParityFixtureManifest,
+    *,
+    approved_roots: Sequence[Path],
+    asset_root: Path,
+) -> CorpusInspection:
+    """Inspect assets using an already captured and parsed manifest."""
     assets_by_role: dict[str, AssetInspection] = {}
     roles_by_case: dict[str, tuple[str, ...]] = {}
     probe: MediaProbe = DefaultMediaProbe()
@@ -60,11 +74,7 @@ def inspect_corpus(
         for asset in manifest_case.assets:
             assets_by_role[asset.role] = _inspect_asset(
                 asset,
-                manifest_root=(
-                    Path(asset_root).expanduser().resolve(strict=False)
-                    if asset_root is not None
-                    else resolved_manifest.parent
-                ),
+                manifest_root=Path(asset_root).expanduser().resolve(strict=False),
                 approved_roots=approved_roots,
                 probe=probe,
             )
@@ -78,8 +88,17 @@ def inspect_corpus(
 
 def _read_manifest(path: Path) -> ParityFixtureManifest:
     try:
-        payload = load_strict_json(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, ValueError) as error:
+        manifest_bytes = path.read_bytes()
+    except OSError as error:
+        raise ValueError(f"Cannot read parity fixture manifest: {error}") from error
+    return parse_manifest_bytes(manifest_bytes)
+
+
+def parse_manifest_bytes(manifest_bytes: bytes) -> ParityFixtureManifest:
+    """Parse the exact manifest bytes captured for a parity run."""
+    try:
+        payload = load_strict_json(bytes(manifest_bytes).decode("utf-8"))
+    except (UnicodeError, ValueError) as error:
         raise ValueError(f"Cannot read parity fixture manifest: {error}") from error
     root = _mapping(payload, "manifest")
     _require_fields(root, _MANIFEST_FIELDS, "manifest")

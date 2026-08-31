@@ -17,7 +17,14 @@ from app.parity.service import (
     ThresholdOverrideRequest,
     catalogue_digest,
 )
-from app.runtime.jobs import CANCELLED, DONE, FAILED, INTERRUPTED, TaskRegistry
+from app.runtime.jobs import (
+    CANCELLED,
+    DONE,
+    FAILED,
+    INTERRUPTED,
+    MAX_TASK_RECORDS,
+    TaskRegistry,
+)
 
 
 def _catalogue(*, case_count: int = 1, version: str = "v1") -> ParityCatalogue:
@@ -104,6 +111,32 @@ def test_start_run_uses_task_registry_contract_and_serializes_run_id(
     assert task.status == DONE
     assert task.result_payload == {"run_id": task.run_id}
     assert service.get_run(task.run_id).status == "completed"  # type: ignore[union-attr]
+
+
+def test_published_report_paths_identify_current_canonical_revision(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.parity.service.validate_case", _passing_validator)
+    repository = ParityRepository(tmp_path / "state")
+    service = ParityService(_catalogue(), repository, TaskRegistry())
+    task = _start(service, _manifest(tmp_path))
+    _join(task)
+
+    run = service.get_run(task.run_id)
+    assert run is not None
+    json_path = repository.root / run.report_json_path
+    markdown_path = repository.root / run.report_markdown_path
+    json_bytes = service.read_report(task.run_id, "json")
+
+    assert json_path.read_bytes() == json_bytes
+    assert markdown_path.read_bytes() == service.read_report(task.run_id, "markdown")
+    report_paths = json.loads(json_bytes)["report_paths"]
+    assert report_paths == {
+        "json": run.report_json_path,
+        "markdown": run.report_markdown_path,
+    }
+    assert "/revisions/" in run.report_json_path
 
 
 def test_start_run_persistence_failure_does_not_leave_active_task(
@@ -230,6 +263,41 @@ def test_acceptance_recomputes_snapshot_hashes_and_manual_answers(
     )
     service.repository.manifest_snapshot_path(task.run_id).write_bytes(b"tampered")
     with pytest.raises(ParityNotReadyError, match="manifest"):
+        service.accept_run(task.run_id, note="reviewed")
+
+
+def test_acceptance_rejects_changed_selected_manifest_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.parity.service.validate_case", _passing_validator)
+    manifest = _manifest(tmp_path)
+    service = ParityService(
+        _catalogue(),
+        ParityRepository(tmp_path / "state"),
+        TaskRegistry(),
+    )
+    task = _start(service, manifest)
+    _join(task)
+    service.record_manual_item(
+        task.run_id,
+        "case.0.manual.1",
+        accepted=True,
+        note="listened",
+    )
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "corpus_id": "changed-source",
+                "created_at": "2026-08-30T00:00:00Z",
+                "cases": [],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ParityNotReadyError, match="manifest source"):
         service.accept_run(task.run_id, note="reviewed")
 
 
@@ -515,18 +583,20 @@ def test_worker_inspects_run_owned_manifest_snapshot_not_swapped_source(
 ) -> None:
     source = _manifest(tmp_path)
     original_bytes = source.read_bytes()
-    inspected: list[Path] = []
-    real_inspect = __import__("app.parity.corpus", fromlist=["inspect_corpus"]).inspect_corpus
+    inspected_corpus_ids: list[str] = []
+    real_inspect = __import__("app.parity.corpus", fromlist=["inspect_manifest"]).inspect_manifest
 
-    def inspect_snapshot(path, *, approved_roots, asset_root=None):
-        inspected.append(Path(path))
-        assert Path(path) != source
-        assert Path(path).read_bytes() == original_bytes
+    def inspect_snapshot(manifest, *, approved_roots, asset_root):
+        inspected_corpus_ids.append(manifest.corpus_id)
         source.write_text("replacement corpus", encoding="utf-8")
         source.write_bytes(original_bytes)
-        return real_inspect(path, approved_roots=approved_roots, asset_root=asset_root)
+        return real_inspect(
+            manifest,
+            approved_roots=approved_roots,
+            asset_root=asset_root,
+        )
 
-    monkeypatch.setattr("app.parity.service.inspect_corpus", inspect_snapshot)
+    monkeypatch.setattr("app.parity.service.inspect_manifest", inspect_snapshot)
     monkeypatch.setattr("app.parity.service.validate_case", _passing_validator)
     service = ParityService(
         _catalogue(),
@@ -538,7 +608,152 @@ def test_worker_inspects_run_owned_manifest_snapshot_not_swapped_source(
     _join(task)
 
     assert task.status == DONE
-    assert inspected == [service.repository.manifest_snapshot_path(task.run_id)]
+    assert inspected_corpus_ids == ["test-corpus"]
+    assert service.repository.manifest_snapshot_path(task.run_id).read_bytes() == original_bytes
+
+
+def test_worker_uses_captured_manifest_when_snapshot_swaps_inside_inspection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original_asset = tmp_path / "original.bin"
+    swapped_asset = tmp_path / "swapped.bin"
+    original_asset.write_bytes(b"original")
+    swapped_asset.write_bytes(b"swapped")
+
+    def manifest_bytes(corpus_id: str, role: str, asset: Path) -> bytes:
+        return json.dumps(
+            {
+                "schema_version": 1,
+                "corpus_id": corpus_id,
+                "created_at": "2026-08-30T00:00:00Z",
+                "cases": [
+                    {
+                        "case_id": "case.0",
+                        "assets": [
+                            {
+                                "role": role,
+                                "path": asset.name,
+                                "sha256": sha256(asset.read_bytes()).hexdigest(),
+                                "byte_size": asset.stat().st_size,
+                            }
+                        ],
+                    }
+                ],
+            }
+        ).encode("utf-8")
+
+    source = tmp_path / "manifest.json"
+    original_bytes = manifest_bytes("original", "original-role", original_asset)
+    swapped_bytes = manifest_bytes("swapped", "swapped-role", swapped_asset)
+    source.write_bytes(original_bytes)
+    catalogue = ParityCatalogue(
+        version="v1",
+        cases=(
+            ParityCase(
+                case_id="case.0",
+                area="studio",
+                title="Case 0",
+                required=True,
+                fixture_roles=("original-role",),
+                checks=("output_format",),
+                manual_prompts=(),
+                thresholds={"duration_absolute_ms": 250},
+            ),
+        ),
+    )
+    repository = ParityRepository(tmp_path / "state")
+    real_inspect = __import__("app.parity.corpus", fromlist=["inspect_manifest"]).inspect_manifest
+    swapped_snapshots: list[Path] = []
+
+    def swap_inside_inspect(manifest, *, approved_roots, asset_root):
+        snapshot = next((repository.root / "runs").glob("*/inputs/manifest.json"))
+        swapped_snapshots.append(snapshot)
+        snapshot.write_bytes(swapped_bytes)
+        try:
+            return real_inspect(
+                manifest,
+                approved_roots=approved_roots,
+                asset_root=asset_root,
+            )
+        finally:
+            snapshot.write_bytes(original_bytes)
+
+    seen_assets: list[set[str]] = []
+
+    def validate(case, assets, *, probe, measurements, **_kwargs):
+        seen_assets.append(set(assets))
+        return _passing_validator(
+            case,
+            assets,
+            probe=probe,
+            measurements=measurements,
+        )
+
+    monkeypatch.setattr("app.parity.service.inspect_manifest", swap_inside_inspect)
+    monkeypatch.setattr("app.parity.service.validate_case", validate)
+    service = ParityService(
+        catalogue,
+        repository,
+        TaskRegistry(),
+    )
+
+    task = _start(service, source)
+    _join(task)
+
+    assert task.status == DONE
+    assert len(swapped_snapshots) == 1
+    assert seen_assets == [{"original-role"}]
+
+
+def test_acceptance_holds_matching_done_task_through_repository_commit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.parity.service.validate_case", _passing_validator)
+    registry = TaskRegistry()
+    repository = ParityRepository(tmp_path / "state")
+    service = ParityService(_catalogue(), repository, registry)
+    task = _start(service, _manifest(tmp_path))
+    _join(task)
+    service.record_manual_item(
+        task.run_id,
+        "case.0.manual.1",
+        accepted=True,
+        note="listened",
+    )
+    for index in range(MAX_TASK_RECORDS - 1):
+        filler = registry.create(f"filler-{index}")
+        registry.finish(filler.task_id, status=DONE)
+
+    commit_entered = threading.Event()
+    create_attempted = threading.Event()
+    create_finished = threading.Event()
+    task_present_at_commit: list[bool] = []
+    real_commit = repository.commit_acceptance
+
+    def observed_commit(snapshot, acceptance):
+        commit_entered.set()
+        assert create_attempted.wait(timeout=5)
+        create_finished.wait(timeout=1)
+        task_present_at_commit.append(registry.get(task.task_id) is not None)
+        return real_commit(snapshot, acceptance)
+
+    def create_pruning_task() -> None:
+        assert commit_entered.wait(timeout=5)
+        create_attempted.set()
+        registry.create("pruning-task")
+        create_finished.set()
+
+    monkeypatch.setattr(repository, "commit_acceptance", observed_commit)
+    creator = threading.Thread(target=create_pruning_task)
+    creator.start()
+    accepted = service.accept_run(task.run_id, note="approved")
+    creator.join(timeout=5)
+
+    assert not creator.is_alive()
+    assert accepted.acceptance is not None
+    assert task_present_at_commit == [True]
 
 
 def test_acceptance_compare_and_commit_detects_manual_race(

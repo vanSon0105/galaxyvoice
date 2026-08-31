@@ -120,6 +120,82 @@ the completion response.
 - `tools/galaxy_ai_voice_subtitle_studio/tests/fixtures/parity/sample.srt`
 - `.superpowers/sdd/2026-08-30-native-parity-validation/task-3-report.md`
 
+## Fix Round 2/5 - I2 And I4
+
+### Takeover State
+
+Round 2 started from clean commit `e919856` (`fix: harden native parity
+validators`). The rereview marked C1, I1, I3, I5, and I6 addressed and left
+only I2 zero-valued applicable metrics and I4 Windows-unsafe ZIP member names
+open. No pre-existing uncommitted patch was present at takeover.
+
+### Findings Addressed
+
+- I2: every applicable native/reference wall-time, peak-RAM, and peak-VRAM
+  measurement must now be finite and strictly positive. `None` and zero are
+  unavailable measurements and return exact `blocked`; negative, non-finite,
+  or malformed measurements remain invalid contracts and return `fail`. VRAM
+  remains omittable only through the matched explicit applicability contract.
+- I4: ZIP metadata preflight now rejects a `PureWindowsPath.drive`, colons in
+  any component (including ADS and drive-relative syntax), Windows reserved
+  device basenames (including extensions), and components changed by Windows
+  trailing-dot/space normalization. Duplicate detection uses the same
+  per-component NFC, case-folded, trailing-dot/space-stripped key, so aliases
+  collide before any archive member stream or CRC work begins. All prior
+  traversal, member type, size, count, ratio, and streamed-byte bounds remain.
+
+### RED Evidence
+
+The exact rereview regressions were added before implementation. The focused
+run reproduced all residual paths:
+
+```text
+20 failed, 74 passed in 2.31s
+6 failures: zero native/reference wall, RAM, and applicable VRAM
+14 failures: ADS, drive-relative, device, trailing component, and normalized collision ZIP names
+```
+
+In particular, `safe.txt:stream` and `C:relative.txt` were classified `ready`,
+all zero native applicable metrics passed, zero reference metrics failed rather
+than consistently blocking as unavailable, and device/trailing aliases were
+accepted.
+
+### GREEN Evidence
+
+```text
+python -m pytest tests/parity/test_validators.py tests/parity/test_corpus.py -q
+94 passed in 1.74s
+
+python -m pytest tests/parity -q -rs
+151 passed, 2 skipped in 11.78s
+
+python -m pytest -q -rs
+636 passed, 2 skipped, 1 warning, 60 subtests passed in 46.82s
+
+python -m compileall -q app/parity tests/parity
+exit 0
+
+git diff --check
+git diff --cached --check
+exit 0
+```
+
+### Round 2 Status And Concerns
+
+DONE_WITH_CONCERNS. I2 and I4 from `task-3-rereview.md` are addressed with the
+reviewer-requested zero-native and Windows ZIP path probes. Remaining concerns
+are unchanged and external to this patch: two parity security tests skip
+because this Windows account lacks symlink privilege (`WinError 1314`), the
+backend emits the existing Starlette/httpx deprecation warning, and real-corpus
+manual acceptance remains a Phase 15 user-run gate.
+
+### Round 2 Files
+
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/validators.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_corpus.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_validators.py`
+- `.superpowers/sdd/2026-08-30-native-parity-validation/task-3-report.md`
+
 ## Concerns
 
 - Two pre-existing Task 1 symlink tests remain skipped because this Windows

@@ -195,6 +195,61 @@ def test_performance_allows_vram_not_applicable_only_by_matched_contract() -> No
     assert result.measurements["not_applicable_metrics"] == ("peak_vram_bytes",)
 
 
+@pytest.mark.parametrize(
+    "zero_metric",
+    ["wall_seconds", "peak_ram_bytes", "peak_vram_bytes"],
+)
+def test_performance_blocks_zero_native_applicable_metrics(
+    zero_metric: str,
+) -> None:
+    native_values = {
+        "wall_seconds": 1,
+        "peak_ram_bytes": 1_000,
+        "peak_vram_bytes": 2_000,
+    }
+    native_values[zero_metric] = 0
+
+    result = judge_performance(
+        native=PerformanceSample(**native_values, response_ms=(20,)),
+        reference=PerformanceSample(
+            wall_seconds=1,
+            peak_ram_bytes=1_000,
+            peak_vram_bytes=2_000,
+        ),
+    )
+
+    assert result.status == "blocked"
+    assert result.measurements["missing_metrics"] == (zero_metric,)
+
+
+@pytest.mark.parametrize(
+    "zero_metric",
+    ["wall_seconds", "peak_ram_bytes", "peak_vram_bytes"],
+)
+def test_performance_blocks_zero_reference_applicable_metrics(
+    zero_metric: str,
+) -> None:
+    reference_values = {
+        "wall_seconds": 1,
+        "peak_ram_bytes": 1_000,
+        "peak_vram_bytes": 2_000,
+    }
+    reference_values[zero_metric] = 0
+
+    result = judge_performance(
+        native=PerformanceSample(
+            wall_seconds=1,
+            peak_ram_bytes=1_000,
+            peak_vram_bytes=2_000,
+            response_ms=(20,),
+        ),
+        reference=PerformanceSample(**reference_values),
+    )
+
+    assert result.status == "blocked"
+    assert result.measurements["missing_metrics"] == (zero_metric,)
+
+
 def test_performance_contract_cannot_omit_wall_time_or_ram() -> None:
     wall_only = frozenset({"wall_seconds"})
     result = judge_performance(

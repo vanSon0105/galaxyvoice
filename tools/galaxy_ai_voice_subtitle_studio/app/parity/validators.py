@@ -12,7 +12,7 @@ import wave
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path, PurePosixPath, PureWindowsPath
 from typing import Any, Protocol
 
 from ..common.ffmpeg import find_ffprobe
@@ -46,6 +46,25 @@ PERFORMANCE_METRICS = (
     "peak_vram_bytes",
 )
 REQUIRED_PERFORMANCE_METRICS = frozenset({"wall_seconds", "peak_ram_bytes"})
+_WINDOWS_RESERVED_DEVICE_BASENAMES = frozenset(
+    {
+        "aux",
+        "clock$",
+        "con",
+        "conin$",
+        "conout$",
+        "nul",
+        "prn",
+        *(f"com{number}" for number in range(1, 10)),
+        *(f"lpt{number}" for number in range(1, 10)),
+        "com\u00b9",
+        "com\u00b2",
+        "com\u00b3",
+        "lpt\u00b9",
+        "lpt\u00b2",
+        "lpt\u00b3",
+    }
+)
 _JSON_SUFFIXES = frozenset({".json"})
 _SQLITE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
 _TEXT_SUFFIXES = frozenset({".csv", ".md", ".srt", ".tsv", ".txt", ".vtt"})
@@ -305,8 +324,16 @@ def judge_performance(
             continue
         if native_value is None or reference_value is None:
             return _result("performance", "blocked", f"Matched reference metric is missing: {name}")
-        if not _finite_number(native_value) or not _finite_number(reference_value) or native_value < 0 or reference_value <= 0:
+        if (
+            not _finite_number(native_value)
+            or not _finite_number(reference_value)
+            or native_value < 0
+            or reference_value < 0
+        ):
             return _result("performance", "fail", f"Performance metric is invalid: {name}")
+        if native_value == 0 or reference_value == 0:
+            missing_metrics.append(name)
+            continue
         ratios[name] = native_value / reference_value
     if missing_metrics:
         return _result(
@@ -691,11 +718,27 @@ def _validate_zip_metadata(infos: Sequence[zipfile.ZipInfo]) -> None:
         path = PurePosixPath(name)
         if path.is_absolute() or ".." in path.parts or "\\" in name:
             raise ValueError(f"unsafe archive member path: {name!r}")
-        if path.parts and path.parts[0].endswith(":"):
-            raise ValueError(f"absolute archive member path: {name!r}")
-        normalized_name = unicodedata.normalize("NFC", path.as_posix()).casefold()
+        if PureWindowsPath(name).drive:
+            raise ValueError(f"Windows drive archive member path: {name!r}")
+        normalized_components: list[str] = []
+        has_trailing_dot_or_space = False
+        for component in path.parts:
+            normalized_component = unicodedata.normalize("NFC", component)
+            if ":" in normalized_component:
+                raise ValueError(f"Windows colon archive member path: {name!r}")
+            windows_component = normalized_component.rstrip(" .")
+            if not windows_component:
+                raise ValueError(f"empty Windows archive member component: {name!r}")
+            has_trailing_dot_or_space |= windows_component != normalized_component
+            device_basename = windows_component.split(".", maxsplit=1)[0].casefold()
+            if device_basename in _WINDOWS_RESERVED_DEVICE_BASENAMES:
+                raise ValueError(f"Windows device archive member path: {name!r}")
+            normalized_components.append(windows_component.casefold())
+        normalized_name = "/".join(normalized_components)
         if normalized_name in seen_names:
             raise ValueError(f"duplicate archive member: {name!r}")
+        if has_trailing_dot_or_space:
+            raise ValueError(f"Windows-normalizing archive member path: {name!r}")
         seen_names.add(normalized_name)
         mode = info.external_attr >> 16
         if stat.S_ISLNK(mode):

@@ -249,7 +249,13 @@ def test_small_structured_fixtures_use_standard_library_probes(
 
 @pytest.mark.parametrize(
     "member_name",
-    ["../escape.txt", "/absolute.txt", "bad\nname.txt"],
+    [
+        "../escape.txt",
+        "/absolute.txt",
+        "bad\nname.txt",
+        "safe.txt:stream",
+        "C:relative.txt",
+    ],
 )
 def test_zip_probe_rejects_unsafe_member_names(
     tmp_path: Path,
@@ -268,6 +274,82 @@ def test_zip_probe_rejects_unsafe_member_names(
     )
 
     assert inspection.assets_by_role["persona"].status == "unsupported"
+
+
+@pytest.mark.parametrize(
+    "member_name",
+    [
+        "CON",
+        "prn.txt",
+        "directory/AUX.json",
+        "NUL",
+        "COM1.log",
+        "lpt9.txt",
+    ],
+)
+def test_zip_probe_rejects_windows_device_basenames(
+    tmp_path: Path,
+    member_name: str,
+) -> None:
+    bundle = tmp_path / "device.galaxyvoice"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr(member_name, b"unsafe")
+
+    inspection = inspect_corpus(
+        _write_manifest(
+            tmp_path,
+            [_asset("persona", bundle.name, bundle.read_bytes(), media={"container": "zip"})],
+        ),
+        approved_roots=(tmp_path,),
+    )
+
+    assert inspection.assets_by_role["persona"].status == "unsupported"
+
+
+@pytest.mark.parametrize(
+    "member_name",
+    ["file.txt.", "file.txt ", "directory./file.txt", "directory /file.txt"],
+)
+def test_zip_probe_rejects_windows_trailing_dot_or_space_components(
+    tmp_path: Path,
+    member_name: str,
+) -> None:
+    bundle = tmp_path / "trailing.galaxyvoice"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr(member_name, b"unsafe")
+
+    inspection = inspect_corpus(
+        _write_manifest(
+            tmp_path,
+            [_asset("persona", bundle.name, bundle.read_bytes(), media={"container": "zip"})],
+        ),
+        approved_roots=(tmp_path,),
+    )
+
+    assert inspection.assets_by_role["persona"].status == "unsupported"
+
+
+@pytest.mark.parametrize("colliding_name", ["SAFE.TXT.", "safe.txt "])
+def test_zip_probe_rejects_collisions_after_windows_name_normalization(
+    tmp_path: Path,
+    colliding_name: str,
+) -> None:
+    bundle = tmp_path / "collision.galaxyvoice"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("safe.txt", b"safe")
+        archive.writestr(colliding_name, b"collision")
+
+    inspection = inspect_corpus(
+        _write_manifest(
+            tmp_path,
+            [_asset("persona", bundle.name, bundle.read_bytes(), media={"container": "zip"})],
+        ),
+        approved_roots=(tmp_path,),
+    )
+
+    persona = inspection.assets_by_role["persona"]
+    assert persona.status == "unsupported"
+    assert "duplicate archive member" in persona.findings[0].message
 
 
 @pytest.mark.parametrize("unsafe_kind", ["duplicate", "symlink", "directory_payload"])

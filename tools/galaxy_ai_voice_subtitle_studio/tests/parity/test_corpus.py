@@ -3,12 +3,15 @@ from __future__ import annotations
 import hashlib
 import json
 import sqlite3
+import stat
 import wave
 import zipfile
 from pathlib import Path
 
 import pytest
 
+import app.parity.corpus as corpus_module
+import app.parity.validators as validators_module
 from app.parity import AssetInspection, inspect_corpus
 
 
@@ -126,6 +129,46 @@ def test_manifest_is_strict_about_unknown_fields(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    ("duplicate_json", "duplicate_key"),
+    [
+        (
+            '{"schema_version":1,"schema_version":1,"corpus_id":"strict",'
+            '"created_at":"2026-08-30T00:00:00Z","cases":[]}',
+            "schema_version",
+        ),
+        (
+            '{"schema_version":1,"corpus_id":"strict",'
+            '"created_at":"2026-08-30T00:00:00Z","cases":[{'
+            '"case_id":"studio.short_tts","assets":[{'
+            '"role":"short_tts","path":"one.wav","path":"two.wav",'
+            '"sha256":"0000000000000000000000000000000000000000000000000000000000000000",'
+            '"byte_size":0}]}]}',
+            "path",
+        ),
+        (
+            '{"schema_version":1,"corpus_id":"strict",'
+            '"created_at":"2026-08-30T00:00:00Z","cases":[{'
+            '"case_id":"studio.short_tts","assets":[{'
+            '"role":"short_tts","path":"one.wav",'
+            '"sha256":"0000000000000000000000000000000000000000000000000000000000000000",'
+            '"byte_size":0,"media":{"container":"wav","container":"wave"}}]}]}',
+            "container",
+        ),
+    ],
+)
+def test_manifest_rejects_duplicate_json_keys_at_any_nesting(
+    tmp_path: Path,
+    duplicate_json: str,
+    duplicate_key: str,
+) -> None:
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(duplicate_json, encoding="utf-8")
+
+    with pytest.raises(ValueError, match=rf"Duplicate JSON key: {duplicate_key}"):
+        inspect_corpus(manifest, approved_roots=(tmp_path,))
+
+
 def test_wav_metadata_is_checked_without_external_media_tools(tmp_path: Path) -> None:
     wav_path = tmp_path / "short.wav"
     content = _write_wav(wav_path, channels=1, sample_rate=16_000)
@@ -204,6 +247,120 @@ def test_small_structured_fixtures_use_standard_library_probes(
     }
 
 
+@pytest.mark.parametrize(
+    "member_name",
+    ["../escape.txt", "/absolute.txt", "bad\nname.txt"],
+)
+def test_zip_probe_rejects_unsafe_member_names(
+    tmp_path: Path,
+    member_name: str,
+) -> None:
+    bundle = tmp_path / "unsafe.galaxyvoice"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr(member_name, b"unsafe")
+
+    inspection = inspect_corpus(
+        _write_manifest(
+            tmp_path,
+            [_asset("persona", bundle.name, bundle.read_bytes(), media={"container": "zip"})],
+        ),
+        approved_roots=(tmp_path,),
+    )
+
+    assert inspection.assets_by_role["persona"].status == "unsupported"
+
+
+@pytest.mark.parametrize("unsafe_kind", ["duplicate", "symlink", "directory_payload"])
+def test_zip_probe_rejects_duplicate_and_link_members(
+    tmp_path: Path,
+    unsafe_kind: str,
+) -> None:
+    bundle = tmp_path / "unsafe.galaxyvoice"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("safe.txt", b"safe")
+        if unsafe_kind == "duplicate":
+            archive.writestr("SAFE.TXT", b"duplicate")
+        elif unsafe_kind == "symlink":
+            link = zipfile.ZipInfo("link.txt")
+            link.create_system = 3
+            link.external_attr = (stat.S_IFLNK | 0o777) << 16
+            archive.writestr(link, "safe.txt")
+        else:
+            archive.writestr("hidden/", b"payload")
+
+    inspection = inspect_corpus(
+        _write_manifest(
+            tmp_path,
+            [_asset("persona", bundle.name, bundle.read_bytes(), media={"container": "zip"})],
+        ),
+        approved_roots=(tmp_path,),
+    )
+
+    assert inspection.assets_by_role["persona"].status == "unsupported"
+
+
+@pytest.mark.parametrize(
+    ("limit_name", "limit", "entries", "compression"),
+    [
+        ("MAX_ARCHIVE_MEMBERS", 1, [("one.txt", b"1"), ("two.txt", b"2")], zipfile.ZIP_STORED),
+        ("MAX_ARCHIVE_MEMBER_BYTES", 4, [("large.txt", b"12345")], zipfile.ZIP_STORED),
+        (
+            "MAX_ARCHIVE_TOTAL_BYTES",
+            5,
+            [("one.txt", b"123"), ("two.txt", b"456")],
+            zipfile.ZIP_STORED,
+        ),
+        ("MAX_COMPRESSION_RATIO", 1, [("ratio.txt", b"x" * 1_000)], zipfile.ZIP_DEFLATED),
+    ],
+)
+def test_zip_probe_enforces_resource_limits(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    limit_name: str,
+    limit: int,
+    entries: list[tuple[str, bytes]],
+    compression: int,
+) -> None:
+    monkeypatch.setattr(validators_module, limit_name, limit)
+    bundle = tmp_path / "limited.galaxyvoice"
+    with zipfile.ZipFile(bundle, "w", compression=compression) as archive:
+        for name, payload in entries:
+            archive.writestr(name, payload)
+
+    inspection = inspect_corpus(
+        _write_manifest(
+            tmp_path,
+            [_asset("persona", bundle.name, bundle.read_bytes(), media={"container": "zip"})],
+        ),
+        approved_roots=(tmp_path,),
+    )
+
+    assert inspection.assets_by_role["persona"].status == "unsupported"
+
+
+def test_zip_probe_rejects_metadata_before_opening_member_streams(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    bundle = tmp_path / "unsafe.galaxyvoice"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        archive.writestr("../escape.txt", b"unsafe")
+    manifest = _write_manifest(
+        tmp_path,
+        [_asset("persona", bundle.name, bundle.read_bytes(), media={"container": "zip"})],
+    )
+
+    monkeypatch.setattr(
+        zipfile.ZipFile,
+        "open",
+        lambda *args, **kwargs: pytest.fail("unsafe ZIP metadata must fail before CRC streaming"),
+    )
+
+    inspection = inspect_corpus(manifest, approved_roots=(tmp_path,))
+
+    assert inspection.assets_by_role["persona"].status == "unsupported"
+
+
 def test_manifest_rejects_duplicate_roles(tmp_path: Path) -> None:
     content = b"fixture"
     (tmp_path / "asset.txt").write_bytes(content)
@@ -214,6 +371,47 @@ def test_manifest_rejects_duplicate_roles(tmp_path: Path) -> None:
             _write_manifest(tmp_path, [duplicate, duplicate]),
             approved_roots=(tmp_path,),
         )
+
+
+@pytest.mark.parametrize(
+    ("error", "expected_status"),
+    [
+        (FileNotFoundError("disappeared"), "missing"),
+        (PermissionError("denied"), "unsupported"),
+        (OSError("locked"), "unsupported"),
+    ],
+)
+def test_asset_fingerprint_io_error_is_isolated_per_asset(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    error: OSError,
+    expected_status: str,
+) -> None:
+    first = b"first"
+    second = b"second"
+    (tmp_path / "first.txt").write_bytes(first)
+    (tmp_path / "second.txt").write_bytes(second)
+    manifest = _write_manifest(
+        tmp_path,
+        [
+            _asset("first", "first.txt", first),
+            _asset("second", "second.txt", second),
+        ],
+    )
+    real_fingerprint = corpus_module.fingerprint_source
+
+    def fingerprint(path: Path):
+        if path.name == "first.txt":
+            raise error
+        return real_fingerprint(path)
+
+    monkeypatch.setattr(corpus_module, "fingerprint_source", fingerprint)
+
+    inspection = inspect_corpus(manifest, approved_roots=(tmp_path,))
+
+    assert inspection.assets_by_role["first"].status == expected_status
+    assert inspection.assets_by_role["first"].findings[0].message
+    assert inspection.assets_by_role["second"].status == "ready"
 
 
 def test_committed_small_fixture_manifest_is_ready() -> None:

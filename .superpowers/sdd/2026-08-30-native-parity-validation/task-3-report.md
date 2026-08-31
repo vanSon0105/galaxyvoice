@@ -128,3 +128,117 @@ the completion response.
 - The full suite retains one existing Starlette `httpx` deprecation warning.
 - The required large real-world corpus and manual acceptance remain a user-run
   Phase 15 gate by design and are not fabricated or claimed here.
+
+## Fix Round 1
+
+### Status
+
+DONE_WITH_CONCERNS. C1 and I1-I6 from `task-3-review.md` are fixed with
+reviewer-specific regression coverage. The remaining concerns are the two
+Windows symlink privilege skips, the existing Starlette deprecation warning,
+and the external corpus/manual acceptance gate that Phase 15 intentionally
+leaves to a real user run.
+
+### Findings Addressed
+
+- C1: `validate_case()` no longer accepts a caller-supplied `CheckResult` as
+  evidence. Core judges require raw measurements; non-core behavioral checks
+  use a separate typed `BehavioralCheckEvidence` path. Bare booleans are
+  rejected. A precomputed pass for duration now returns `blocked` instead of
+  bypassing the duration judge.
+- I1: pure judges validate runtime shapes and return `fail` for malformed
+  nested objects. The case dispatcher converts malformed thresholds and any
+  unexpected nested exception into an exact fail result. Probe unavailability
+  remains `blocked`; timeout and arbitrary probe failures return `fail`.
+- I2: `PerformanceSample.applicable_metrics` makes metric applicability
+  explicit. Wall time and peak RAM are always required, native/reference
+  contracts must match, and VRAM can be omitted only when both samples declare
+  it not applicable. Missing applicable values or references are `blocked`.
+- I3: `/settings/parity` is a validator policy constant. Recovery evidence no
+  longer contains an expected-route field and cannot redefine or disable the
+  route policy.
+- I4: ZIP probing preflights every member before opening a stream. It rejects
+  traversal and absolute paths, control characters, normalized duplicates,
+  links, unsupported member types, encrypted members, directory payloads, and
+  count/member/total/compression-ratio excess. CRC reads are chunked and enforce
+  member and aggregate streamed-byte limits.
+- I5: path resolution, fingerprinting, and media probing isolate `OSError` per
+  asset. Disappearance is `missing`; permission/lock errors are `unsupported`
+  with a typed finding; unrelated assets continue inspection.
+- I6: the manifest and JSON fixture probe share a strict `object_pairs_hook`
+  parser that rejects duplicate keys at every object nesting level.
+
+### TDD Evidence
+
+C1/I1 reviewer probes first reproduced all bypass/escape paths:
+
+```text
+5 failed, 33 passed in 0.43s
+FAILED test_validate_case_rejects_precomputed_result_for_core_judge
+FAILED test_pure_judges_fail_closed_for_malformed_nested_objects
+FAILED test_validate_case_fails_closed_for_malformed_threshold
+FAILED test_validate_case_fails_closed_for_probe_exceptions[error0]
+FAILED test_validate_case_fails_closed_for_probe_exceptions[error1]
+```
+
+A follow-up C1 RED proved that typed behavioral evidence was not yet accepted
+while bare `True` still passed a non-core check. Both probes now pass: typed
+evidence is accepted only after core dispatch, and bare booleans are blocked.
+
+I2 was implemented through three RED/GREEN steps: both-side RAM/VRAM omission
+first passed instead of blocking; `PerformanceSample` lacked an applicability
+contract; and explicit CPU applicability still blocked while a contract that
+omitted RAM was not rejected. The final targeted contract run passed 2 tests.
+
+I3 first reproduced a caller-controlled route pass, then proved the policy
+field still existed after behavior was fixed:
+
+```text
+FAILED test_recovery_route_policy_cannot_be_redefined_by_evidence
+FAILED test_recovery_evidence_does_not_expose_expected_route_policy
+```
+
+I4's initial adversarial run failed all 11 probes: unsafe names, duplicate and
+link members were accepted, all four limits were absent, and `testzip()` opened
+member streams before metadata rejection. The final ZIP set passed 10 binding
+probes; a self-review RED additionally proved directory payload bytes were
+silently skipped before that path was fixed.
+
+I5 and I6 reproduced their reviewed symptoms exactly:
+
+```text
+3 failed in 0.35s
+FAILED test_asset_fingerprint_io_error_is_isolated_per_asset[error0-missing]
+FAILED test_asset_fingerprint_io_error_is_isolated_per_asset[error1-unsupported]
+FAILED test_asset_fingerprint_io_error_is_isolated_per_asset[error2-unsupported]
+
+3 failed in 0.30s
+FAILED test_manifest_rejects_duplicate_json_keys_at_any_nesting[...-schema_version]
+FAILED test_manifest_rejects_duplicate_json_keys_at_any_nesting[...-path]
+FAILED test_manifest_rejects_duplicate_json_keys_at_any_nesting[...-container]
+```
+
+### Verification
+
+```text
+python -m pytest tests/parity/test_corpus.py tests/parity/test_validators.py -q
+74 passed in 1.01s
+
+python -m pytest tests/parity -q -rs
+131 passed, 2 skipped in 11.26s
+
+python -m pytest -q -rs
+616 passed, 2 skipped, 1 warning, 60 subtests passed in 46.00s
+```
+
+`python -m compileall -q app/parity tests/parity`, working-tree and staged
+`git diff --check`, and the final commit inspection are run after this report
+append and recorded in the completion response.
+
+### Fix Round Files
+
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/corpus.py`
+- `tools/galaxy_ai_voice_subtitle_studio/app/parity/validators.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_corpus.py`
+- `tools/galaxy_ai_voice_subtitle_studio/tests/parity/test_validators.py`
+- `.superpowers/sdd/2026-08-30-native-parity-validation/task-3-report.md`

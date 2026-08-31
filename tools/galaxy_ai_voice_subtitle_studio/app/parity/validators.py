@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
+import stat
 import subprocess
 import unicodedata
 import wave
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Protocol
 
 from ..common.ffmpeg import find_ffprobe
@@ -33,6 +34,18 @@ DEFAULT_PERFORMANCE_RATIO = 1.25
 DEFAULT_RESPONSE_P95_MS = 200.0
 DEFAULT_CPU_CANCELLATION_SECONDS = 2.0
 DEFAULT_ACCELERATOR_CANCELLATION_SECONDS = 5.0
+PARITY_RECOVERY_ROUTE = "/settings/parity"
+MAX_ARCHIVE_MEMBER_BYTES = 8 * 1024 * 1024
+MAX_ARCHIVE_TOTAL_BYTES = 128 * 1024 * 1024
+MAX_ARCHIVE_MEMBERS = 512
+MAX_COMPRESSION_RATIO = 200
+_ARCHIVE_READ_CHUNK_BYTES = 64 * 1024
+PERFORMANCE_METRICS = (
+    "wall_seconds",
+    "peak_ram_bytes",
+    "peak_vram_bytes",
+)
+REQUIRED_PERFORMANCE_METRICS = frozenset({"wall_seconds", "peak_ram_bytes"})
 _JSON_SUFFIXES = frozenset({".json"})
 _SQLITE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
 _TEXT_SUFFIXES = frozenset({".csv", ".md", ".srt", ".tsv", ".txt", ".vtt"})
@@ -53,9 +66,11 @@ class PerformanceSample:
     peak_ram_bytes: int | None = None
     peak_vram_bytes: int | None = None
     response_ms: tuple[float, ...] = ()
+    applicable_metrics: frozenset[str] = frozenset(PERFORMANCE_METRICS)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "response_ms", tuple(self.response_ms))
+        object.__setattr__(self, "applicable_metrics", frozenset(self.applicable_metrics))
 
 
 @dataclass(frozen=True)
@@ -64,7 +79,12 @@ class RecoverySample:
     task_status: str
     resumable: bool
     recovery_route: str | None
-    expected_recovery_route: str | None = "/settings/parity"
+
+
+@dataclass(frozen=True)
+class BehavioralCheckEvidence:
+    passed: bool
+    message: str = "Behavioral assertion completed"
 
 
 class DefaultMediaProbe:
@@ -116,6 +136,10 @@ class FfprobeMediaProbe:
         return _media_info_from_ffprobe(payload)
 
 
+def load_strict_json(raw: str) -> Any:
+    return json.loads(raw, object_pairs_hook=_strict_json_object)
+
+
 def judge_duration(
     native_seconds: float | None,
     reference_seconds: float | None,
@@ -150,6 +174,8 @@ def judge_subtitles(
 ) -> CheckResult:
     if native is None or reference is None:
         return _result("subtitles", "blocked", "Native and reference subtitle cues are required")
+    if not _cue_sequence(native) or not _cue_sequence(reference):
+        return _result("subtitles", "fail", "Subtitle cues must be sequences")
     if not _finite_number(timing_tolerance_ms) or timing_tolerance_ms < 0:
         return _result(
             "subtitles",
@@ -159,7 +185,7 @@ def judge_subtitles(
     try:
         native_cues = tuple(_subtitle_cue(cue) for cue in native)
         reference_cues = tuple(_subtitle_cue(cue) for cue in reference)
-    except (KeyError, TypeError, ValueError) as error:
+    except Exception as error:
         return _result("subtitles", "fail", f"Invalid subtitle cue: {error}")
     if len(native_cues) != len(reference_cues):
         return _result(
@@ -192,10 +218,12 @@ def judge_identity_mapping(
 ) -> CheckResult:
     if native is None or reference is None:
         return _result("identity_mapping", "blocked", "Native and reference identity mappings are required")
+    if not isinstance(native, Mapping) or not isinstance(reference, Mapping):
+        return _result("identity_mapping", "fail", "Identity mappings must be objects")
     try:
         normalized_native = _normalize_identity_mapping(native)
         normalized_reference = _normalize_identity_mapping(reference)
-    except (TypeError, ValueError) as error:
+    except Exception as error:
         return _result("identity_mapping", "fail", f"Invalid identity mapping: {error}")
     status: CheckStatus = "pass" if normalized_native == normalized_reference else "fail"
     return _result(
@@ -236,19 +264,58 @@ def judge_performance(
 ) -> CheckResult:
     if native is None or reference is None:
         return _result("performance", "blocked", "Matched native and reference performance samples are required")
+    if not isinstance(native, PerformanceSample) or not isinstance(reference, PerformanceSample):
+        return _result("performance", "fail", "Performance samples are invalid")
     if not _finite_number(max_ratio) or max_ratio <= 0 or not _finite_number(max_response_p95_ms) or max_response_p95_ms < 0:
         return _result("performance", "fail", "Performance thresholds are invalid")
+    known_metrics = frozenset(PERFORMANCE_METRICS)
+    native_metrics = native.applicable_metrics
+    reference_metrics = reference.applicable_metrics
+    if not native_metrics <= known_metrics or not reference_metrics <= known_metrics:
+        return _result("performance", "fail", "Performance metric contract is invalid")
+    if not REQUIRED_PERFORMANCE_METRICS <= native_metrics or not REQUIRED_PERFORMANCE_METRICS <= reference_metrics:
+        return _result(
+            "performance",
+            "fail",
+            "Wall time and peak RAM must be applicable",
+        )
+    if native_metrics != reference_metrics:
+        return _result(
+            "performance",
+            "blocked",
+            "Native and reference metric contracts do not match",
+        )
     ratios: dict[str, float] = {}
-    for name in ("wall_seconds", "peak_ram_bytes", "peak_vram_bytes"):
+    missing_metrics: list[str] = []
+    not_applicable_metrics: list[str] = []
+    for name in PERFORMANCE_METRICS:
         native_value = getattr(native, name)
         reference_value = getattr(reference, name)
+        if name not in native_metrics:
+            not_applicable_metrics.append(name)
+            if native_value is not None or reference_value is not None:
+                return _result(
+                    "performance",
+                    "fail",
+                    f"Non-applicable performance metric has a value: {name}",
+                )
+            continue
         if native_value is None and reference_value is None:
+            missing_metrics.append(name)
             continue
         if native_value is None or reference_value is None:
             return _result("performance", "blocked", f"Matched reference metric is missing: {name}")
         if not _finite_number(native_value) or not _finite_number(reference_value) or native_value < 0 or reference_value <= 0:
             return _result("performance", "fail", f"Performance metric is invalid: {name}")
         ratios[name] = native_value / reference_value
+    if missing_metrics:
+        return _result(
+            "performance",
+            "blocked",
+            "Required performance metrics are unavailable",
+            missing_metrics=tuple(missing_metrics),
+            not_applicable_metrics=tuple(not_applicable_metrics),
+        )
     if not ratios:
         return _result("performance", "blocked", "No supported performance metric is available")
     if not native.response_ms:
@@ -272,6 +339,7 @@ def judge_performance(
         "ratios": ratios,
         "max_ratio": max_ratio,
         "max_response_p95_ms": max_response_p95_ms,
+        "not_applicable_metrics": tuple(not_applicable_metrics),
     }
     measurements["response_p95_ms"] = response_p95
     return _result(
@@ -291,6 +359,8 @@ def judge_cancellation(
 ) -> CheckResult:
     if acknowledgement_seconds is None:
         return _result("cancellation", "blocked", "Cancellation acknowledgement is required")
+    if not isinstance(device, str):
+        return _result("cancellation", "fail", "Resolved device must be a string")
     values = (acknowledgement_seconds, cpu_seconds, accelerator_seconds)
     if not all(_finite_number(value) for value in values) or min(values) < 0:
         return _result("cancellation", "fail", "Cancellation measurements and thresholds must be finite and non-negative")
@@ -323,6 +393,15 @@ def judge_cancellation(
 def judge_recovery(sample: RecoverySample | None) -> CheckResult:
     if sample is None:
         return _result("recovery", "blocked", "Recovery evidence is required")
+    if not isinstance(sample, RecoverySample):
+        return _result("recovery", "fail", "Recovery evidence is invalid")
+    if (
+        not isinstance(sample.interrupted, bool)
+        or not isinstance(sample.task_status, str)
+        or not isinstance(sample.resumable, bool)
+        or not isinstance(sample.recovery_route, (str, type(None)))
+    ):
+        return _result("recovery", "fail", "Recovery evidence fields are invalid")
     if not sample.interrupted:
         return _result("recovery", "not_applicable", "Workflow was not interrupted")
     if not sample.task_status.strip():
@@ -331,8 +410,7 @@ def judge_recovery(sample: RecoverySample | None) -> CheckResult:
     route_present = not sample.resumable or bool(sample.recovery_route)
     route_matches = (
         not sample.resumable
-        or sample.expected_recovery_route is None
-        or sample.recovery_route == sample.expected_recovery_route
+        or sample.recovery_route == PARITY_RECOVERY_ROUTE
     )
     status: CheckStatus = "pass" if reconciled and route_present and route_matches else "fail"
     return _result(
@@ -362,11 +440,11 @@ def validate_case(
         return CaseResult(case_id=case.case_id, status="blocked", checks=checks)
 
     results = tuple(
-        _validate_check(
+        _validate_check_safely(
             check_id,
             assets=assets,
             probe=probe,
-            measurement=measurements.get(check_id),
+            measurements=measurements,
             thresholds=case.thresholds,
         )
         for check_id in case.checks
@@ -426,13 +504,6 @@ def _validate_check(
     measurement: Any,
     thresholds: Mapping[str, Any],
 ) -> CheckResult:
-    if isinstance(measurement, CheckResult):
-        return CheckResult(
-            check_id=check_id,
-            status=measurement.status,
-            message=measurement.message,
-            measurements=measurement.measurements,
-        )
     if check_id in {"output_format", "output_streams"}:
         return _judge_output_format(
             check_id,
@@ -529,8 +600,14 @@ def _validate_check(
         )
     if check_id in {"task_reconciliation", "recovery_route"}:
         return _with_check_id(check_id, judge_recovery(measurement.get("sample")))
-    if isinstance(measurement, bool):
-        return _result(check_id, "pass" if measurement else "fail", "Behavioral assertion completed")
+    if isinstance(measurement, BehavioralCheckEvidence):
+        if not isinstance(measurement.passed, bool) or not isinstance(measurement.message, str):
+            return _result(check_id, "fail", "Behavioral evidence is invalid")
+        return _result(
+            check_id,
+            "pass" if measurement.passed else "fail",
+            measurement.message,
+        )
     return _result(check_id, "blocked", "No deterministic judge is registered for this evidence")
 
 
@@ -556,7 +633,7 @@ def _judge_output_format(
         actual = probe.inspect(assets[role])
     except MediaProbeUnavailable as error:
         return _result(check_id, "blocked", str(error))
-    except (OSError, TypeError, ValueError) as error:
+    except Exception as error:
         return _result(check_id, "fail", f"Media inspection failed: {error}")
     mismatches = media_matches(actual, expected, path=assets[role])
     if mismatches:
@@ -566,8 +643,8 @@ def _judge_output_format(
 
 def _inspect_json(path: Path) -> MediaInfo:
     try:
-        json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        load_strict_json(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as error:
         raise ValueError(f"Invalid JSON file: {error}") from error
     return MediaInfo(container="json")
 
@@ -592,12 +669,77 @@ def _inspect_text(path: Path) -> MediaInfo:
 def _inspect_zip(path: Path) -> MediaInfo:
     try:
         with zipfile.ZipFile(path) as archive:
-            corrupt_member = archive.testzip()
-    except (OSError, zipfile.BadZipFile, zipfile.LargeZipFile) as error:
+            infos = archive.infolist()
+            _validate_zip_metadata(infos)
+            _verify_zip_streams(archive, infos)
+    except Exception as error:
         raise ValueError(f"Invalid ZIP file: {error}") from error
-    if corrupt_member is not None:
-        raise ValueError(f"Invalid ZIP member: {corrupt_member}")
     return MediaInfo(container="zip")
+
+
+def _validate_zip_metadata(infos: Sequence[zipfile.ZipInfo]) -> None:
+    if len(infos) > MAX_ARCHIVE_MEMBERS:
+        raise ValueError("archive member count limit exceeded")
+    seen_names: set[str] = set()
+    total_size = 0
+    for info in infos:
+        name = info.filename
+        if not name:
+            raise ValueError("archive member name is empty")
+        if any(ord(character) < 32 or ord(character) == 127 for character in name):
+            raise ValueError(f"archive member contains control characters: {name!r}")
+        path = PurePosixPath(name)
+        if path.is_absolute() or ".." in path.parts or "\\" in name:
+            raise ValueError(f"unsafe archive member path: {name!r}")
+        if path.parts and path.parts[0].endswith(":"):
+            raise ValueError(f"absolute archive member path: {name!r}")
+        normalized_name = unicodedata.normalize("NFC", path.as_posix()).casefold()
+        if normalized_name in seen_names:
+            raise ValueError(f"duplicate archive member: {name!r}")
+        seen_names.add(normalized_name)
+        mode = info.external_attr >> 16
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"archive symbolic link: {name!r}")
+        file_type = stat.S_IFMT(mode)
+        if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
+            raise ValueError(f"unsupported archive member type: {name!r}")
+        if info.flag_bits & 0x1:
+            raise ValueError(f"encrypted archive member: {name!r}")
+        if info.file_size < 0 or info.compress_size < 0:
+            raise ValueError(f"invalid archive member size: {name!r}")
+        if info.is_dir() and (info.file_size or info.compress_size):
+            raise ValueError(f"archive directory contains payload bytes: {name!r}")
+        if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
+            raise ValueError(f"archive member size limit exceeded: {name!r}")
+        total_size += info.file_size
+        if total_size > MAX_ARCHIVE_TOTAL_BYTES:
+            raise ValueError("archive total size limit exceeded")
+        compression_ratio = info.file_size / max(info.compress_size, 1)
+        if info.file_size and compression_ratio > MAX_COMPRESSION_RATIO:
+            raise ValueError(f"archive compression ratio limit exceeded: {name!r}")
+
+
+def _verify_zip_streams(
+    archive: zipfile.ZipFile,
+    infos: Sequence[zipfile.ZipInfo],
+) -> None:
+    streamed_total = 0
+    for info in infos:
+        if info.is_dir():
+            continue
+        streamed_member = 0
+        with archive.open(info) as source:
+            while chunk := source.read(_ARCHIVE_READ_CHUNK_BYTES):
+                streamed_member += len(chunk)
+                streamed_total += len(chunk)
+                if streamed_member > MAX_ARCHIVE_MEMBER_BYTES:
+                    raise ValueError(
+                        f"archive member streamed size limit exceeded: {info.filename!r}"
+                    )
+                if streamed_total > MAX_ARCHIVE_TOTAL_BYTES:
+                    raise ValueError("archive streamed total size limit exceeded")
+        if streamed_member != info.file_size:
+            raise ValueError(f"archive member size changed while reading: {info.filename!r}")
 
 
 def _inspect_wav(path: Path) -> MediaInfo:
@@ -666,6 +808,10 @@ def _subtitle_cue(cue: Any) -> tuple[int, int, str]:
     return start, end, " ".join(text.split())
 
 
+def _cue_sequence(value: Any) -> bool:
+    return isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray))
+
+
 def _normalize_identity_mapping(mapping: Mapping[str, str]) -> dict[str, str]:
     normalized: dict[str, str] = {}
     for key, value in mapping.items():
@@ -679,6 +825,15 @@ def _normalize_identity_mapping(mapping: Mapping[str, str]) -> dict[str, str]:
             raise ValueError("identity keys collide after normalization")
         normalized[normalized_key] = normalized_value
     return normalized
+
+
+def _strict_json_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise ValueError(f"Duplicate JSON key: {key}")
+        result[key] = value
+    return result
 
 
 def _normalize_id(value: str) -> str:
@@ -746,6 +901,31 @@ def _result(
         message=message,
         measurements=measurements,
     )
+
+
+def _validate_check_safely(
+    check_id: str,
+    *,
+    assets: Mapping[str, Path],
+    probe: MediaProbe,
+    measurements: Mapping[str, Any],
+    thresholds: Mapping[str, Any],
+) -> CheckResult:
+    try:
+        measurement = measurements.get(check_id)
+        return _validate_check(
+            check_id,
+            assets=assets,
+            probe=probe,
+            measurement=measurement,
+            thresholds=thresholds,
+        )
+    except Exception as error:
+        return _result(
+            check_id,
+            "fail",
+            f"Invalid validation evidence: {type(error).__name__}: {error}",
+        )
 
 
 def _with_check_id(check_id: str, result: CheckResult) -> CheckResult:

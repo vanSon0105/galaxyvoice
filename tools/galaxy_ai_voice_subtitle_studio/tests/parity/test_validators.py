@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import subprocess
 from pathlib import Path
 
 import pytest
 
+import app.parity.validators as validators_module
 from app.parity import CaseResult, CheckResult, MediaExpectation, ParityCase
 from app.parity.validators import (
     MediaInfo,
@@ -20,6 +22,23 @@ from app.parity.validators import (
     media_matches,
     validate_case,
 )
+
+
+CPU_PERFORMANCE_METRICS = frozenset({"wall_seconds", "peak_ram_bytes"})
+
+
+def _cpu_performance_sample(
+    wall_seconds: float,
+    *,
+    peak_ram_bytes: int = 1_000,
+    response_ms: tuple[float, ...] = (),
+) -> PerformanceSample:
+    return PerformanceSample(
+        wall_seconds=wall_seconds,
+        peak_ram_bytes=peak_ram_bytes,
+        response_ms=response_ms,
+        applicable_metrics=CPU_PERFORMANCE_METRICS,
+    )
 
 
 @pytest.mark.parametrize(
@@ -116,15 +135,15 @@ def test_performance_pins_reference_ratios_and_response_p95() -> None:
     )
     assert (
         judge_performance(
-            native=PerformanceSample(wall_seconds=125.01, response_ms=(1,)),
-            reference=PerformanceSample(wall_seconds=100),
+            native=_cpu_performance_sample(125.01, response_ms=(1,)),
+            reference=_cpu_performance_sample(100),
         ).status
         == "fail"
     )
     assert (
         judge_performance(
-            native=PerformanceSample(wall_seconds=1, response_ms=(201,)),
-            reference=PerformanceSample(wall_seconds=1),
+            native=_cpu_performance_sample(1, response_ms=(201,)),
+            reference=_cpu_performance_sample(1),
         ).status
         == "fail"
     )
@@ -139,10 +158,64 @@ def test_performance_blocks_when_a_supported_reference_metric_is_missing() -> No
     assert result.status == "blocked"
 
 
+def test_performance_blocks_when_both_samples_omit_supported_metrics() -> None:
+    result = judge_performance(
+        native=PerformanceSample(wall_seconds=1, response_ms=(20,)),
+        reference=PerformanceSample(wall_seconds=1),
+    )
+
+    assert result.status == "blocked"
+    assert result.measurements["missing_metrics"] == (
+        "peak_ram_bytes",
+        "peak_vram_bytes",
+    )
+
+
+def test_performance_sample_declares_applicable_metrics_contract() -> None:
+    assert "applicable_metrics" in PerformanceSample.__dataclass_fields__
+
+
+def test_performance_allows_vram_not_applicable_only_by_matched_contract() -> None:
+    cpu_metrics = frozenset({"wall_seconds", "peak_ram_bytes"})
+    result = judge_performance(
+        native=PerformanceSample(
+            wall_seconds=1,
+            peak_ram_bytes=1_000,
+            response_ms=(20,),
+            applicable_metrics=cpu_metrics,
+        ),
+        reference=PerformanceSample(
+            wall_seconds=1,
+            peak_ram_bytes=1_000,
+            applicable_metrics=cpu_metrics,
+        ),
+    )
+
+    assert result.status == "pass"
+    assert result.measurements["not_applicable_metrics"] == ("peak_vram_bytes",)
+
+
+def test_performance_contract_cannot_omit_wall_time_or_ram() -> None:
+    wall_only = frozenset({"wall_seconds"})
+    result = judge_performance(
+        native=PerformanceSample(
+            wall_seconds=1,
+            response_ms=(20,),
+            applicable_metrics=wall_only,
+        ),
+        reference=PerformanceSample(
+            wall_seconds=1,
+            applicable_metrics=wall_only,
+        ),
+    )
+
+    assert result.status == "fail"
+
+
 def test_performance_blocks_when_response_samples_are_unavailable() -> None:
     result = judge_performance(
-        native=PerformanceSample(wall_seconds=1),
-        reference=PerformanceSample(wall_seconds=1),
+        native=_cpu_performance_sample(1),
+        reference=_cpu_performance_sample(1),
     )
 
     assert result.status == "blocked"
@@ -225,6 +298,23 @@ def test_recovery_reconciles_interrupted_tasks_and_requires_route_for_resumable(
         ).status
         == "fail"
     )
+
+
+def test_recovery_route_policy_cannot_be_redefined_by_evidence() -> None:
+    result = judge_recovery(
+        RecoverySample(
+            interrupted=True,
+            task_status="interrupted",
+            resumable=True,
+            recovery_route="/caller-route",
+        )
+    )
+
+    assert result.status == "fail"
+
+
+def test_recovery_evidence_does_not_expose_expected_route_policy() -> None:
+    assert "expected_recovery_route" not in RecoverySample.__dataclass_fields__
 
 
 def test_validate_case_uses_case_subtitle_tolerance_not_measurement_threshold() -> None:
@@ -311,14 +401,15 @@ def test_validate_case_preserves_declared_check_ids_for_alias_judges() -> None:
     subtitle_cues = ({"start_ms": 0, "end_ms": 500, "text": "Hello"},)
     performance = PerformanceSample(
         wall_seconds=1,
+        peak_ram_bytes=1_000,
         response_ms=(200,),
+        applicable_metrics=CPU_PERFORMANCE_METRICS,
     )
     recovery = RecoverySample(
         interrupted=True,
         task_status="interrupted",
         resumable=True,
         recovery_route="/settings/parity",
-        expected_recovery_route="/settings/parity",
     )
     check_ids = (
         "subtitle_order",
@@ -347,7 +438,7 @@ def test_validate_case_preserves_declared_check_ids_for_alias_judges() -> None:
             },
             "interaction_responsiveness": {
                 "native": performance,
-                "reference": PerformanceSample(wall_seconds=1),
+                "reference": _cpu_performance_sample(1),
             },
             "cancellation_acknowledgement": {
                 "acknowledgement_seconds": 2,
@@ -454,8 +545,8 @@ def test_validate_case_cannot_relax_default_thresholds() -> None:
             "duration": {"native_seconds": 10.501, "reference_seconds": 10.0},
             "loudness": {"measured_lufs": -13.99},
             "performance": {
-                "native": PerformanceSample(wall_seconds=1.251, response_ms=(201,)),
-                "reference": PerformanceSample(wall_seconds=1),
+                "native": _cpu_performance_sample(1.251, response_ms=(201,)),
+                "reference": _cpu_performance_sample(1),
             },
             "cancellation_acknowledgement": {
                 "acknowledgement_seconds": 2.001,
@@ -531,6 +622,165 @@ def test_validate_case_blocks_malformed_measurement_instead_of_raising(
     )
 
     assert result.status == "blocked"
+
+
+def test_validate_case_rejects_precomputed_result_for_core_judge() -> None:
+    case = ParityCase(
+        case_id="studio.short_tts",
+        area="studio",
+        title="Short TTS",
+        required=True,
+        checks=("duration",),
+    )
+
+    result = validate_case(
+        case,
+        {},
+        probe=_Probe(),
+        measurements={
+            "duration": CheckResult(
+                check_id="duration",
+                status="pass",
+                message="caller supplied pass",
+            )
+        },
+    )
+
+    assert result.status == "blocked"
+    assert result.checks[0].status == "blocked"
+
+
+def test_behavioral_checks_have_a_separate_typed_evidence_interface() -> None:
+    assert hasattr(validators_module, "BehavioralCheckEvidence")
+
+
+def test_typed_behavioral_evidence_is_only_accepted_for_non_core_checks() -> None:
+    evidence = validators_module.BehavioralCheckEvidence(
+        passed=True,
+        message="Repository behavior verified",
+    )
+    behavioral_case = ParityCase(
+        case_id="shared.project_portability",
+        area="shared",
+        title="Project portability",
+        required=True,
+        checks=("project_reopen",),
+    )
+    core_case = ParityCase(
+        case_id="studio.short_tts",
+        area="studio",
+        title="Short TTS",
+        required=True,
+        checks=("duration",),
+    )
+
+    behavioral = validate_case(
+        behavioral_case,
+        {},
+        probe=_Probe(),
+        measurements={"project_reopen": evidence},
+    )
+    core = validate_case(
+        core_case,
+        {},
+        probe=_Probe(),
+        measurements={"duration": evidence},
+    )
+
+    assert behavioral.status == "pass"
+    assert behavioral.checks[0].message == "Repository behavior verified"
+    assert core.status == "blocked"
+
+
+def test_bare_boolean_cannot_claim_behavioral_check_pass() -> None:
+    case = ParityCase(
+        case_id="shared.project_portability",
+        area="shared",
+        title="Project portability",
+        required=True,
+        checks=("project_reopen",),
+    )
+
+    result = validate_case(
+        case,
+        {},
+        probe=_Probe(),
+        measurements={"project_reopen": True},
+    )
+
+    assert result.status == "blocked"
+
+
+def test_pure_judges_fail_closed_for_malformed_nested_objects() -> None:
+    assert judge_subtitles((object(),), ()).status == "fail"
+    assert judge_identity_mapping(object(), {}).status == "fail"  # type: ignore[arg-type]
+    assert judge_performance(native=object(), reference=object()).status == "fail"  # type: ignore[arg-type]
+    assert judge_recovery(object()).status == "fail"  # type: ignore[arg-type]
+
+
+def test_validate_case_fails_closed_for_malformed_threshold() -> None:
+    case = ParityCase(
+        case_id="studio.short_tts",
+        area="studio",
+        title="Short TTS",
+        required=True,
+        checks=("duration",),
+        thresholds={"duration_absolute_ms": "not-a-number"},
+    )
+
+    result = validate_case(
+        case,
+        {},
+        probe=_Probe(),
+        measurements={
+            "duration": {"native_seconds": 1.0, "reference_seconds": 1.0}
+        },
+    )
+
+    assert result.status == "fail"
+    assert result.checks[0].status == "fail"
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        subprocess.TimeoutExpired("ffprobe", timeout=30),
+        RuntimeError("unexpected probe failure"),
+    ],
+)
+def test_validate_case_fails_closed_for_probe_exceptions(
+    tmp_path: Path,
+    error: Exception,
+) -> None:
+    class _FailingProbe:
+        def inspect(self, path: Path) -> MediaInfo:
+            raise error
+
+    media = tmp_path / "native.wav"
+    media.touch()
+    case = ParityCase(
+        case_id="studio.short_tts",
+        area="studio",
+        title="Short TTS",
+        required=True,
+        fixture_roles=("short_tts",),
+        checks=("output_format",),
+    )
+
+    result = validate_case(
+        case,
+        {"short_tts": media},
+        probe=_FailingProbe(),
+        measurements={
+            "output_format": {
+                "role": "short_tts",
+                "expected": {"container": "wav"},
+            }
+        },
+    )
+
+    assert result.status == "fail"
+    assert result.checks[0].status == "fail"
 
 
 def test_ffprobe_adapter_uses_existing_locator_and_parses_streams(

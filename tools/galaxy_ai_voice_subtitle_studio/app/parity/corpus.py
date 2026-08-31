@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import math
 import re
 from collections.abc import Mapping, Sequence
@@ -20,7 +19,7 @@ from .models import (
     ParityFixtureManifest,
 )
 from .security import UnsafePathError, fingerprint_source, resolve_approved_path
-from .validators import DefaultMediaProbe, MediaProbe, media_matches
+from .validators import DefaultMediaProbe, MediaProbe, load_strict_json, media_matches
 
 
 _SCHEMA_VERSION = 1
@@ -74,8 +73,8 @@ def inspect_corpus(
 
 def _read_manifest(path: Path) -> ParityFixtureManifest:
     try:
-        payload = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, UnicodeError, json.JSONDecodeError) as error:
+        payload = load_strict_json(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, ValueError) as error:
         raise ValueError(f"Cannot read parity fixture manifest: {error}") from error
     root = _mapping(payload, "manifest")
     _require_fields(root, _MANIFEST_FIELDS, "manifest")
@@ -184,6 +183,8 @@ def _inspect_asset(
         resolved = resolve_approved_path(manifest_root / relative, approved_roots)
     except UnsafePathError as error:
         return _asset_result(asset, None, "unsafe_path", "unsafe_path", str(error))
+    except OSError as error:
+        return _asset_io_error(asset, manifest_root / relative, error)
     if not resolved.exists():
         return _asset_result(asset, resolved, "missing", "missing", "Asset file does not exist")
     try:
@@ -191,7 +192,9 @@ def _inspect_asset(
     except UnsafePathError as error:
         return _asset_result(asset, resolved, "unsafe_path", "unsafe_path", str(error))
     except FileNotFoundError as error:
-        return _asset_result(asset, resolved, "unsupported", "unsupported", str(error))
+        return _asset_result(asset, resolved, "missing", "missing", str(error))
+    except OSError as error:
+        return _asset_io_error(asset, resolved, error)
     if fingerprint.kind != "file":
         return _asset_result(asset, resolved, "unsupported", "unsupported", "Manifest assets must be regular files")
     if fingerprint.byte_size != asset.byte_size:
@@ -202,6 +205,10 @@ def _inspect_asset(
         return AssetInspection(role=asset.role, path=resolved, status="ready")
     try:
         media = probe.inspect(resolved)
+    except FileNotFoundError as error:
+        return _asset_result(asset, resolved, "missing", "missing", str(error))
+    except OSError as error:
+        return _asset_io_error(asset, resolved, error)
     except Exception as error:
         return _asset_result(asset, resolved, "unsupported", "media_probe_failed", str(error))
     mismatches = media_matches(media, asset.media, path=resolved)
@@ -236,6 +243,21 @@ def _asset_result(
         path=path,
         status=status,
         findings=(Finding(code=code, message=message),),
+    )
+
+
+def _asset_io_error(
+    asset: ManifestAsset,
+    path: Path,
+    error: OSError,
+) -> AssetInspection:
+    detail = str(error) or type(error).__name__
+    return _asset_result(
+        asset,
+        path,
+        "unsupported",
+        "asset_io_error",
+        f"{type(error).__name__}: {detail}",
     )
 
 

@@ -202,8 +202,10 @@ fixture-backed dry-run proof. Issue 15 remains `ready-for-human` for the real
 corpus, manual UAT, and explicit acceptance. After interruption, the Settings
 command `Mở đối chiếu parity` reopens the workflow at `/settings/parity`.
 
-VoiceStudio remains installed and available for comparison. It may be retired
-only when all of the following are true:
+Retirement has two separate gates: an Accepted Parity Report must exist as the
+sole Phase 16 input, and Phase 16 must separately and explicitly approve
+retirement. VoiceStudio remains installed and available for comparison until
+both gates pass. It may be retired only when all of the following are true:
 
 1. Every row marked Native/Partial/Missing has a final disposition in its owning
    ticket and all required rows are implemented.
@@ -223,6 +225,9 @@ only when all of the following are true:
 8. The canonical JSON Accepted Parity Report from that run is supplied as the
    sole Phase 16 input. Automated suites, screenshots, verbal approval, and
    unaccepted or changed reports do not satisfy the retirement gate.
+9. Phase 16 reviews that Accepted Parity Report and explicitly approves
+   VoiceStudio retirement. Supplying the report does not itself grant that
+   approval.
 
 Any required `fail`, `blocked`, or `manual_pending` result prevents acceptance.
 Wall time, peak RAM, and peak VRAM remain intentionally `blocked` when matched

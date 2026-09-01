@@ -42,9 +42,14 @@ navigate directly to `/settings/parity`, to return to the persistent run.
   final acceptance on the same unchanged run.
 
 Only the canonical JSON report from that explicitly accepted run is an
-Accepted Parity Report and may enter Phase 16. Until then this ticket remains
-`ready-for-human`, VoiceStudio remains available, and native parity acceptance
-must not be claimed.
+Accepted Parity Report and may enter Phase 16. Until that report exists, this
+ticket remains `ready-for-human` and native parity acceptance must not be
+claimed.
+
+Retirement has two separate gates: an Accepted Parity Report must exist as the
+sole Phase 16 input, and Phase 16 must separately and explicitly approve
+retirement. VoiceStudio remains installed and available for comparison until
+both gates pass. Supplying the report does not itself authorize retirement.
 
 Context: [Native Voice Workspace decisions](../map.md#decisions-so-far) and
 [ADR 0015](../../../docs/adr/0015-native-parity-validation-is-evidence-gated.md).

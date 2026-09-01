@@ -194,3 +194,89 @@ VoiceStudio must remain available for comparison.
   configuration.
 - The real-corpus/manual acceptance gate remains intentionally incomplete; no
   native parity or VoiceStudio retirement acceptance is claimed.
+
+## Fix Round 1
+
+### Status And Commits
+
+- Status: DONE
+- Baseline Task 7 report commit:
+  `1cef3805723afc2fd6d321b193847803ea4a6880`
+- Fix commit: `51ca70ac9f2e6027ffaaaef78f3546c4e30a9743` -
+  `docs: require explicit phase 16 retirement approval`
+- This Fix Round 1 report update is committed separately after the fix commit
+  so the report can contain the exact implementation hash.
+
+### Finding Resolution
+
+The parity matrix previously made an Accepted Parity Report the sole Phase 16
+input but did not separately require Phase 16 to approve retirement. The
+matrix, issue 15, and workspace map now share this two-stage rule:
+
+> Retirement has two separate gates: an Accepted Parity Report must exist as
+> the sole Phase 16 input, and Phase 16 must separately and explicitly approve
+> retirement. VoiceStudio remains installed and available for comparison until
+> both gates pass.
+
+The matrix now records report submission as condition 8 and explicit Phase 16
+approval as condition 9. It also states that supplying the report does not
+itself grant approval. Issue 15 remains `ready-for-human`: it is still waiting
+for the unchanged real-corpus run, manual UAT, and explicit acceptance that
+produce the report. Completing issue 15 supplies Phase 16 input but does not
+authorize retirement. ADR 0015 was not changed, and its existing semantics are
+preserved.
+
+### Files Changed
+
+- `.scratch/native-voice-workspace/research/voicestudio-parity-matrix.md`
+- `.scratch/native-voice-workspace/issues/15-native-parity-validation.md`
+- `.scratch/native-voice-workspace/map.md`
+- `.superpowers/sdd/2026-08-30-native-parity-validation/task-7-report.md`
+
+### Exact Commands And Outcomes
+
+- `rg -n -C 2 "Retirement has two separate gates|sole Phase 16 input|separately and explicitly approve|both gates pass|Supplying the report" .scratch/native-voice-workspace/research/voicestudio-parity-matrix.md .scratch/native-voice-workspace/issues/15-native-parity-validation.md .scratch/native-voice-workspace/map.md`
+  - Exit 0. All three documents contain the same two-gate ordering and the same
+    requirement to retain VoiceStudio until both gates pass. The matrix and
+    issue additionally state that supplying the report does not authorize or
+    grant retirement approval.
+- `rg -n "^Status: ready-for-human$|^8\.|^9\.|Phase 16 reviews|does not itself" .scratch/native-voice-workspace/issues/15-native-parity-validation.md .scratch/native-voice-workspace/research/voicestudio-parity-matrix.md`
+  - Exit 0. Issue 15 remained `Status: ready-for-human`; matrix conditions 8
+    and 9 separately cover Accepted Parity Report submission and explicit
+    Phase 16 approval.
+- `rg -l "Retirement has two separate gates" .scratch/native-voice-workspace/research/voicestudio-parity-matrix.md .scratch/native-voice-workspace/issues/15-native-parity-validation.md .scratch/native-voice-workspace/map.md`
+  - Exit 0 and returned exactly the matrix, issue 15, and workspace map.
+- `git diff --check`
+  - Exit 0 with no whitespace errors. Git emitted three non-failing LF-to-CRLF
+    conversion notices, one for each edited document.
+- `git status --short`
+  - Exit 0 before commit and showed exactly the matrix, issue 15, and workspace
+    map as modified.
+- `git diff --name-only HEAD -- tools/galaxy_ai_voice_subtitle_studio/vendor/voicestudio`
+  - Exit 0 with no output; the immutable vendor snapshot remained unchanged.
+- `git diff --cached --check`
+  - Exit 0 with no whitespace errors before the fix commit. `git add` emitted
+    the same three non-failing LF-to-CRLF conversion notices.
+- `git commit -m "docs: require explicit phase 16 retirement approval"`
+  - Exit 0; commit `51ca70a` changed three files with 21 insertions and 9
+    deletions.
+- `git show --check --stat --oneline 51ca70a`
+  - Exit 0; the committed fix passed Git's whitespace check.
+- `git status --short --branch`
+  - Exit 0 after the fix commit with no short-status entries; branch status was
+    `main...origin/main [ahead 10]` before this report update.
+
+### Review
+
+- Compared the three final documents directly and confirmed the gate order,
+  Phase 16 approval requirement, and VoiceStudio retention rule are mutually
+  consistent.
+- Confirmed the fix does not alter issue 15's human evidence checklist or
+  status, issue 17's resolution, the accepted-report definition, or any ADR.
+- Confirmed no source, generated frontend bundle, local evidence, or vendor
+  file changed.
+
+### Concerns
+
+- No Fix Round 1 concern. The real-corpus/manual UAT gate and subsequent
+  explicit Phase 16 approval both remain intentionally outstanding.

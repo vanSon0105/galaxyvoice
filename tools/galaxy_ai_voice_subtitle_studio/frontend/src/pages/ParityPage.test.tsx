@@ -139,6 +139,12 @@ const candidate = {
     state: 'missing' as const,
     expected_sha256: '',
     byte_size: 0,
+  }, {
+    role: 'unsafe_reference',
+    hint: '../outside.wav',
+    state: 'unsafe' as const,
+    expected_sha256: '',
+    byte_size: 0,
   }],
   warnings: ['Cần xác nhận consent.'],
   consent: {
@@ -170,11 +176,12 @@ const migration: MigrationInspection = {
 function renderPage(
   run: ParityRun = blockedRun,
   getRun: (runId: string) => Promise<ParityRun> = async () => run,
+  summaries: ParityRunSummary[] = [
+    { ...summary, run_id: run.run_id, task_id: run.task_id, status: run.status },
+  ],
 ) {
   vi.mocked(parityApi.getParityRun).mockImplementation(getRun)
-  vi.mocked(parityApi.listParityRuns).mockResolvedValue({
-    runs: [{ ...summary, run_id: run.run_id, task_id: run.task_id, status: run.status }],
-  })
+  vi.mocked(parityApi.listParityRuns).mockResolvedValue({ runs: summaries })
   const queryClient = new QueryClient({
     defaultOptions: { queries: { retry: false }, mutations: { retry: false } },
   })
@@ -237,7 +244,39 @@ describe('ParityPage', () => {
     expect(await screen.findByText('1 có thể nhập')).toBeVisible()
     expect(screen.getByText('1 cần liên kết lại')).toBeVisible()
     expect(screen.getByText('1 không hỗ trợ')).toBeVisible()
+    expect(screen.getByText('1 không an toàn')).toHaveClass('unsafe_path')
     expect(screen.getByText('2 cảnh báo')).toBeVisible()
+  })
+
+  it('hides inspection evidence as soon as its exact request inputs change', async () => {
+    renderPage()
+    fireEvent.change(screen.getByLabelText('Manifest corpus'), {
+      target: { value: 'D:/fixtures/manifest.json' },
+    })
+    fireEvent.change(screen.getByLabelText('Thư mục được phép'), {
+      target: { value: 'D:/fixtures' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Kiểm tra corpus' }))
+    expect(await screen.findByText('1 sẵn sàng')).toBeVisible()
+    expect(screen.getByText('D:/fixtures')).toBeVisible()
+
+    fireEvent.change(screen.getByLabelText('Thư mục được phép'), {
+      target: { value: 'D:/different-root' },
+    })
+    expect(screen.queryByText('1 sẵn sàng')).not.toBeInTheDocument()
+    expect(screen.queryByText('D:/fixtures')).not.toBeInTheDocument()
+
+    fireEvent.change(screen.getByLabelText('Nguồn VoiceStudio đã sao chép'), {
+      target: { value: 'D:/copied-voice' },
+    })
+    fireEvent.click(screen.getByLabelText('Tôi xác nhận đây là bản sao chỉ đọc'))
+    fireEvent.click(screen.getByRole('button', { name: 'Kiểm tra migration' }))
+    expect(await screen.findByText('1 không an toàn')).toBeVisible()
+
+    fireEvent.change(screen.getByLabelText('Nguồn VoiceStudio đã sao chép'), {
+      target: { value: 'D:/another-copy' },
+    })
+    expect(screen.queryByText('1 không an toàn')).not.toBeInTheDocument()
   })
 
   it('uses a keyboard-focusable native disclosure for each case', async () => {
@@ -306,6 +345,75 @@ describe('ParityPage', () => {
       target: { value: 'Đã xem toàn bộ bằng chứng.' },
     })
     expect(screen.getByRole('button', { name: 'Chấp nhận kết quả' })).toBeEnabled()
+  })
+
+  it('serializes manual evidence and blocks acceptance while it is pending', async () => {
+    let resolveManual!: (run: ParityRun) => void
+    vi.mocked(parityApi.recordParityManualAnswer).mockImplementation(() => new Promise((resolve) => {
+      resolveManual = resolve
+    }))
+    renderPage({ ...blockedRun, ready_for_acceptance: true })
+    const manual = await screen.findByRole('group', { name: 'Nghe và xác nhận bản xuất.' })
+    fireEvent.change(within(manual).getByLabelText('Ghi chú'), {
+      target: { value: 'Đang kiểm tra.' },
+    })
+    fireEvent.change(screen.getByLabelText('Ghi chú chấp nhận cuối cùng'), {
+      target: { value: 'Chấp nhận sau khi lưu.' },
+    })
+    fireEvent.click(within(manual).getByRole('button', { name: 'Đạt' }))
+
+    await waitFor(() => expect(within(manual).getByRole('button', { name: 'Đạt' })).toBeDisabled())
+    expect(within(manual).getByRole('button', { name: 'Không đạt' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: 'Chấp nhận kết quả' })).toBeDisabled()
+    fireEvent.click(within(manual).getByRole('button', { name: 'Không đạt' }))
+    expect(parityApi.recordParityManualAnswer).toHaveBeenCalledTimes(1)
+
+    resolveManual(blockedRun)
+    await waitFor(() => expect(within(manual).getByRole('button', { name: 'Đạt' })).toBeEnabled())
+  })
+
+  it('scopes drafts and manual, acceptance, and report errors to the selected run', async () => {
+    const secondRun: ParityRun = {
+      ...blockedRun,
+      run_id: 'run-2',
+      task_id: 'task-2',
+      manual_answers: {
+        'shared.project_portability.manual.1': {
+          item_id: 'shared.project_portability.manual.1',
+          accepted: true,
+          note: 'Bằng chứng của run 2.',
+          answered_at: '2026-08-30T00:03:00Z',
+        },
+      },
+    }
+    vi.mocked(parityApi.recordParityManualAnswer).mockRejectedValue(new Error('manual failed'))
+    vi.mocked(parityApi.acceptParityRun).mockRejectedValue(new Error('accept failed'))
+    vi.mocked(parityApi.downloadParityReport).mockRejectedValue(new Error('report failed'))
+    renderPage(
+      { ...blockedRun, ready_for_acceptance: true },
+      async (runId) => (runId === 'run-2' ? secondRun : { ...blockedRun, ready_for_acceptance: true }),
+      [summary, { ...summary, run_id: 'run-2', task_id: 'task-2' }],
+    )
+    const manual = await screen.findByRole('group', { name: 'Nghe và xác nhận bản xuất.' })
+    fireEvent.change(within(manual).getByLabelText('Ghi chú'), { target: { value: 'Draft run 1' } })
+    fireEvent.click(within(manual).getByRole('button', { name: 'Đạt' }))
+    expect(await screen.findByText('Không lưu được bằng chứng thủ công.')).toBeVisible()
+    fireEvent.change(screen.getByLabelText('Ghi chú chấp nhận cuối cùng'), {
+      target: { value: 'Acceptance run 1' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Chấp nhận kết quả' }))
+    expect(await screen.findByText('Backend từ chối chấp nhận lần chạy.')).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Tải báo cáo JSON' }))
+    expect(await screen.findByText('Không tải được báo cáo.')).toBeVisible()
+
+    fireEvent.change(screen.getByLabelText('Lần chạy'), { target: { value: 'run-2' } })
+
+    await waitFor(() => expect(screen.getByText('run-2')).toBeVisible())
+    expect(screen.getByLabelText('Ghi chú')).toHaveValue('Bằng chứng của run 2.')
+    expect(screen.getByLabelText('Ghi chú chấp nhận cuối cùng')).toHaveValue('')
+    expect(screen.queryByText('Không lưu được bằng chứng thủ công.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Backend từ chối chấp nhận lần chạy.')).not.toBeInTheDocument()
+    expect(screen.queryByText('Không tải được báo cáo.')).not.toBeInTheDocument()
   })
 
   it('starts, cancels, and refreshes runs with the selected source', async () => {

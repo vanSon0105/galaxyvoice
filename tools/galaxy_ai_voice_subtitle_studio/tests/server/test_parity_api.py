@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -244,6 +245,14 @@ class StubParityService:
             and self.run.acceptance is None
         )
 
+    def get_run_detail(self, run_id: str):
+        if run_id != self.run.run_id:
+            return None
+        return SimpleNamespace(
+            run=self.run,
+            ready_for_acceptance=self.ready_for_acceptance(run_id),
+        )
+
     def read_report(self, run_id: str, report_format: str) -> bytes:
         if run_id != self.run.run_id:
             raise FileNotFoundError(run_id)
@@ -361,6 +370,30 @@ def test_run_detail_projects_backend_acceptance_readiness(
 
     assert ready.status_code == 200
     assert ready.json()["ready_for_acceptance"] is True
+
+
+def test_run_detail_does_not_combine_evidence_with_a_later_readiness_read(
+    client: TestClient,
+    service: StubParityService,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service.record_manual_item(
+        "run-1",
+        "shared.project_portability:manual:1",
+        accepted=True,
+        note="reviewed",
+    )
+    stale = replace(service.run, manual_answers={})
+    monkeypatch.setattr(service, "get_run", lambda _run_id: stale)
+    monkeypatch.setattr(service, "ready_for_acceptance", lambda _run_id: True)
+
+    response = client.get("/api/parity/runs/run-1")
+
+    assert response.status_code == 200
+    assert response.json()["ready_for_acceptance"] is True
+    assert response.json()["manual_answers"]["shared.project_portability:manual:1"][
+        "accepted"
+    ] is True
 
 
 def test_corpus_and_migration_inspection_contract(

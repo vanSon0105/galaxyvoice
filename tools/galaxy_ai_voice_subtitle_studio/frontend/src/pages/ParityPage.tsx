@@ -17,8 +17,10 @@ import {
 import type {
   AssetReadiness,
   CheckStatus,
+  CorpusInspection,
   JsonValue,
   MigrationCandidate,
+  MigrationInspection,
   ReportFormat,
   RunStatus,
 } from '../api/parity'
@@ -37,6 +39,14 @@ const MIGRATION_GROUPS = [
 ] as const
 
 type Status = CheckStatus | RunStatus | AssetReadiness
+type CorpusRequest = Parameters<typeof inspectParityCorpus>[0]
+type MigrationRequest = Parameters<typeof inspectParityMigration>[0]
+
+interface RunDraft {
+  runId: string
+  manualNotes: Record<string, string>
+  acceptanceNote: string
+}
 
 function StatusLabel({ status }: { status: Status }) {
   const t = useT()
@@ -69,9 +79,20 @@ export function ParityPage() {
   const [migrationSource, setMigrationSource] = useState('')
   const [copiedSourceConfirmed, setCopiedSourceConfirmed] = useState(false)
   const [selectedRunId, setSelectedRunId] = useState('')
-  const [manualNotes, setManualNotes] = useState<Record<string, string>>({})
-  const [acceptanceNote, setAcceptanceNote] = useState('')
-  const [reportError, setReportError] = useState('')
+  const [runDraft, setRunDraft] = useState<RunDraft>({
+    runId: '',
+    manualNotes: {},
+    acceptanceNote: '',
+  })
+  const [corpusInspection, setCorpusInspection] = useState<{
+    request: CorpusRequest
+    result: CorpusInspection
+  } | null>(null)
+  const [migrationInspection, setMigrationInspection] = useState<{
+    request: MigrationRequest
+    result: MigrationInspection
+  } | null>(null)
+  const [reportError, setReportError] = useState<{ runId: string; message: string } | null>(null)
   const [commandMessage, setCommandMessage] = useState('')
 
   const catalogueQuery = useQuery({
@@ -96,10 +117,12 @@ export function ParityPage() {
   }, [runsQuery.data, selectedRunId])
 
   const corpusMutation = useMutation({
-    mutationFn: inspectParityCorpus,
+    mutationFn: (request: CorpusRequest) => inspectParityCorpus(request),
+    onSuccess: (result, request) => setCorpusInspection({ request, result }),
   })
   const migrationMutation = useMutation({
-    mutationFn: inspectParityMigration,
+    mutationFn: (request: MigrationRequest) => inspectParityMigration(request),
+    onSuccess: (result, request) => setMigrationInspection({ request, result }),
   })
   const startMutation = useMutation({
     mutationFn: (request: Parameters<typeof startParityRun>[0]) => startParityRun(request),
@@ -117,6 +140,7 @@ export function ParityPage() {
     },
   })
   const manualMutation = useMutation({
+    scope: { id: 'parity-manual-evidence' },
     mutationFn: ({ runId, itemId, accepted, note }: {
       runId: string
       itemId: string
@@ -139,10 +163,24 @@ export function ParityPage() {
   const reportMutation = useMutation({
     mutationFn: ({ runId, format }: { runId: string; format: ReportFormat }) =>
       downloadParityReport(runId, format),
-    onMutate: () => setReportError(''),
+    onMutate: () => setReportError(null),
     onSuccess: (blob, variables) => saveReport(blob, variables.runId, variables.format),
-    onError: () => setReportError(t('parity.error.report')),
+    onError: (_error, variables) => setReportError({
+      runId: variables.runId,
+      message: t('parity.error.report'),
+    }),
   })
+  const { reset: resetManualMutation } = manualMutation
+  const { reset: resetAcceptMutation } = acceptMutation
+  const { reset: resetReportMutation } = reportMutation
+
+  useEffect(() => {
+    setRunDraft({ runId: selectedRunId, manualNotes: {}, acceptanceNote: '' })
+    setReportError(null)
+    resetManualMutation()
+    resetAcceptMutation()
+    resetReportMutation()
+  }, [selectedRunId, resetAcceptMutation, resetManualMutation, resetReportMutation])
 
   const caseTitles = useMemo(
     () => new Map(catalogueQuery.data?.cases.map((item) => [item.case_id, item.title]) ?? []),
@@ -150,6 +188,22 @@ export function ParityPage() {
   )
   const run = runQuery.data
   const approvedRoots = approvedRoot.trim() ? [approvedRoot.trim()] : []
+  const corpusResult = corpusInspection
+    && corpusInspection.request.manifest_path === manifestPath.trim()
+    && corpusInspection.request.approved_roots.length === approvedRoots.length
+    && corpusInspection.request.approved_roots.every((root, index) => root === approvedRoots[index])
+    ? corpusInspection.result
+    : null
+  const migrationResult = migrationInspection
+    && migrationInspection.request.source === migrationSource.trim()
+    && migrationInspection.request.copied_source_confirmed === copiedSourceConfirmed
+    && migrationInspection.request.approved_roots.length === approvedRoots.length
+    && migrationInspection.request.approved_roots.every((root, index) => root === approvedRoots[index])
+    ? migrationInspection.result
+    : null
+  const activeDraft = runDraft.runId === selectedRunId
+    ? runDraft
+    : { runId: selectedRunId, manualNotes: {}, acceptanceNote: '' }
   const corpusCounts = useMemo(() => {
     const counts: Record<AssetReadiness, number> = {
       ready: 0,
@@ -158,25 +212,26 @@ export function ParityPage() {
       unsupported: 0,
       unsafe_path: 0,
     }
-    Object.values(corpusMutation.data?.assets_by_role ?? {}).forEach((asset) => {
+    Object.values(corpusResult?.assets_by_role ?? {}).forEach((asset) => {
       counts[asset.status] += 1
     })
     return counts
-  }, [corpusMutation.data])
+  }, [corpusResult])
   const migrationTotals = useMemo(() => {
-    const result = migrationMutation.data
+    const result = migrationResult
     if (!result) return null
     const candidates = MIGRATION_GROUPS.flatMap((key) => result[key])
     return {
       importable: candidates.length,
       relink: result.assets.filter((asset) => asset.state === 'missing').length,
+      unsafe: result.assets.filter((asset) => asset.state === 'unsafe').length,
       unsupported: result.unsupported.length,
       warnings: result.warnings.length + candidates.reduce(
         (total, candidate: MigrationCandidate) => total + candidate.warnings.length,
         0,
       ),
     }
-  }, [migrationMutation.data])
+  }, [migrationResult])
 
   const refresh = async () => {
     setCommandMessage('')
@@ -238,8 +293,10 @@ export function ParityPage() {
             {t('parity.corpus.inspect')}
           </button>
         </div>
-        {corpusMutation.isError && <ErrorState>{t('parity.error.corpus')}</ErrorState>}
-        {corpusMutation.data && (
+        {corpusMutation.isError
+          && corpusMutation.variables?.manifest_path === manifestPath.trim()
+          && <ErrorState>{t('parity.error.corpus')}</ErrorState>}
+        {corpusResult && (
           <div className="parity-result-block" aria-live="polite">
             <div className="parity-totals">
               <span className="ready">{corpusCounts.ready} {t('parity.total.ready')}</span>
@@ -249,10 +306,11 @@ export function ParityPage() {
               <span className="unsafe_path">{corpusCounts.unsafe_path} {t('parity.total.unsafe')}</span>
             </div>
             <p className="parity-root-summary">
-              <strong>{t('parity.source.selectedRoot')}:</strong> {approvedRoots.join(', ')}
+              <strong>{t('parity.source.selectedRoot')}:</strong>{' '}
+              {corpusInspection?.request.approved_roots.join(', ')}
             </p>
             <div className="parity-asset-list">
-              {Object.values(corpusMutation.data.assets_by_role).map((asset) => (
+              {Object.values(corpusResult.assets_by_role).map((asset) => (
                 <div key={asset.role}>
                   <strong>{asset.role}</strong>
                   <StatusLabel status={asset.status} />
@@ -308,16 +366,19 @@ export function ParityPage() {
             {t('parity.migration.inspect')}
           </button>
         </div>
-        {migrationMutation.isError && <ErrorState>{t('parity.error.migration')}</ErrorState>}
+        {migrationMutation.isError
+          && migrationMutation.variables?.source === migrationSource.trim()
+          && <ErrorState>{t('parity.error.migration')}</ErrorState>}
         {migrationTotals && (
           <div className="parity-result-block" aria-live="polite">
             <div className="parity-totals migration">
               <span className="ready">{migrationTotals.importable} {t('parity.total.importable')}</span>
               <span className="missing">{migrationTotals.relink} {t('parity.total.relink')}</span>
+              <span className="unsafe_path">{migrationTotals.unsafe} {t('parity.total.unsafe')}</span>
               <span className="unsupported">{migrationTotals.unsupported} {t('parity.total.notSupported')}</span>
               <span className="warning">{migrationTotals.warnings} {t('parity.total.warnings')}</span>
             </div>
-            {migrationMutation.data?.unsupported.map((finding) => (
+            {migrationResult?.unsupported.map((finding) => (
               <p className="parity-finding" key={`${finding.source}:${finding.reason}`}>
                 <strong>{finding.source}</strong>: {finding.reason}
               </p>
@@ -392,7 +453,7 @@ export function ParityPage() {
                 </button>
               </div>
             </div>
-            {reportError && <ErrorState>{reportError}</ErrorState>}
+            {reportError?.runId === run.run_id && <ErrorState>{reportError.message}</ErrorState>}
             {catalogueQuery.isError && <ErrorState>{t('parity.error.catalogue')}</ErrorState>}
 
             <div className="parity-case-list">
@@ -447,9 +508,7 @@ export function ParityPage() {
               {run.manual_items.length === 0 && <p>{t('parity.manual.none')}</p>}
               {run.manual_items.map((item) => {
                 const answer = run.manual_answers[item.item_id]
-                const note = manualNotes[item.item_id] ?? answer?.note ?? ''
-                const savingThis = manualMutation.isPending
-                  && manualMutation.variables?.itemId === item.item_id
+                const note = activeDraft.manualNotes[item.item_id] ?? answer?.note ?? ''
                 return (
                   <fieldset className="parity-manual-item" aria-label={item.prompt} key={item.item_id}>
                     <legend>{item.prompt}</legend>
@@ -469,9 +528,15 @@ export function ParityPage() {
                         id={`manual-note-${item.item_id}`}
                         type="text"
                         value={note}
-                        onChange={(event) => setManualNotes((current) => ({
-                          ...current,
-                          [item.item_id]: event.target.value,
+                        onChange={(event) => setRunDraft((current) => ({
+                          runId: run.run_id,
+                          manualNotes: {
+                            ...(current.runId === run.run_id ? current.manualNotes : {}),
+                            [item.item_id]: event.target.value,
+                          },
+                          acceptanceNote: current.runId === run.run_id
+                            ? current.acceptanceNote
+                            : '',
                         }))}
                       />
                     </div>
@@ -479,7 +544,7 @@ export function ParityPage() {
                       <button
                         className="btn accent"
                         type="button"
-                        disabled={!note.trim() || savingThis || run.acceptance !== null}
+                        disabled={!note.trim() || manualMutation.isPending || run.acceptance !== null}
                         onClick={() => manualMutation.mutate({
                           runId: run.run_id,
                           itemId: item.item_id,
@@ -492,7 +557,7 @@ export function ParityPage() {
                       <button
                         className="btn danger"
                         type="button"
-                        disabled={!note.trim() || savingThis || run.acceptance !== null}
+                        disabled={!note.trim() || manualMutation.isPending || run.acceptance !== null}
                         onClick={() => manualMutation.mutate({
                           runId: run.run_id,
                           itemId: item.item_id,
@@ -506,7 +571,9 @@ export function ParityPage() {
                   </fieldset>
                 )
               })}
-              {manualMutation.isError && <ErrorState>{t('parity.error.manual')}</ErrorState>}
+              {manualMutation.isError
+                && manualMutation.variables?.runId === run.run_id
+                && <ErrorState>{t('parity.error.manual')}</ErrorState>}
             </div>
 
             <div className="parity-acceptance">
@@ -524,9 +591,13 @@ export function ParityPage() {
                 <input
                   id="parity-acceptance-note"
                   type="text"
-                  value={acceptanceNote}
+                  value={activeDraft.acceptanceNote}
                   disabled={run.acceptance !== null}
-                  onChange={(event) => setAcceptanceNote(event.target.value)}
+                  onChange={(event) => setRunDraft((current) => ({
+                    runId: run.run_id,
+                    manualNotes: current.runId === run.run_id ? current.manualNotes : {},
+                    acceptanceNote: event.target.value,
+                  }))}
                 />
               </div>
               <button
@@ -534,18 +605,21 @@ export function ParityPage() {
                 type="button"
                 disabled={
                   !run.ready_for_acceptance
-                  || !acceptanceNote.trim()
+                  || !activeDraft.acceptanceNote.trim()
+                  || manualMutation.isPending
                   || acceptMutation.isPending
                   || run.acceptance !== null
                 }
                 onClick={() => acceptMutation.mutate({
                   runId: run.run_id,
-                  note: acceptanceNote.trim(),
+                  note: activeDraft.acceptanceNote.trim(),
                 })}
               >
                 {t('parity.acceptance.action')}
               </button>
-              {acceptMutation.isError && <ErrorState>{t('parity.error.acceptance')}</ErrorState>}
+              {acceptMutation.isError
+                && acceptMutation.variables?.runId === run.run_id
+                && <ErrorState>{t('parity.error.acceptance')}</ErrorState>}
             </div>
           </div>
         )}

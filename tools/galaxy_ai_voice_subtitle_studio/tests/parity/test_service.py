@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 
@@ -289,6 +290,31 @@ def test_readiness_projection_uses_the_acceptance_gate(
     )
 
     assert service.ready_for_acceptance(task.run_id) is True
+
+
+def test_run_detail_uses_one_repository_snapshot_for_evidence_and_readiness(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.parity.service.validate_case", _passing_validator)
+    repository = ParityRepository(tmp_path / "state")
+    service = ParityService(_catalogue(), repository, TaskRegistry())
+    task = _start(service, _manifest(tmp_path))
+    _join(task)
+    service.record_manual_item(
+        task.run_id,
+        "case.0.manual.1",
+        accepted=True,
+        note="listened",
+    )
+    stale = replace(repository.get_run(task.run_id), manual_answers={})
+    monkeypatch.setattr(repository, "get_run", lambda _run_id: stale)
+
+    detail = service.get_run_detail(task.run_id)
+
+    assert detail is not None
+    assert detail.ready_for_acceptance is True
+    assert detail.run.manual_answers["case.0.manual.1"].accepted is True
 
 
 def test_acceptance_rejects_changed_selected_manifest_source(

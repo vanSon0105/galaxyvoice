@@ -45,6 +45,7 @@ from .repository import (
 from .reports import RenderedReports, render_reports
 from .service import (
     ParityNotReadyError,
+    ParityRunDetail,
     ParityService,
     StartParityRun,
     ThresholdOverrideRequest,
@@ -77,6 +78,7 @@ __all__ = [
     "ManualAnswer",
     "ManualItem",
     "ParityNotReadyError",
+    "ParityRunDetail",
     "ParityRepository",
     "ParityRun",
     "ParityService",

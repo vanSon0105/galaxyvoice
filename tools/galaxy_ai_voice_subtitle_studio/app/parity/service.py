@@ -71,6 +71,12 @@ class ParityNotReadyError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class ParityRunDetail:
+    run: ParityRun
+    ready_for_acceptance: bool
+
+
+@dataclass(frozen=True)
 class ThresholdOverrideRequest:
     case_id: str
     threshold_id: str
@@ -221,20 +227,32 @@ class ParityService:
     def read_report(self, run_id: str, report_format: str) -> bytes:
         return self.repository.read_report(run_id, report_format)
 
-    def ready_for_acceptance(self, run_id: str) -> bool:
+    def get_run_detail(self, run_id: str) -> ParityRunDetail | None:
+        reconciled = self.get_run(run_id)
+        if reconciled is None:
+            return None
         try:
             snapshot = self.repository.acceptance_snapshot(run_id)
             run = snapshot.run
-            if run.acceptance is not None:
-                return False
-            self._assert_ready(run, acceptance_note="readiness probe")
         except (
             FileNotFoundError,
             ImmutableRunError,
-            ParityNotReadyError,
             ParityRepositoryError,
             ValueError,
         ):
+            return ParityRunDetail(run=reconciled, ready_for_acceptance=False)
+        return ParityRunDetail(run=run, ready_for_acceptance=self._is_ready(run))
+
+    def ready_for_acceptance(self, run_id: str) -> bool:
+        detail = self.get_run_detail(run_id)
+        return detail is not None and detail.ready_for_acceptance
+
+    def _is_ready(self, run: ParityRun) -> bool:
+        if run.acceptance is not None:
+            return False
+        try:
+            self._assert_ready(run, acceptance_note="readiness probe")
+        except ParityNotReadyError:
             return False
         task = self.task_registry.get(run.task_id)
         return (

@@ -782,7 +782,7 @@ def test_path_io_failures_return_sanitized_500(
     payload: dict[str, object] | None,
     method_name: str,
 ) -> None:
-    private_path = r"C:\Users\Rom\private\manifest.json"
+    private_path = r"C:\Users\private-user\private\manifest.json"
 
     def fail(*_args: object, **_kwargs: object) -> object:
         raise PermissionError(13, "access denied", private_path)

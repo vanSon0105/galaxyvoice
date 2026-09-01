@@ -231,6 +231,19 @@ class StubParityService:
     def get_run(self, run_id: str) -> ParityRun | None:
         return self.run if run_id == self.run.run_id else None
 
+    def ready_for_acceptance(self, run_id: str) -> bool:
+        return (
+            run_id == self.run.run_id
+            and self.run.status == "completed"
+            and all(
+                answer.accepted
+                for item in self.run.manual_items
+                if (answer := self.run.manual_answers.get(item.item_id)) is not None
+            )
+            and len(self.run.manual_answers) == len(self.run.manual_items)
+            and self.run.acceptance is None
+        )
+
     def read_report(self, run_id: str, report_format: str) -> bytes:
         if run_id != self.run.run_id:
             raise FileNotFoundError(run_id)
@@ -327,6 +340,27 @@ def test_catalogue_and_openapi_contract(client: TestClient) -> None:
         "/api/parity/runs/{run_id}/manual-items/{item_id}": {"post"},
         "/api/parity/runs/{run_id}/accept": {"post"},
     }
+
+
+def test_run_detail_projects_backend_acceptance_readiness(
+    client: TestClient,
+    service: StubParityService,
+) -> None:
+    pending = client.get("/api/parity/runs/run-1")
+
+    assert pending.status_code == 200
+    assert pending.json()["ready_for_acceptance"] is False
+
+    service.record_manual_item(
+        "run-1",
+        "shared.project_portability:manual:1",
+        accepted=True,
+        note="reviewed",
+    )
+    ready = client.get("/api/parity/runs/run-1")
+
+    assert ready.status_code == 200
+    assert ready.json()["ready_for_acceptance"] is True
 
 
 def test_corpus_and_migration_inspection_contract(

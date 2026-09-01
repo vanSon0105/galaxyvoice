@@ -1,5 +1,6 @@
-import { act, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
+import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import * as extensionsApi from '../api/extensions'
@@ -36,7 +37,18 @@ function deferred<T>() {
   return { promise, resolve }
 }
 
+function renderSettings(queryClient: QueryClient) {
+  return render(
+    <MemoryRouter>
+      <QueryClientProvider client={queryClient}>
+        <SettingsPage />
+      </QueryClientProvider>
+    </MemoryRouter>,
+  )
+}
+
 afterEach(() => {
+  cleanup()
   vi.restoreAllMocks()
 })
 
@@ -58,11 +70,7 @@ describe('SettingsPage', () => {
     })
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
-    render(
-      <QueryClientProvider client={queryClient}>
-        <SettingsPage />
-      </QueryClientProvider>,
-    )
+    renderSettings(queryClient)
 
     expect(await screen.findByText('Live dictation')).toBeInTheDocument()
     expect(screen.getByText('Microphone transcription.')).toBeInTheDocument()
@@ -80,11 +88,7 @@ describe('SettingsPage', () => {
     })
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
-    render(
-      <QueryClientProvider client={queryClient}>
-        <SettingsPage />
-      </QueryClientProvider>,
-    )
+    renderSettings(queryClient)
 
     expect(await screen.findByText('Remote backend')).toBeInTheDocument()
     expect(screen.getByText('Remote service.')).toBeInTheDocument()
@@ -98,11 +102,7 @@ describe('SettingsPage', () => {
     )
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
-    render(
-      <QueryClientProvider client={queryClient}>
-        <SettingsPage />
-      </QueryClientProvider>,
-    )
+    renderSettings(queryClient)
 
     const input = await screen.findByDisplayValue('D:/ready')
     expect(input).toBeEnabled()
@@ -122,11 +122,7 @@ describe('SettingsPage', () => {
       .mockImplementationOnce(() => second.promise)
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
 
-    render(
-      <QueryClientProvider client={queryClient}>
-        <SettingsPage />
-      </QueryClientProvider>,
-    )
+    renderSettings(queryClient)
 
     await screen.findByDisplayValue('D:/old')
     const input = document.querySelector<HTMLInputElement>('#setting-output_dir')
@@ -144,5 +140,16 @@ describe('SettingsPage', () => {
     })
 
     expect(input).toHaveValue('D:/latest')
+  })
+
+  it('offers parity validation as one Settings-owned navigation command', async () => {
+    vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({ output_dir: 'D:/ready' })
+    vi.spyOn(settingsApi, 'fetchSettingsMeta').mockResolvedValue(EMPTY_META)
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+
+    renderSettings(queryClient)
+
+    const link = await screen.findByRole('link', { name: 'Mở đối chiếu parity' })
+    expect(link).toHaveAttribute('href', '/settings/parity')
   })
 })

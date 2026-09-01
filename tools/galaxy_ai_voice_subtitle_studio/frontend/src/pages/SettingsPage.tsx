@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { Link } from 'react-router-dom'
 
 import { fetchSettings, fetchSettingsMeta, updateSettings } from '../api/settings'
 import type { AppSettings, Option, SettingsMeta } from '../api/settings'
@@ -229,6 +230,10 @@ export function SettingsPage() {
         </h1>
         <span style={{ color: 'var(--color-fg-subtle)', fontSize: 12 }}>{saveNote}</span>
       </div>
+      <section className="settings-parity-entry" aria-labelledby="settings-parity-title">
+        <h2 id="settings-parity-title">{t('settings.parity.title')}</h2>
+        <Link className="btn" to="/settings/parity">{t('settings.parity.open')}</Link>
+      </section>
       {settingsPending ? (
         <div className="placeholder-page">{t('ws.connecting')}</div>
       ) : settingsUnavailable ? (

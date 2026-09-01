@@ -221,6 +221,29 @@ class ParityService:
     def read_report(self, run_id: str, report_format: str) -> bytes:
         return self.repository.read_report(run_id, report_format)
 
+    def ready_for_acceptance(self, run_id: str) -> bool:
+        try:
+            snapshot = self.repository.acceptance_snapshot(run_id)
+            run = snapshot.run
+            if run.acceptance is not None:
+                return False
+            self._assert_ready(run, acceptance_note="readiness probe")
+        except (
+            FileNotFoundError,
+            ImmutableRunError,
+            ParityNotReadyError,
+            ParityRepositoryError,
+            ValueError,
+        ):
+            return False
+        task = self.task_registry.get(run.task_id)
+        return (
+            task is not None
+            and task.kind == PARITY_TASK_KIND
+            and task.run_id == run.run_id
+            and task.status == DONE
+        )
+
     def record_manual_item(
         self,
         run_id: str,

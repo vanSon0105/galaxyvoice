@@ -25,11 +25,46 @@ const EditorPage = page(() => import('./pages/EditorPage'), 'EditorPage')
 const SeparationPage = page(() => import('./pages/SeparationPage'), 'SeparationPage')
 const RemovalPage = page(() => import('./pages/RemovalPage'), 'RemovalPage')
 const SettingsPage = page(() => import('./pages/SettingsPage'), 'SettingsPage')
+const ParityPage = page(() => import('./pages/ParityPage'), 'ParityPage')
 const VoiceLibraryPage = page(() => import('./pages/voice/VoiceLibraryPage'), 'VoiceLibraryPage')
 
 export function LegacyVoiceRedirect({ to }: { to: string }) {
   const location = useLocation()
   return <Navigate to={{ pathname: to, search: location.search }} replace />
+}
+
+export function AppRoutes() {
+  return (
+    <Suspense fallback={<div className="workspace-loading" role="status">Đang mở workspace...</div>}>
+      <Routes>
+        <Route path="/dubbing" element={<DubPage />} />
+        <Route path="/voice" element={<VoiceWorkspace />}>
+          <Route index element={<StudioPage />} />
+          <Route path="batch" element={<BatchPage />} />
+          <Route path="library" element={<VoiceLibraryPage />} />
+          <Route path="library/gallery" element={<GalleryPage />} />
+          <Route path="transcripts" element={<TranscriptsPage />} />
+          <Route path="longform" element={<WorkspacesPage />} />
+          <Route path="dubbing" element={<DubbingPage />} />
+          <Route path="reference" element={<VoiceStudioPage />} />
+        </Route>
+        <Route path="/omnivoice" element={<LegacyVoiceRedirect to="/voice" />} />
+        <Route path="/omnivoice/batch" element={<LegacyVoiceRedirect to="/voice/batch" />} />
+        <Route path="/omnivoice/profiles" element={<LegacyVoiceRedirect to="/voice/library" />} />
+        <Route path="/omnivoice/gallery" element={<LegacyVoiceRedirect to="/voice/library/gallery" />} />
+        <Route path="/omnivoice/transcripts" element={<LegacyVoiceRedirect to="/voice/transcripts" />} />
+        <Route path="/omnivoice/workspaces" element={<LegacyVoiceRedirect to="/voice/longform" />} />
+        <Route path="/omnivoice/dubbing" element={<LegacyVoiceRedirect to="/voice/dubbing" />} />
+        <Route path="/omnivoice/voicestudio" element={<LegacyVoiceRedirect to="/voice/reference" />} />
+        <Route path="/editor" element={<EditorPage />} />
+        <Route path="/separation" element={<SeparationPage />} />
+        <Route path="/removal" element={<RemovalPage />} />
+        <Route path="/settings" element={<SettingsPage />} />
+        <Route path="/settings/parity" element={<ParityPage />} />
+        <Route path="*" element={<Navigate to={DEFAULT_ROUTE} replace />} />
+      </Routes>
+    </Suspense>
+  )
 }
 
 export default function App() {
@@ -55,34 +90,7 @@ export default function App() {
 
   return (
     <AppShell wsState={wsState}>
-      <Suspense fallback={<div className="workspace-loading" role="status">Đang mở workspace...</div>}>
-        <Routes>
-          <Route path="/dubbing" element={<DubPage />} />
-          <Route path="/voice" element={<VoiceWorkspace />}>
-            <Route index element={<StudioPage />} />
-            <Route path="batch" element={<BatchPage />} />
-            <Route path="library" element={<VoiceLibraryPage />} />
-            <Route path="library/gallery" element={<GalleryPage />} />
-            <Route path="transcripts" element={<TranscriptsPage />} />
-            <Route path="longform" element={<WorkspacesPage />} />
-            <Route path="dubbing" element={<DubbingPage />} />
-            <Route path="reference" element={<VoiceStudioPage />} />
-          </Route>
-          <Route path="/omnivoice" element={<LegacyVoiceRedirect to="/voice" />} />
-          <Route path="/omnivoice/batch" element={<LegacyVoiceRedirect to="/voice/batch" />} />
-          <Route path="/omnivoice/profiles" element={<LegacyVoiceRedirect to="/voice/library" />} />
-          <Route path="/omnivoice/gallery" element={<LegacyVoiceRedirect to="/voice/library/gallery" />} />
-          <Route path="/omnivoice/transcripts" element={<LegacyVoiceRedirect to="/voice/transcripts" />} />
-          <Route path="/omnivoice/workspaces" element={<LegacyVoiceRedirect to="/voice/longform" />} />
-          <Route path="/omnivoice/dubbing" element={<LegacyVoiceRedirect to="/voice/dubbing" />} />
-          <Route path="/omnivoice/voicestudio" element={<LegacyVoiceRedirect to="/voice/reference" />} />
-          <Route path="/editor" element={<EditorPage />} />
-          <Route path="/separation" element={<SeparationPage />} />
-          <Route path="/removal" element={<RemovalPage />} />
-          <Route path="/settings" element={<SettingsPage />} />
-          <Route path="*" element={<Navigate to={DEFAULT_ROUTE} replace />} />
-        </Routes>
-      </Suspense>
+      <AppRoutes />
     </AppShell>
   )
 }

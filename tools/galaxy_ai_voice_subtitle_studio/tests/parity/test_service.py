@@ -266,6 +266,31 @@ def test_acceptance_recomputes_snapshot_hashes_and_manual_answers(
         service.accept_run(task.run_id, note="reviewed")
 
 
+def test_readiness_projection_uses_the_acceptance_gate(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.parity.service.validate_case", _passing_validator)
+    service = ParityService(
+        _catalogue(),
+        ParityRepository(tmp_path / "state"),
+        TaskRegistry(),
+    )
+    task = _start(service, _manifest(tmp_path))
+    _join(task)
+
+    assert service.ready_for_acceptance(task.run_id) is False
+
+    service.record_manual_item(
+        task.run_id,
+        "case.0.manual.1",
+        accepted=True,
+        note="listened",
+    )
+
+    assert service.ready_for_acceptance(task.run_id) is True
+
+
 def test_acceptance_rejects_changed_selected_manifest_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

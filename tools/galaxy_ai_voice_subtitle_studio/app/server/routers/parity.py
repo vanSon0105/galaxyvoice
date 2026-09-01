@@ -316,6 +316,7 @@ class ParityRunResponse(ResponseModel):
     completed_at: str | None
     manual_answers: dict[str, ManualAnswerResponse]
     acceptance: AcceptanceResponse | None
+    ready_for_acceptance: bool
 
 
 class ParityRunSummaryResponse(ResponseModel):
@@ -388,8 +389,13 @@ def _caused_os_error(error: BaseException) -> OSError | None:
     return None
 
 
-def _run_response(run: ParityRun) -> ParityRunResponse:
-    return ParityRunResponse.model_validate(run)
+def _run_response(run: ParityRun, service: ParityService) -> ParityRunResponse:
+    return ParityRunResponse.model_validate(
+        {
+            **run.__dict__,
+            "ready_for_acceptance": service.ready_for_acceptance(run.run_id),
+        }
+    )
 
 
 @router.get("/catalogue", response_model=CatalogueResponse)
@@ -481,13 +487,14 @@ def list_runs(request: Request) -> ParityRunsResponse:
 
 @router.get("/runs/{run_id}", response_model=ParityRunResponse)
 def get_run(run_id: str, request: Request) -> ParityRunResponse:
-    run = _service(request).get_run(run_id)
+    service = _service(request)
+    run = service.get_run(run_id)
     if run is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=_RUN_NOT_FOUND_DETAIL,
         )
-    return _run_response(run)
+    return _run_response(run, service)
 
 
 @router.get(
@@ -546,7 +553,7 @@ def record_manual_item(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     except ValueError as error:
         _input_failure(error, "parity manual evidence")
-    return _run_response(run)
+    return _run_response(run, _service(request))
 
 
 @router.post("/runs/{run_id}/accept", response_model=ParityRunResponse)
@@ -566,4 +573,4 @@ def accept_run(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(error)) from error
     except ValueError as error:
         _input_failure(error, "parity acceptance")
-    return _run_response(run)
+    return _run_response(run, _service(request))

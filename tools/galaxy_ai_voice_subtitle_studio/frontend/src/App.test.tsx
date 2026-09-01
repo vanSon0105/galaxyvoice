@@ -1,8 +1,23 @@
-import { render, screen } from '@testing-library/react'
+import { cleanup, render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
-import { describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { LegacyVoiceRedirect } from './App'
+const lazyModules = vi.hoisted(() => ({ parityLoads: 0 }))
+
+vi.mock('./pages/SettingsPage', () => ({
+  SettingsPage: () => <div>Cài đặt độc lập</div>,
+}))
+
+vi.mock('./pages/ParityPage', () => {
+  lazyModules.parityLoads += 1
+  return { ParityPage: () => <div>Đối chiếu parity độc lập</div> }
+})
+
+import { AppRoutes, LegacyVoiceRedirect } from './App'
+
+afterEach(() => {
+  cleanup()
+})
 
 function RedirectTarget() {
   const location = useLocation()
@@ -21,5 +36,28 @@ describe('legacy Voice routes', () => {
     )
 
     expect(await screen.findByText('/voice?mode=design&language=vi')).toBeInTheDocument()
+  })
+})
+
+describe('Settings-owned parity route', () => {
+  it('loads the parity bundle only for the nested Settings route', async () => {
+    render(
+      <MemoryRouter initialEntries={['/settings']}>
+        <AppRoutes />
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText('Cài đặt độc lập')).toBeInTheDocument()
+    expect(lazyModules.parityLoads).toBe(0)
+
+    cleanup()
+    render(
+      <MemoryRouter initialEntries={['/settings/parity']}>
+        <AppRoutes />
+      </MemoryRouter>,
+    )
+
+    expect(await screen.findByText('Đối chiếu parity độc lập')).toBeInTheDocument()
+    expect(lazyModules.parityLoads).toBe(1)
   })
 })

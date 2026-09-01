@@ -54,4 +54,10 @@ The two skips are the existing Windows symlink-privilege cases in Task 1
 security coverage; all migration tests executed. The warning is Starlette's
 existing `httpx` test-client deprecation warning.
 
+This resolution is limited to migration policy and read-only dry-run evidence.
+It does not provide a production apply/import command, satisfy the real-corpus
+and manual acceptance gate in issue 15, or establish native parity. That
+boundary is binding in
+[ADR 0015](../../../docs/adr/0015-native-parity-validation-is-evidence-gated.md).
+
 Context: [Native Voice Workspace decisions](../map.md#decisions-so-far).

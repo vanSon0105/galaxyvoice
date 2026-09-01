@@ -196,14 +196,21 @@ Lip-Sync QC remain required Dubbing parity.
 
 ## Parity acceptance contract
 
-VoiceStudio may be retired only when all of the following are true:
+The automated Phase 15 framework is an evidence collector and gate, not native
+parity acceptance. Issue 17 is resolved by its read-only migration policy and
+fixture-backed dry-run proof. Issue 15 remains `ready-for-human` for the real
+corpus, manual UAT, and explicit acceptance. After interruption, the Settings
+command `Mở đối chiếu parity` reopens the workflow at `/settings/parity`.
+
+VoiceStudio remains installed and available for comparison. It may be retired
+only when all of the following are true:
 
 1. Every row marked Native/Partial/Missing has a final disposition in its owning
    ticket and all required rows are implemented.
-2. The same fixed media corpus runs through VoiceStudio and native Galaxy while
-   the reference remains installed: short/long TTS, noisy clone audio, 50-item
-   batch, 45-minute multilingual video, two-speaker dub, story script, EPUB and
-   PDF audiobook.
+2. The same fixed media corpus has matched VoiceStudio reference artifacts and
+   runs through native Galaxy while the reference remains available:
+   short/long TTS, noisy clone audio, 50-item batch, 45-minute multilingual
+   video, two-speaker dub, story script, EPUB and PDF audiobook.
 3. Output assertions cover duration, cue count/order, language, speaker mapping,
    file formats, stream presence, loudness, project reopen and checkpoint resume.
 4. Performance assertions cover UI responsiveness, peak RAM/VRAM, cancellation
@@ -211,8 +218,16 @@ VoiceStudio may be retired only when all of the following are true:
 5. Project Bundles reopen after moving directories, and missing external media
    offers relink rather than losing edits.
 6. No native workflow imports or executes VoiceStudio application code.
-7. The user reviews the final matrix and explicitly approves the retirement
-   ticket.
+7. Every required manual UAT item has a positive answer and note, and the user
+   explicitly accepts the unchanged completed run.
+8. The canonical JSON Accepted Parity Report from that run is supplied as the
+   sole Phase 16 input. Automated suites, screenshots, verbal approval, and
+   unaccepted or changed reports do not satisfy the retirement gate.
+
+Any required `fail`, `blocked`, or `manual_pending` result prevents acceptance.
+Wall time, peak RAM, and peak VRAM remain intentionally `blocked` when matched
+VoiceStudio reference evidence is unavailable; missing values are never
+treated as zero or as a pass.
 
 ## Resulting delivery ownership
 

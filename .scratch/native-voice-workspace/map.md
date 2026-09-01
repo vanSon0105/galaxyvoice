@@ -23,6 +23,11 @@ explicitly approved.
   optional adapter.
 - The inventory ticket is the authoritative check that no VoiceStudio
   user-facing workflow is silently omitted.
+- Phase 15 automation collects and guards parity evidence; it does not accept
+  native parity. Accepted Parity Reports are the sole Phase 16 input, and
+  VoiceStudio remains available for comparison until that evidence gate passes.
+- Interrupted parity work is reopened from Settings with `Mở đối chiếu parity`
+  or directly at `/settings/parity`.
 
 ## Decisions so far
 
@@ -40,6 +45,9 @@ explicitly approved.
 - [Workspace handoffs and project graph](issues/12-workspace-handoffs-and-project-graph.md) - One non-destructive Active Project graph records workflow ownership, linked/generated artifacts, supported open-in routes, and reversible pending/opened/returned handoffs across native voice and media workspaces.
 - [Reliability, diagnostics, and accessibility](issues/13-reliability-diagnostics-and-accessibility.md) - Persistent redacted task diagnostics, recovery routes, runtime/device audits, disk guards, keyboard semantics, and route-level loading provide one observable and recoverable contract across native workspaces.
 - [Advanced VoiceStudio capability disposition](issues/14-advanced-voice-capability-disposition.md) - A read-only Galaxy catalogue records live dictation, local transcript refinement, the compatible local audio API, and MCP bindings as extensions; remote backend as deferred; watermarking and visual lip-sync as optional adapters; and plugin marketplace as a non-goal. All eight capability behaviors remain disabled and unimplemented until their recorded constraints and revisit triggers are satisfied.
+- [Native parity validation evidence gate](../../docs/adr/0015-native-parity-validation-is-evidence-gated.md) - Automated Phase 15 completion is not native parity acceptance. Only an explicitly accepted report from an unchanged real-corpus run can enter Phase 16, so VoiceStudio remains available for comparison.
+- [Native parity validation against VoiceStudio](issues/15-native-parity-validation.md) - The automated framework is implemented, but the ticket remains `ready-for-human` for the unchanged external-corpus run, matched reference evidence, manual UAT, and explicit acceptance.
+- [VoiceStudio legacy data migration policy](issues/17-voicestudio-data-migration-policy.md) - The Galaxy-owned read-only migration policy and fixture-backed dry-run are verified, so issue 17 is resolved without implying a production import or native parity acceptance.
 - [Expressive text and terminology contract](issues/18-expressive-text-and-terminology-contract.md) - Galaxy compiles canonical markup into separate display, spoken, timing, and engine-instruction fields with language-scoped pronunciation and explicit capability degradation.
 - Native workflow parity over engine parity - Galaxy reimplements its own
   workflows while VoiceStudio remains a comparison reference until the final

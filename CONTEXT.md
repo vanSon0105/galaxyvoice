@@ -245,6 +245,23 @@ interrupted or failed operation can return to the owning workflow after an app
 restart. A route provides navigation; workflow checkpoints decide whether work
 can resume or must be rerun.
 
+### Parity Validation Run
+
+A persistent, input-bound Phase 15 evidence record for the approved parity
+catalogue and corpus. Its catalogue version, corpus manifest, source and
+reference fingerprints, thresholds, automated results, and measurements are
+immutable after completion; only manual evidence and final acceptance are
+recorded as guarded overlays.
+
+### Accepted Parity Report
+
+The canonical JSON report from an unchanged completed Parity Validation Run
+whose required automated checks pass, whose required manual UAT items have
+positive answers and notes, and whose final acceptance was explicitly recorded
+by the local user. It is the sole valid input to Phase 16's VoiceStudio
+retirement decision. Automated test completion or an unaccepted report is not
+native parity acceptance.
+
 ### Advanced Capability Disposition
 
 The immutable product decision for an auxiliary capability outside Galaxy's

@@ -27,11 +27,12 @@ implementation only. It is not evidence that native parity has been accepted.
 The public run contract accepts only discriminated typed evidence. Settings can
 import or enter a versioned evidence JSON bundle; missing evidence remains
 `blocked`. Behavioral results cannot be supplied as `passed=true`: project
-reopen, portability, relink, handoff, and checkpoint checks require
-checksum-bound Galaxy artifact proofs, while migration checks execute the
-Galaxy-owned dry-run against explicitly confirmed copied sources. Performance
-results retain matched hardware identity, resolved device, raw native/reference
-measurements, ratios, and response samples in redacted reports.
+reopen, portability, relink, handoff, and checkpoint checks are executed by
+Galaxy-owned ProjectGraph and Longform repository probes in isolated sandboxes,
+while migration checks execute the Galaxy-owned dry-run against explicitly
+confirmed copied sources. Performance results retain each sample's app version,
+matched hardware identity, resolved device, raw native/reference measurements,
+ratios, and response samples in redacted reports.
 
 After interruption, reopen Settings and select `Mở đối chiếu parity`, or
 navigate directly to `/settings/parity`, to return to the persistent run.
@@ -43,7 +44,8 @@ navigate directly to `/settings/parity`, to return to the persistent run.
 - [ ] Supply the matched VoiceStudio reference artifacts and reference
   measurements while VoiceStudio remains available for comparison. The
   imported evidence bundle must identify matching hardware and resolved device
-  for native and reference performance samples.
+  for native and reference performance samples and name the app version that
+  produced each sample.
 - [ ] Run the native validation against that unchanged corpus and resolve every
   required `fail` or `blocked` result. Wall time, peak RAM, and peak VRAM stay
   intentionally `blocked` wherever matched reference evidence is unavailable.

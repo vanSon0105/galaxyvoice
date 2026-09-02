@@ -252,6 +252,7 @@ class HardwareIdentityBody(RequestModel):
 
 
 class PerformanceSampleBody(RequestModel):
+    app_version: NonEmptyText
     wall_seconds: Annotated[float, Field(gt=0)]
     peak_ram_bytes: Annotated[StrictInt, Field(gt=0)]
     peak_vram_bytes: Annotated[StrictInt, Field(gt=0)] | None = None
@@ -510,6 +511,7 @@ def _hardware(value: HardwareIdentityBody) -> HardwareIdentity:
 
 def _performance_sample(value: PerformanceSampleBody) -> PerformanceSample:
     return PerformanceSample(
+        app_version=value.app_version,
         wall_seconds=value.wall_seconds,
         peak_ram_bytes=value.peak_ram_bytes,
         peak_vram_bytes=value.peak_vram_bytes,

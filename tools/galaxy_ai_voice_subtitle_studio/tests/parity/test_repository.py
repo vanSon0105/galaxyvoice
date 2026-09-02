@@ -107,6 +107,22 @@ def test_repository_persists_terminal_envelope_and_separate_overlays(tmp_path: P
     assert (tmp_path / "runs" / "run-1" / "acceptance.json").is_file()
 
 
+def test_run_envelope_never_persists_absolute_selected_manifest_path(tmp_path: Path) -> None:
+    repository = ParityRepository(tmp_path / "state")
+    source_path = tmp_path / "private" / "manifest.json"
+    source_path.parent.mkdir()
+    run = _running_run(source_path.parent)
+
+    stored = _create(repository, run)
+    envelope = (repository.root / "runs" / run.run_id / "run.json").read_text(
+        encoding="utf-8"
+    )
+
+    assert stored.manifest_path == "<selected-manifest>"
+    assert str(source_path.parent.resolve()) not in envelope
+    assert json.loads(envelope)["manifest_path"] == "<selected-manifest>"
+
+
 def test_terminal_automated_results_cannot_be_rewritten(tmp_path: Path) -> None:
     repository = ParityRepository(tmp_path)
     _create(repository, _running_run(tmp_path))

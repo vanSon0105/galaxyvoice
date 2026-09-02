@@ -30,12 +30,14 @@ Native parity acceptance is evidence-gated.
   required manual item has a positive answer and note; and the user records
   explicit final acceptance.
 - The public run contract accepts only discriminated typed evidence. Generic
-  pass/fail assertions are not behavioral proof: repository workflows require
-  checksum-bound Galaxy artifact evidence, and migration checks execute the
-  Galaxy-owned read-only rehearsal against explicitly confirmed copied sources.
-- Performance evidence records matched hardware identity, resolved device, and
-  raw native/reference measurements. Reports redact approved external roots and
-  absolute paths before persistence.
+  pass/fail assertions are not behavioral proof: artifact requests are resolved
+  by Galaxy-owned probes that exercise ProjectGraph and Longform repositories in
+  isolated sandboxes, and migration checks execute the Galaxy-owned read-only
+  rehearsal against explicitly confirmed copied sources.
+- Performance evidence records the app version on each sample, matched hardware
+  identity, resolved device, and raw native/reference measurements. Run
+  persistence retains only the managed manifest snapshot identity; reports and
+  persisted envelopes redact approved external roots and absolute user paths.
 - A required `fail`, `blocked`, or `manual_pending` result prevents acceptance.
   In particular, performance metrics without matched VoiceStudio reference
   evidence remain `blocked`; they are never interpreted as zero or as a pass.

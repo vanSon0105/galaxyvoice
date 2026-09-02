@@ -204,9 +204,10 @@ command `Mở đối chiếu parity` reopens the workflow at `/settings/parity`.
 
 The public run accepts a versioned, discriminated evidence JSON bundle. Missing
 evidence stays `blocked`; a generic caller-supplied pass flag is never enough.
-Repository behaviors use checksum-bound Galaxy artifact proofs, migration
-behaviors execute Galaxy's read-only dry-run, and performance comparisons retain
-matched hardware identity, resolved device, and raw native/reference samples.
+Repository behaviors are executed by Galaxy-owned ProjectGraph and Longform
+probes in isolated sandboxes, migration behaviors execute Galaxy's read-only
+dry-run, and performance comparisons retain each sample's app version, matched
+hardware identity, resolved device, and raw native/reference values.
 
 Retirement has two separate gates: an Accepted Parity Report must exist as the
 sole Phase 16 input, and Phase 16 must separately and explicitly approve

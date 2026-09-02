@@ -317,7 +317,7 @@ def test_run_detail_uses_one_repository_snapshot_for_evidence_and_readiness(
     assert detail.run.manual_answers["case.0.manual.1"].accepted is True
 
 
-def test_acceptance_rejects_changed_selected_manifest_source(
+def test_acceptance_uses_managed_snapshot_after_selected_source_changes(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -348,8 +348,9 @@ def test_acceptance_rejects_changed_selected_manifest_source(
         encoding="utf-8",
     )
 
-    with pytest.raises(ParityNotReadyError, match="manifest source"):
-        service.accept_run(task.run_id, note="reviewed")
+    accepted = service.accept_run(task.run_id, note="reviewed")
+
+    assert accepted.acceptance is not None
 
 
 def test_acceptance_rejects_blocked_or_changed_catalogue_run(
@@ -809,7 +810,7 @@ def test_acceptance_holds_matching_done_task_through_repository_commit(
     assert task_present_at_commit == [True]
 
 
-def test_acceptance_rechecks_selected_source_inside_guarded_commit(
+def test_acceptance_does_not_reopen_private_source_inside_guarded_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -844,16 +845,15 @@ def test_acceptance_rechecks_selected_source_inside_guarded_commit(
     mutator = threading.Thread(target=mutate_source)
     mutator.start()
     try:
-        with pytest.raises(ParityNotReadyError, match="manifest source"):
-            service.accept_run(task.run_id, note="approved")
+        accepted = service.accept_run(task.run_id, note="approved")
     finally:
         mutator.join(timeout=5)
 
     assert not mutator.is_alive()
-    assert repository.get_run(task.run_id).acceptance is None  # type: ignore[union-attr]
+    assert accepted.acceptance is not None
 
 
-def test_acceptance_fails_closed_on_selected_source_io_inside_guarded_commit(
+def test_acceptance_survives_selected_source_removal_using_managed_snapshot(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -888,13 +888,12 @@ def test_acceptance_fails_closed_on_selected_source_io_inside_guarded_commit(
     remover = threading.Thread(target=remove_source)
     remover.start()
     try:
-        with pytest.raises(ParityNotReadyError, match="manifest source"):
-            service.accept_run(task.run_id, note="approved")
+        accepted = service.accept_run(task.run_id, note="approved")
     finally:
         remover.join(timeout=5)
 
     assert not remover.is_alive()
-    assert repository.get_run(task.run_id).acceptance is None  # type: ignore[union-attr]
+    assert accepted.acceptance is not None
 
 
 def test_acceptance_compare_and_commit_detects_manual_race(

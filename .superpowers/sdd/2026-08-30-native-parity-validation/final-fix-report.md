@@ -24,10 +24,11 @@ approve retirement.
    Settings provides an evidence JSON editor/import surface. Missing evidence
    remains `blocked`; it is never inferred as passing.
 2. **Behavioral evidence.** Project reopen, moved-directory portability, relink,
-   handoff, and checkpoint checks require checksum-bound Galaxy artifact proofs.
-   Migration checks execute the Galaxy-owned read-only rehearsal against
-   explicitly confirmed copied sources. A generic `passed=true` value cannot
-   satisfy a behavioral check.
+   handoff, and checkpoint requests are resolved by Galaxy-owned probes that
+   execute ProjectGraph and Longform repositories in isolated sandboxes. The
+   caller supplies only a checksum-bound fixture request; caller-authored proof
+   fields cannot produce a pass. Migration checks execute the Galaxy-owned
+   read-only rehearsal against explicitly confirmed copied sources.
 3. **Recoverable acceptance.** Acceptance persists a retry identity, stages an
    immutable deterministic report revision, and publishes the acceptance overlay
    only after report staging succeeds. Failure injection leaves the run
@@ -36,17 +37,19 @@ approve retirement.
    `archive_policy.py` and reject traversal, links, unsupported types, encryption,
    Windows reserved names/colon components/trailing aliases, Unicode-normalized
    duplicates, count/size excesses, and compression bombs before opening data.
-5. **Bounded cancellation and terminal state.** Hashing, archive reads, media
+5. **Bounded cancellation and terminal state.** Hashing, ZIP member streaming,
+   archive reads, media
    probes, case validation, migration rehearsal, and artifact reads call the
    cooperative cancellation hook. Media probes are polled with bounded waits.
    TaskRegistry terminalizes the run through a callback under the task guard, so
    a run cannot finish `completed` while its task commits `cancelled`.
-6. **Performance provenance.** Native/reference samples retain hardware identity,
-   resolved device, raw wall/RAM/VRAM values, response samples, ratios, and p95
-   measurements in the deterministic report.
-7. **Path redaction.** Persistence and report errors redact approved external
-   roots, current-home paths, and remaining absolute Windows/POSIX paths with
-   stable placeholders.
+6. **Performance provenance.** Native/reference samples require and retain their
+   app version, hardware identity, resolved device, raw wall/RAM/VRAM values,
+   response samples, ratios, and p95 measurements in the deterministic report.
+7. **Path redaction.** The run envelope persists a managed snapshot label instead
+   of the selected absolute manifest path. Persistence and report errors redact
+   approved external roots, current-home paths, and remaining absolute
+   Windows/POSIX paths with stable placeholders.
 8. **Truthful documentation.** ADR 0015, `CONTEXT.md`, workspace map, issues
    15/17, and the parity matrix describe the typed/content-bound gate and retain
    the two separate retirement approvals. Issue 15 remains open for human work.
@@ -78,10 +81,18 @@ failing command output. No failing count is invented here.
 On controller takeover, the inherited patch first passed the focused public API
 and final-fix suite (`66 passed`) and then the complete parity suite
 (`226 passed`). The final source subsequently passed all focused and full gates
-below. The new tests directly cover forged boolean rejection, valid
-content-bound artifacts, strict public JSON parsing, acceptance publication
+below. The new tests directly cover forged boolean rejection, repository-backed
+behavioral probes, strict public JSON parsing, acceptance publication
 failure/retry, Windows ZIP aliases, cancellation terminal races, performance
 provenance, and non-home external-path redaction.
+
+A subsequent two-axis review passed Standards but found one Critical and three
+Important residual gaps: behavioral JSON was still caller-authored, the run
+envelope retained the selected manifest path, ZIP validation dropped the
+cancellation callback, and performance samples omitted app version. The
+follow-up closure removed the proof parser, executes the real Galaxy
+repositories, binds acceptance to the managed manifest snapshot, propagates ZIP
+chunk cancellation, and requires per-sample app version.
 
 ## Verification Commands And Outcomes
 
@@ -91,9 +102,9 @@ Working directory unless stated otherwise:
 - `python -m pytest tests/parity/test_final_fix_wave.py tests/server/test_parity_api.py -q`
   - Exit 0: `66 passed, 1 warning in 9.57s`.
 - `python -m pytest tests/parity -q`
-  - Exit 0: `226 passed in 33.01s`.
+  - Latest residual-closure run: Exit 0, `230 passed in 52.26s`.
 - `python -m pytest tests -q`
-  - Exit 0: `751 passed, 1 warning, 60 subtests passed in 76.82s`.
+  - Latest residual-closure run: Exit 0, `755 passed, 1 warning, 60 subtests passed in 123.04s`.
 - `python -m pytest tests/parity/test_migration.py tests/parity/test_security.py tests/parity/test_final_fix_wave.py -q -rs`
   - Exit 0: `85 passed in 12.29s`; no security test in this focused set skipped.
 - `python -m compileall -q app`
@@ -102,7 +113,7 @@ Working directory unless stated otherwise:
 Working directory: `tools/galaxy_ai_voice_subtitle_studio/frontend`.
 
 - `npm test -- --run src/pages/ParityPage.test.tsx src/api/parity.test.ts`
-  - Exit 0: 2 files and 16 tests passed in 40.39s.
+  - Latest residual-closure run: Exit 0, 2 files and 16 tests passed in 66.73s.
 - `npm test`
   - Exit 0: 25 files and 92 tests passed in 13.43s.
 - `npm run lint`
@@ -134,18 +145,19 @@ warning. It does not affect parity behavior.
 
 - Verified public JSON is converted to typed evidence at the router boundary and
   domain validation remains outside React.
-- Verified artifact pass decisions recompute content hashes and proof invariants;
-  caller booleans have no passing route.
+- Verified behavioral pass decisions are produced only after Galaxy repository
+  probes complete; caller booleans and hand-written proof JSON have no passing
+  route.
 - Verified acceptance report staging precedes the immutable acceptance overlay
   and retry identity is stable.
 - Verified archive validation occurs before member streams are opened and both
   corpus/migration use the same policy.
 - Verified cancellation hooks reach file/archive/probe and per-case work, and
   task/run terminal status is committed through one guarded callback.
-- Verified raw performance measurements and provenance survive persistence and
-  report rendering.
-- Verified external-path sanitization occurs before errors enter run evidence or
-  exported reports.
+- Verified raw performance measurements, per-sample app versions, and provenance
+  survive persistence and report rendering.
+- Verified the selected absolute manifest path never enters the run envelope;
+  acceptance is bound to the managed snapshot and exported errors remain redacted.
 - Verified frontend `dist` was rebuilt from the tested source and the parity route
   remains Settings-owned and lazy-loaded.
 

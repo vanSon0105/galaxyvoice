@@ -228,6 +228,7 @@ export interface HardwareIdentity {
 }
 
 export interface PerformanceEvidenceSample {
+  app_version: string
   wall_seconds: number
   peak_ram_bytes: number
   peak_vram_bytes?: number | null

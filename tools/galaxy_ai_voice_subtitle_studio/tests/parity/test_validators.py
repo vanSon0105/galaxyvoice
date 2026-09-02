@@ -37,6 +37,7 @@ TEST_HARDWARE = HardwareIdentity(
 
 def _performance_sample(**values: object) -> PerformanceSample:
     return PerformanceSample(
+        app_version="15.0",
         hardware_identity=TEST_HARDWARE,
         resolved_device="cpu",
         **values,

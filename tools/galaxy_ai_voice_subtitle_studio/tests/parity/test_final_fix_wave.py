@@ -13,6 +13,7 @@ import pytest
 from app.common.cache import stable_digest
 from app.common.errors import TaskCancelledError
 from app.parity.archive_policy import ArchivePolicy, validate_archive_members
+from app.parity.behavior import run_repository_check
 from app.parity.evidence import (
     ArtifactCheckEvidence,
     CancellationCheckEvidence,
@@ -24,6 +25,7 @@ from app.parity.evidence import (
     MigrationCheckEvidence,
     PerformanceCheckEvidence,
     RecoveryCheckEvidence,
+    RepositoryCheckEvidence,
     SubtitleCheckEvidence,
 )
 from app.parity.models import ParityCase
@@ -34,6 +36,8 @@ from app.parity.security import fingerprint_source, redact_report_value
 from app.parity.service import ParityService
 from app.parity.validators import PerformanceSample, validate_case
 from app.runtime.jobs import CANCELLED, DONE, TaskRegistry
+from app.project_graph.models import AssetReference, NodeRequest
+from app.project_graph.service import ProjectGraphService
 from app.voice_library.models import ConsentRecord
 
 from .test_service import _catalogue, _join, _manifest, _passing_validator, _start
@@ -87,71 +91,118 @@ def _handoff_proof() -> dict[str, object]:
     }
 
 
+def _project_graph_fixture(tmp_path: Path) -> tuple[Path, Path]:
+    target = tmp_path / "relink-target.wav"
+    target.write_bytes(b"relinked-content")
+    graph = tmp_path / "project_graph.json"
+    service = ProjectGraphService(graph)
+    service.upsert_node(
+        NodeRequest(
+            project_id="project-1",
+            workspace="studio",
+            owner_id="take-1",
+            label="Portable project",
+            revision=4,
+            assets=(
+                AssetReference(
+                    asset_id="asset-1",
+                    role="reference_audio",
+                    path_hint="missing/reference.wav",
+                    fingerprint=sha256(target.read_bytes()).hexdigest(),
+                    metadata={"relink_role": "relinked_asset"},
+                ),
+            ),
+        )
+    )
+    return graph, target
+
+
 @pytest.mark.parametrize(
-    ("check_id", "proof"),
+    "check_id",
     [
-        ("project_reopen", _round_trip_proof()),
-        ("moved_directory_portability", _round_trip_proof(moved=True)),
-        (
-            "missing_media_relink",
-            {
-                "kind": "missing_media_relink",
-                "asset_id": "asset-1",
-                "relinked_role": "relinked_asset",
-                "expected_sha256": sha256(b"relinked-content").hexdigest(),
-                "relinked_sha256": sha256(b"relinked-content").hexdigest(),
-                "before_state": "missing",
-                "after_state": "linked",
-            },
-        ),
-        ("handoff_return", _handoff_proof()),
-        (
-            "checkpoint_resume",
-            {
-                "kind": "checkpoint_resume",
-                "workflow_id": "workflow-1",
-                "checkpoint_sha256": stable_digest({"completed": ["1"]}),
-                "resumed_from_sha256": stable_digest({"completed": ["1"]}),
-                "completed_before": ["1"],
-                "completed_after": ["1", "2"],
-            },
-        ),
+        "project_reopen",
+        "moved_directory_portability",
+        "missing_media_relink",
+        "handoff_return",
     ],
 )
-def test_behavioral_checks_require_content_bound_galaxy_artifacts(
+def test_behavioral_checks_run_through_project_graph_repositories(
     tmp_path: Path,
     check_id: str,
-    proof: dict[str, object],
 ) -> None:
-    artifact = tmp_path / "galaxy-evidence.json"
-    artifact.write_bytes(_artifact_bytes("case.behavior", check_id, proof))
-    assets = {"artifact": artifact}
-    if check_id == "missing_media_relink":
-        relinked = tmp_path / "relinked.wav"
-        relinked.write_bytes(b"relinked-content")
-        assets["relinked_asset"] = relinked
-    evidence = ArtifactCheckEvidence(
-        role="artifact",
-        sha256=sha256(artifact.read_bytes()).hexdigest(),
-    )
-    case = ParityCase(
-        case_id="case.behavior",
-        area="shared",
-        title="Behavior",
-        required=True,
-        fixture_roles=("artifact",),
-        checks=(check_id,),
+    graph, target = _project_graph_fixture(tmp_path)
+    evidence = run_repository_check(
+        "shared.project_portability",
+        check_id,
+        ArtifactCheckEvidence(
+            role="portable_project",
+            sha256=sha256(graph.read_bytes()).hexdigest(),
+        ),
+        {"portable_project": graph, "relinked_asset": target},
+        approved_roots=(tmp_path,),
+        check_cancelled=lambda: None,
     )
 
     result = validate_case(
-        case,
-        assets,
+        ParityCase(
+            case_id="shared.project_portability",
+            area="shared",
+            title="Behavior",
+            required=True,
+            checks=(check_id,),
+        ),
+        {},
         probe=object(),  # type: ignore[arg-type]
         measurements={check_id: evidence},
     )
 
+    assert isinstance(evidence, RepositoryCheckEvidence)
     assert result.status == "pass"
-    assert result.checks[0].measurements["artifact_sha256"] == evidence.sha256
+    assert result.checks[0].measurements["repository"] == "project_graph"
+
+
+def test_checkpoint_resume_runs_through_longform_repository(tmp_path: Path) -> None:
+    source = tmp_path / "story.txt"
+    source.write_text("First paragraph. Second paragraph.", encoding="utf-8")
+
+    evidence = run_repository_check(
+        "longform.story",
+        "checkpoint_resume",
+        ArtifactCheckEvidence(
+            role="story_script",
+            sha256=sha256(source.read_bytes()).hexdigest(),
+        ),
+        {"story_script": source},
+        approved_roots=(tmp_path,),
+        check_cancelled=lambda: None,
+    )
+
+    assert evidence.status == "pass"
+    assert evidence.measurements["repository"] == "longform_project"
+
+
+def test_handwritten_behavior_proof_cannot_be_promoted_by_repository_runner(
+    tmp_path: Path,
+) -> None:
+    artifact = tmp_path / "claimed-proof.json"
+    artifact.write_bytes(
+        _artifact_bytes("shared.project_portability", "project_reopen", _round_trip_proof())
+    )
+
+    evidence = run_repository_check(
+        "shared.project_portability",
+        "project_reopen",
+        ArtifactCheckEvidence(
+            role="portable_project",
+            sha256=sha256(artifact.read_bytes()).hexdigest(),
+        ),
+        {"portable_project": artifact},
+        approved_roots=(tmp_path,),
+        check_cancelled=lambda: None,
+    )
+
+    assert evidence.status == "fail"
+    assert "no nodes" in evidence.message
 
 
 def test_forged_behavior_boolean_and_pass_field_never_pass(tmp_path: Path) -> None:
@@ -260,6 +311,7 @@ def test_performance_provenance_is_matched_and_reconstructable() -> None:
     from app.parity.validators import judge_performance
 
     native = PerformanceSample(
+        app_version="15.0",
         wall_seconds=12.0,
         peak_ram_bytes=1_200,
         peak_vram_bytes=600,
@@ -268,6 +320,7 @@ def test_performance_provenance_is_matched_and_reconstructable() -> None:
         resolved_device="cuda:0",
     )
     reference = PerformanceSample(
+        app_version="VoiceStudio 0.4.2",
         wall_seconds=10.0,
         peak_ram_bytes=1_000,
         peak_vram_bytes=500,
@@ -289,6 +342,7 @@ def test_performance_without_matching_hardware_provenance_is_blocked() -> None:
     from app.parity.validators import judge_performance
 
     native = PerformanceSample(
+        app_version="15.0",
         wall_seconds=1.0,
         peak_ram_bytes=100,
         response_ms=(10.0,),
@@ -302,6 +356,42 @@ def test_performance_without_matching_hardware_provenance_is_blocked() -> None:
     )
 
     assert judge_performance(native=native, reference=reference).status == "blocked"
+
+
+def test_performance_without_app_version_provenance_is_blocked() -> None:
+    from app.parity.validators import judge_performance
+
+    native = PerformanceSample(
+        wall_seconds=1.0,
+        peak_ram_bytes=100,
+        response_ms=(10.0,),
+        applicable_metrics=frozenset({"wall_seconds", "peak_ram_bytes"}),
+        hardware_identity=_hardware(),
+        resolved_device="cpu",
+    )
+    reference = replace(native, app_version="VoiceStudio 0.4.2")
+
+    assert judge_performance(native=native, reference=reference).status == "blocked"
+
+
+def test_default_zip_probe_propagates_chunk_cancellation(tmp_path: Path) -> None:
+    from app.parity.validators import DefaultMediaProbe
+
+    archive_path = tmp_path / "fixture.zip"
+    with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_STORED) as archive:
+        archive.writestr("payload.bin", b"x" * (128 * 1024))
+    calls = 0
+
+    def cancel_during_stream() -> None:
+        nonlocal calls
+        calls += 1
+        if calls >= 2:
+            raise TaskCancelledError("cancelled")
+
+    with pytest.raises(TaskCancelledError):
+        DefaultMediaProbe(check_cancelled=cancel_during_stream).inspect(archive_path)
+
+    assert calls >= 2
 
 
 @pytest.mark.parametrize(

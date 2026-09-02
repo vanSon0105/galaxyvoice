@@ -50,6 +50,8 @@ from app.parity.security import UnsafePathError
 from app.parity.validators import PerformanceSample, RecoverySample
 from app.runtime.jobs import TaskRecord, TaskRegistry
 from app.server.main import create_app
+from app.project_graph.models import NodeRequest
+from app.project_graph.service import ProjectGraphService
 
 
 def _fingerprint(seed: str) -> SourceFingerprint:
@@ -590,6 +592,7 @@ def test_run_contract_parses_all_external_evidence_into_domain_types(
                     "performance": {
                         "kind": "performance",
                         "native": {
+                            "app_version": "15.0",
                             "wall_seconds": 1.1,
                             "peak_ram_bytes": 110,
                             "peak_vram_bytes": None,
@@ -599,6 +602,7 @@ def test_run_contract_parses_all_external_evidence_into_domain_types(
                             "resolved_device": "cpu",
                         },
                         "reference": {
+                            "app_version": "VoiceStudio 0.4.2",
                             "wall_seconds": 1.0,
                             "peak_ram_bytes": 100,
                             "peak_vram_bytes": None,
@@ -694,34 +698,15 @@ def test_run_migration_evidence_requires_explicit_copied_source_confirmation(
 def test_public_api_can_complete_and_accept_content_bound_evidence(
     tmp_path: Path,
 ) -> None:
-    project = {"project_id": "project-1", "revision": 1, "content": {"text": "hello"}}
-    project_digest = sha256(
-        json.dumps(project, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
-    artifact = tmp_path / "portable.json"
-    artifact.write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "producer": "galaxy-ai-voice-subtitle-studio",
-                "case_id": "shared.project_portability",
-                "checks": {
-                    "project_reopen": {
-                        "kind": "repository_round_trip",
-                        "before": project,
-                        "after": project,
-                        "before_sha256": project_digest,
-                        "after_sha256": project_digest,
-                        "before_location": "selected-root-a",
-                        "after_location": "selected-root-a",
-                    }
-                },
-            },
-            sort_keys=True,
-            separators=(",", ":"),
+    artifact = tmp_path / "project_graph.json"
+    ProjectGraphService(artifact).upsert_node(
+        NodeRequest(
+            project_id="project-1",
+            workspace="studio",
+            owner_id="take-1",
+            label="Portable project",
+            revision=1,
         )
-        + "\n",
-        encoding="utf-8",
     )
     artifact_bytes = artifact.read_bytes()
     manifest = tmp_path / "manifest.json"

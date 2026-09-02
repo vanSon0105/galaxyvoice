@@ -23,8 +23,9 @@ from ..runtime.jobs import (
     TaskRecord,
     TaskRegistry,
 )
+from .behavior import run_repository_check
 from .corpus import inspect_corpus, inspect_manifest, parse_manifest_bytes
-from .evidence import MigrationCheckEvidence
+from .evidence import ArtifactCheckEvidence, MigrationCheckEvidence
 from .migration import MigrationDryRun, inspect_migration_source
 from .models import (
     CaseResult,
@@ -185,7 +186,7 @@ class ParityService:
             status="running",
             catalogue_version=self.catalogue.version,
             catalogue_hash=catalogue_digest(self.catalogue),
-            manifest_path=str(manifest_path),
+            manifest_path="<selected-manifest>",
             manifest_hash=manifest_hash,
             manifest_snapshot_path="inputs/manifest.json",
             app_version=request.app_version,
@@ -209,7 +210,13 @@ class ParityService:
         try:
             self.task_registry.submit(
                 task,
-                lambda context: self._execute_run(context, request, run_id, manifest),
+                lambda context: self._execute_run(
+                    context,
+                    request,
+                    run_id,
+                    manifest,
+                    asset_root=manifest_path.parent,
+                ),
                 lambda completed_run_id: {"run_id": completed_run_id},
                 terminal_callback=lambda status, result, error: self._terminalize_task_run(
                     run_id,
@@ -379,6 +386,8 @@ class ParityService:
         request: StartParityRun,
         run_id: str,
         manifest: ParityFixtureManifest,
+        *,
+        asset_root: Path,
     ) -> str:
         case_results: list[CaseResult] = []
         warnings: list[str] = []
@@ -391,7 +400,7 @@ class ParityService:
             corpus = inspect_manifest(
                 manifest,
                 approved_roots=request.approved_roots,
-                asset_root=Path(run.manifest_path).parent,
+                asset_root=asset_root,
                 check_cancelled=context.check_cancelled,
             )
             probe = DefaultMediaProbe(check_cancelled=context.check_cancelled)
@@ -422,6 +431,7 @@ class ParityService:
                     if case.case_id in relaxed_cases:
                         kwargs["allow_threshold_relaxation"] = True
                     evidence = self._resolve_case_evidence(
+                        case.case_id,
                         request.measurements_by_case.get(case.case_id, {}),
                         assets,
                         approved_roots=request.approved_roots,
@@ -475,6 +485,7 @@ class ParityService:
 
     def _resolve_case_evidence(
         self,
+        case_id: str,
         evidence: Mapping[str, Any],
         assets: Mapping[str, Path],
         *,
@@ -485,6 +496,16 @@ class ParityService:
         resolved: dict[str, Any] = {}
         for check_id, item in evidence.items():
             check_cancelled()
+            if isinstance(item, ArtifactCheckEvidence):
+                resolved[check_id] = run_repository_check(
+                    case_id,
+                    check_id,
+                    item,
+                    assets,
+                    approved_roots=approved_roots,
+                    check_cancelled=check_cancelled,
+                )
+                continue
             if not isinstance(item, MigrationCheckEvidence) or item.dry_runs:
                 resolved[check_id] = item
                 continue
@@ -611,17 +632,6 @@ class ParityService:
             warnings=tuple(warnings),
             completed_at=completed_at,
         )
-
-    def _finish_if_running(
-        self,
-        run_id: str,
-        status: RunStatus,
-        case_results: list[CaseResult],
-        warnings: list[str],
-    ) -> None:
-        current = self.repository.get_run(run_id)
-        if current is not None and current.status == "running":
-            self._finish_run(run_id, status, case_results, warnings)
 
     def _write_reports(self, run: ParityRun) -> ParityRun:
         revision_input = render_reports(

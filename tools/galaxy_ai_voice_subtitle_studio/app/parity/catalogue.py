@@ -51,7 +51,7 @@ _CATALOGUE = ParityCatalogue(
             "shared.project_portability",
             "shared",
             "Project portability and handoff",
-            ("portable_project",),
+            ("portable_project", "portable_relink_target"),
             (
                 "project_reopen",
                 "moved_directory_portability",

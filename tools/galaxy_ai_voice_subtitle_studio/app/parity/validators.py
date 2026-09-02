@@ -34,10 +34,12 @@ from .evidence import (
     PerformanceSample,
     RecoveryCheckEvidence,
     RecoverySample,
+    RepositoryCheckEvidence,
     SubtitleCheckEvidence,
     hardware_payload,
     judge_artifact_evidence,
     judge_migration_evidence,
+    judge_repository_evidence,
     validate_hardware_identity,
 )
 from .models import (
@@ -110,7 +112,7 @@ class DefaultMediaProbe:
         if suffix in _TEXT_SUFFIXES:
             return _inspect_text(path)
         if suffix in _ZIP_SUFFIXES:
-            return _inspect_zip(path)
+            return _inspect_zip(path, check_cancelled=self._check_cancelled)
         return FfprobeMediaProbe(
             check_cancelled=self._check_cancelled,
             timeout_seconds=self._timeout_seconds,
@@ -316,6 +318,17 @@ def judge_performance(
         return _result("performance", "blocked", "Matched native and reference performance samples are required")
     if not isinstance(native, PerformanceSample) or not isinstance(reference, PerformanceSample):
         return _result("performance", "fail", "Performance samples are invalid")
+    if (
+        not isinstance(native.app_version, str)
+        or not native.app_version.strip()
+        or not isinstance(reference.app_version, str)
+        or not reference.app_version.strip()
+    ):
+        return _result(
+            "performance",
+            "blocked",
+            "Native and reference app versions are required",
+        )
     if not validate_hardware_identity(native.hardware_identity) or not validate_hardware_identity(
         reference.hardware_identity
     ):
@@ -759,6 +772,8 @@ def _validate_check(
         else:
             return _result(check_id, "blocked", "Recovery evidence is required")
         return _with_check_id(check_id, judge_recovery(recovery_sample))
+    if isinstance(measurement, RepositoryCheckEvidence):
+        return judge_repository_evidence(check_id, measurement)
     if isinstance(measurement, ArtifactCheckEvidence):
         return judge_artifact_evidence(
             case_id,
@@ -836,12 +851,18 @@ def _inspect_text(path: Path) -> MediaInfo:
     return MediaInfo(container="text")
 
 
-def _inspect_zip(path: Path) -> MediaInfo:
+def _inspect_zip(
+    path: Path,
+    *,
+    check_cancelled: Callable[[], None] | None = None,
+) -> MediaInfo:
     try:
         with zipfile.ZipFile(path) as archive:
             infos = archive.infolist()
             _validate_zip_metadata(infos)
-            _verify_zip_streams(archive, infos)
+            _verify_zip_streams(archive, infos, check_cancelled=check_cancelled)
+    except TaskCancelledError:
+        raise
     except Exception as error:
         raise ValueError(f"Invalid ZIP file: {error}") from error
     return MediaInfo(container="zip")
@@ -854,6 +875,8 @@ def _validate_zip_metadata(infos: Sequence[zipfile.ZipInfo]) -> None:
 def _verify_zip_streams(
     archive: zipfile.ZipFile,
     infos: Sequence[zipfile.ZipInfo],
+    *,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> None:
     streamed_total = 0
     for info in infos:
@@ -865,6 +888,7 @@ def _verify_zip_streams(
             None,
             policy=_archive_policy(),
             remaining_total=MAX_ARCHIVE_TOTAL_BYTES - streamed_total,
+            check_cancelled=check_cancelled,
         )
 
 
@@ -1008,6 +1032,7 @@ def _percentile_95(samples: Sequence[float]) -> float:
 
 def _performance_payload(sample: PerformanceSample) -> dict[str, object]:
     return {
+        "app_version": sample.app_version,
         "wall_seconds": sample.wall_seconds,
         "peak_ram_bytes": sample.peak_ram_bytes,
         "peak_vram_bytes": sample.peak_vram_bytes,

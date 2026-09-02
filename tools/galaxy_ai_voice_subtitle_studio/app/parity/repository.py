@@ -18,7 +18,7 @@ from types import MappingProxyType
 from typing import Any, Literal, Mapping
 
 from .models import CaseResult, CheckResult, SourceFingerprint
-from .security import UnsafePathError, fingerprint_source, redact_report_value
+from .security import redact_report_value
 
 
 RunStatus = Literal["running", "completed", "failed", "cancelled", "interrupted"]
@@ -166,6 +166,7 @@ class ParityRepository:
             raise ValueError("Run-owned manifest snapshot path is fixed")
         if _digest(manifest_bytes) != run.manifest_hash:
             raise ValueError("Manifest snapshot bytes do not match the run hash")
+        stored_run = replace(run, manifest_path="<selected-manifest>")
         with self._lock:
             runs_root = self._mkdir_managed("runs")
             target = self._managed_path("runs", _validate_run_id(run.run_id))
@@ -179,13 +180,13 @@ class ParityRepository:
                 inputs = staging / "inputs"
                 inputs.mkdir()
                 _write_bytes_atomic(inputs / "manifest.json", bytes(manifest_bytes))
-                _write_json_atomic(staging / "run.json", _run_payload(run))
+                _write_json_atomic(staging / "run.json", _run_payload(stored_run))
                 os.replace(staging, target)
                 self._managed_path("runs", run.run_id, "run.json")
             finally:
                 if _lexists(staging):
                     shutil.rmtree(staging)
-        return run
+        return stored_run
 
     def manifest_snapshot_path(self, run_id: str) -> Path:
         with self._lock:
@@ -490,13 +491,18 @@ class ParityRepository:
         input_revision = _digest(input_bytes)
         if input_revision != run.manifest_hash:
             raise ImmutableRunError("Run-owned manifest revision changed")
-        selected_source_fingerprint = _fingerprint_selected_manifest(run)
+        selected_source_fingerprint = SourceFingerprint(
+            kind="file",
+            sha256=input_revision,
+            byte_size=len(input_bytes),
+            entry_count=1,
+        )
         return AcceptanceSnapshot(
             run=run,
             run_revision=_digest(run_bytes),
             manual_revision=_digest(manual_bytes),
             input_revision=input_revision,
-            selected_source_path=run.manifest_path,
+            selected_source_path=run.manifest_snapshot_path,
             selected_source_fingerprint=selected_source_fingerprint,
         )
 
@@ -1313,18 +1319,6 @@ def _validate_run_id(run_id: str) -> str:
 
 def _digest(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
-
-
-def _fingerprint_selected_manifest(run: ParityRun) -> SourceFingerprint:
-    try:
-        source = fingerprint_source(Path(run.manifest_path))
-    except (FileNotFoundError, OSError, UnsafePathError) as error:
-        raise ImmutableRunError(
-            "Selected manifest source is unavailable or unsafe"
-        ) from error
-    if source.kind != "file" or source.sha256 != run.manifest_hash:
-        raise ImmutableRunError("Selected manifest source changed after the run")
-    return source
 
 
 def _absolute_path_prefixes(path: Path) -> tuple[Path, ...]:

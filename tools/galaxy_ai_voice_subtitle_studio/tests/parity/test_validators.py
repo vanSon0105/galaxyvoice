@@ -7,6 +7,7 @@ import pytest
 
 import app.parity.validators as validators_module
 from app.parity import CaseResult, CheckResult, MediaExpectation, ParityCase
+from app.parity.evidence import HardwareIdentity
 from app.parity.validators import (
     MediaInfo,
     FfprobeMediaProbe,
@@ -25,6 +26,21 @@ from app.parity.validators import (
 
 
 CPU_PERFORMANCE_METRICS = frozenset({"wall_seconds", "peak_ram_bytes"})
+TEST_HARDWARE = HardwareIdentity(
+    platform="Windows",
+    architecture="AMD64",
+    cpu_model="Parity Test CPU",
+    logical_cpu_count=8,
+    memory_bytes=16 * 1024**3,
+)
+
+
+def _performance_sample(**values: object) -> PerformanceSample:
+    return PerformanceSample(
+        hardware_identity=TEST_HARDWARE,
+        resolved_device="cpu",
+        **values,
+    )
 
 
 def _cpu_performance_sample(
@@ -33,7 +49,7 @@ def _cpu_performance_sample(
     peak_ram_bytes: int = 1_000,
     response_ms: tuple[float, ...] = (),
 ) -> PerformanceSample:
-    return PerformanceSample(
+    return _performance_sample(
         wall_seconds=wall_seconds,
         peak_ram_bytes=peak_ram_bytes,
         response_ms=response_ms,
@@ -149,7 +165,7 @@ def test_missing_reference_metric_is_blocked() -> None:
 
 
 def test_performance_pins_reference_ratios_and_response_p95() -> None:
-    reference = PerformanceSample(
+    reference = _performance_sample(
         wall_seconds=100,
         peak_ram_bytes=1_000,
         peak_vram_bytes=2_000,
@@ -157,7 +173,7 @@ def test_performance_pins_reference_ratios_and_response_p95() -> None:
 
     assert (
         judge_performance(
-            native=PerformanceSample(
+            native=_performance_sample(
                 wall_seconds=125,
                 peak_ram_bytes=1_250,
                 peak_vram_bytes=2_500,
@@ -185,8 +201,8 @@ def test_performance_pins_reference_ratios_and_response_p95() -> None:
 
 def test_performance_blocks_when_a_supported_reference_metric_is_missing() -> None:
     result = judge_performance(
-        native=PerformanceSample(wall_seconds=1, peak_ram_bytes=1_000),
-        reference=PerformanceSample(wall_seconds=1),
+        native=_performance_sample(wall_seconds=1, peak_ram_bytes=1_000),
+        reference=_performance_sample(wall_seconds=1),
     )
 
     assert result.status == "blocked"
@@ -194,8 +210,8 @@ def test_performance_blocks_when_a_supported_reference_metric_is_missing() -> No
 
 def test_performance_blocks_when_both_samples_omit_supported_metrics() -> None:
     result = judge_performance(
-        native=PerformanceSample(wall_seconds=1, response_ms=(20,)),
-        reference=PerformanceSample(wall_seconds=1),
+        native=_performance_sample(wall_seconds=1, response_ms=(20,)),
+        reference=_performance_sample(wall_seconds=1),
     )
 
     assert result.status == "blocked"
@@ -212,13 +228,13 @@ def test_performance_sample_declares_applicable_metrics_contract() -> None:
 def test_performance_allows_vram_not_applicable_only_by_matched_contract() -> None:
     cpu_metrics = frozenset({"wall_seconds", "peak_ram_bytes"})
     result = judge_performance(
-        native=PerformanceSample(
+        native=_performance_sample(
             wall_seconds=1,
             peak_ram_bytes=1_000,
             response_ms=(20,),
             applicable_metrics=cpu_metrics,
         ),
-        reference=PerformanceSample(
+        reference=_performance_sample(
             wall_seconds=1,
             peak_ram_bytes=1_000,
             applicable_metrics=cpu_metrics,
@@ -244,8 +260,8 @@ def test_performance_blocks_zero_native_applicable_metrics(
     native_values[zero_metric] = 0
 
     result = judge_performance(
-        native=PerformanceSample(**native_values, response_ms=(20,)),
-        reference=PerformanceSample(
+        native=_performance_sample(**native_values, response_ms=(20,)),
+        reference=_performance_sample(
             wall_seconds=1,
             peak_ram_bytes=1_000,
             peak_vram_bytes=2_000,
@@ -271,13 +287,13 @@ def test_performance_blocks_zero_reference_applicable_metrics(
     reference_values[zero_metric] = 0
 
     result = judge_performance(
-        native=PerformanceSample(
+        native=_performance_sample(
             wall_seconds=1,
             peak_ram_bytes=1_000,
             peak_vram_bytes=2_000,
             response_ms=(20,),
         ),
-        reference=PerformanceSample(**reference_values),
+        reference=_performance_sample(**reference_values),
     )
 
     assert result.status == "blocked"
@@ -287,12 +303,12 @@ def test_performance_blocks_zero_reference_applicable_metrics(
 def test_performance_contract_cannot_omit_wall_time_or_ram() -> None:
     wall_only = frozenset({"wall_seconds"})
     result = judge_performance(
-        native=PerformanceSample(
+        native=_performance_sample(
             wall_seconds=1,
             response_ms=(20,),
             applicable_metrics=wall_only,
         ),
-        reference=PerformanceSample(
+        reference=_performance_sample(
             wall_seconds=1,
             applicable_metrics=wall_only,
         ),
@@ -488,7 +504,7 @@ def test_validate_case_uses_injected_probe_and_pure_judges(tmp_path: Path) -> No
 
 def test_validate_case_preserves_declared_check_ids_for_alias_judges() -> None:
     subtitle_cues = ({"start_ms": 0, "end_ms": 500, "text": "Hello"},)
-    performance = PerformanceSample(
+    performance = _performance_sample(
         wall_seconds=1,
         peak_ram_bytes=1_000,
         response_ms=(200,),
@@ -739,15 +755,12 @@ def test_validate_case_rejects_precomputed_result_for_core_judge() -> None:
     assert result.checks[0].status == "blocked"
 
 
-def test_behavioral_checks_have_a_separate_typed_evidence_interface() -> None:
-    assert hasattr(validators_module, "BehavioralCheckEvidence")
+def test_passed_boolean_behavioral_evidence_interface_is_removed() -> None:
+    assert not hasattr(validators_module, "BehavioralCheckEvidence")
 
 
-def test_typed_behavioral_evidence_is_only_accepted_for_non_core_checks() -> None:
-    evidence = validators_module.BehavioralCheckEvidence(
-        passed=True,
-        message="Repository behavior verified",
-    )
+def test_unbound_behavioral_mapping_is_blocked_for_behavioral_and_core_checks() -> None:
+    evidence = {"passed": True, "message": "Repository behavior verified"}
     behavioral_case = ParityCase(
         case_id="shared.project_portability",
         area="shared",
@@ -776,8 +789,7 @@ def test_typed_behavioral_evidence_is_only_accepted_for_non_core_checks() -> Non
         measurements={"duration": evidence},
     )
 
-    assert behavioral.status == "pass"
-    assert behavioral.checks[0].message == "Repository behavior verified"
+    assert behavioral.status == "blocked"
     assert core.status == "blocked"
 
 

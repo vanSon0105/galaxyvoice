@@ -76,6 +76,26 @@ def test_reports_are_canonical_deterministic_and_redacted() -> None:
     assert json.loads(first.json_bytes)["run_id"] == "fixed-run"
 
 
+def test_reports_remove_non_home_absolute_paths_and_basenames() -> None:
+    run = _fixed_run()
+    check = replace(
+        run.case_results[0].checks[0],
+        message=r"ffprobe failed for Q:\selected\private-voice.wav",
+        measurements={
+            "stderr": r"cannot open R:\reference\speaker-identity.json",
+        },
+    )
+    run = replace(run, case_results=(replace(run.case_results[0], checks=(check,)),))
+
+    reports = render_reports(run)
+    combined = reports.json_bytes.decode("utf-8") + reports.markdown
+
+    assert "Q:" not in combined and "R:" not in combined
+    assert "private-voice.wav" not in combined
+    assert "speaker-identity.json" not in combined
+    assert "<absolute-path>" in combined
+
+
 def test_markdown_has_stable_case_check_and_manual_evidence_order() -> None:
     report = render_reports(_fixed_run()).markdown
 
@@ -106,5 +126,5 @@ def test_canonical_json_normalizes_unordered_and_non_finite_measurements() -> No
     assert measurements["metric_names"] == ["ram", "vram", "wall"]
     assert measurements["invalid_metric"] == "nan"
     assert measurements["consent_audio"] == "<binary:17 bytes>"
-    assert measurements["selected_path"] == "<home>\\private\\voice.wav"
+    assert measurements["selected_path"] == "<home-path>"
     assert b"raw-consent-audio" not in render_reports(run).json_bytes

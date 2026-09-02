@@ -21,6 +21,7 @@ import type {
   JsonValue,
   MigrationCandidate,
   MigrationInspection,
+  ParityEvidenceBundle,
   ReportFormat,
   RunStatus,
 } from '../api/parity'
@@ -41,6 +42,32 @@ const MIGRATION_GROUPS = [
 type Status = CheckStatus | RunStatus | AssetReadiness
 type CorpusRequest = Parameters<typeof inspectParityCorpus>[0]
 type MigrationRequest = Parameters<typeof inspectParityMigration>[0]
+
+function parseEvidenceBundle(value: string): ParityEvidenceBundle {
+  const parsed: unknown = JSON.parse(value)
+  if (
+    typeof parsed !== 'object'
+    || parsed === null
+    || Array.isArray(parsed)
+    || (parsed as { schema_version?: unknown }).schema_version !== 1
+  ) {
+    throw new Error('Invalid evidence schema')
+  }
+  const evidence = (parsed as { evidence_by_case?: unknown }).evidence_by_case
+  if (typeof evidence !== 'object' || evidence === null || Array.isArray(evidence)) {
+    throw new Error('Invalid evidence map')
+  }
+  return parsed as ParityEvidenceBundle
+}
+
+function readFileText(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onerror = () => reject(reader.error ?? new Error('Unable to read evidence file'))
+    reader.onload = () => resolve(String(reader.result ?? ''))
+    reader.readAsText(file)
+  })
+}
 
 interface RunDraft {
   runId: string
@@ -78,6 +105,8 @@ export function ParityPage() {
   const [approvedRoot, setApprovedRoot] = useState('')
   const [migrationSource, setMigrationSource] = useState('')
   const [copiedSourceConfirmed, setCopiedSourceConfirmed] = useState(false)
+  const [evidenceText, setEvidenceText] = useState('')
+  const [evidenceError, setEvidenceError] = useState('')
   const [selectedRunId, setSelectedRunId] = useState('')
   const [runDraft, setRunDraft] = useState<RunDraft>({
     runId: '',
@@ -244,6 +273,23 @@ export function ParityPage() {
     if (run) reportMutation.mutate({ runId: run.run_id, format })
   }
 
+  const startRun = () => {
+    setEvidenceError('')
+    const request: Parameters<typeof startParityRun>[0] = {
+      manifest_path: manifestPath.trim(),
+      approved_roots: approvedRoots,
+    }
+    if (evidenceText.trim()) {
+      try {
+        request.evidence_by_case = parseEvidenceBundle(evidenceText).evidence_by_case
+      } catch {
+        setEvidenceError(t('parity.error.evidence'))
+        return
+      }
+    }
+    startMutation.mutate(request)
+  }
+
   return (
     <div className="parity-page">
       <header className="workspace-heading parity-heading">
@@ -398,10 +444,7 @@ export function ParityPage() {
               className="btn accent"
               type="button"
               disabled={!manifestPath.trim() || approvedRoots.length === 0 || startMutation.isPending}
-              onClick={() => startMutation.mutate({
-                manifest_path: manifestPath.trim(),
-                approved_roots: approvedRoots,
-              })}
+              onClick={startRun}
             >
               {t('parity.run.start')}
             </button>
@@ -418,6 +461,40 @@ export function ParityPage() {
             </button>
           </div>
         </div>
+        <div className="parity-evidence-input">
+          <div className="field">
+            <label htmlFor="parity-evidence-file">{t('parity.evidence.import')}</label>
+            <input
+              id="parity-evidence-file"
+              type="file"
+              accept="application/json,.json"
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                if (!file) return
+                void readFileText(file)
+                  .then((text) => {
+                    const parsed = parseEvidenceBundle(text)
+                    setEvidenceText(JSON.stringify(parsed, null, 2))
+                    setEvidenceError('')
+                  })
+                  .catch(() => setEvidenceError(t('parity.error.evidence')))
+              }}
+            />
+          </div>
+          <div className="field">
+            <label htmlFor="parity-evidence-json">{t('parity.evidence.json')}</label>
+            <textarea
+              id="parity-evidence-json"
+              value={evidenceText}
+              onChange={(event) => {
+                setEvidenceText(event.target.value)
+                setEvidenceError('')
+              }}
+              spellCheck={false}
+            />
+          </div>
+        </div>
+        {evidenceError && <ErrorState>{evidenceError}</ErrorState>}
         <div className="parity-run-selector">
           <label htmlFor="parity-run-select">{t('parity.runs.select')}</label>
           <select

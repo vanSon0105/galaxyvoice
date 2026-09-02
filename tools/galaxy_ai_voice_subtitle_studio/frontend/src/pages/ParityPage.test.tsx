@@ -171,6 +171,7 @@ const migration: MigrationInspection = {
   assets: candidate.assets,
   unsupported: [{ source: 'settings', reason: 'Không di chuyển credential.' }],
   warnings: ['Dry-run only.'],
+  sandbox_cleaned: true,
 }
 
 function renderPage(
@@ -448,6 +449,62 @@ describe('ParityPage', () => {
     await waitFor(() => {
       expect(vi.mocked(parityApi.listParityRuns).mock.calls.length).toBeGreaterThan(callsBeforeRefresh)
     })
+  })
+
+  it('imports typed evidence JSON and includes it in the run request', async () => {
+    renderPage()
+    fireEvent.change(screen.getByLabelText('Manifest corpus'), {
+      target: { value: 'D:/fixtures/manifest.json' },
+    })
+    fireEvent.change(screen.getByLabelText('Thư mục được phép'), {
+      target: { value: 'D:/fixtures' },
+    })
+    const bundle = {
+      schema_version: 1,
+      evidence_by_case: {
+        'shared.project_portability': {
+          project_reopen: {
+            kind: 'artifact',
+            role: 'portable_project',
+            sha256: 'a'.repeat(64),
+          },
+        },
+      },
+    }
+    const file = new File([JSON.stringify(bundle)], 'parity-evidence.json', {
+      type: 'application/json',
+    })
+
+    fireEvent.change(screen.getByLabelText('Nhập JSON bằng chứng'), {
+      target: { files: [file] },
+    })
+    await waitFor(() => expect(screen.getByLabelText('JSON bằng chứng')).toHaveValue(
+      JSON.stringify(bundle, null, 2),
+    ))
+    fireEvent.click(screen.getByRole('button', { name: 'Chạy đối chiếu' }))
+
+    await waitFor(() => expect(parityApi.startParityRun).toHaveBeenCalledWith({
+      manifest_path: 'D:/fixtures/manifest.json',
+      approved_roots: ['D:/fixtures'],
+      evidence_by_case: bundle.evidence_by_case,
+    }))
+  })
+
+  it('blocks a run when entered evidence JSON is malformed', async () => {
+    renderPage()
+    fireEvent.change(screen.getByLabelText('Manifest corpus'), {
+      target: { value: 'D:/fixtures/manifest.json' },
+    })
+    fireEvent.change(screen.getByLabelText('Thư mục được phép'), {
+      target: { value: 'D:/fixtures' },
+    })
+    fireEvent.change(screen.getByLabelText('JSON bằng chứng'), {
+      target: { value: '{"schema_version":1,' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Chạy đối chiếu' }))
+
+    expect(await screen.findByText('JSON bằng chứng không hợp lệ.')).toBeVisible()
+    expect(parityApi.startParityRun).not.toHaveBeenCalled()
   })
 
   it('keeps an optional report error isolated from the visible run', async () => {

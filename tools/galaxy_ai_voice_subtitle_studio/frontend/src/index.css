@@ -1082,6 +1082,8 @@ body {
 .parity-asset-list > div { display: grid; grid-template-columns: minmax(170px, .7fr) 150px minmax(220px, 1.3fr); gap: 10px; align-items: center; min-height: 42px; border-bottom: 1px solid var(--color-border); }
 .parity-asset-list > div > span:last-child { color: var(--color-fg-subtle); }
 .parity-actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.parity-evidence-input { display: grid; grid-template-columns: minmax(220px, .6fr) minmax(320px, 1.4fr); gap: 12px; margin-bottom: 12px; }
+.parity-evidence-input textarea { width: 100%; min-height: 112px; resize: vertical; border: 1px solid var(--border-soft); border-radius: var(--radius-control); background: var(--color-input); color: var(--color-fg); font-family: var(--font-mono); }
 .parity-run-selector { display: grid; grid-template-columns: auto minmax(240px, 420px) auto; gap: 9px; align-items: center; margin-bottom: 12px; }
 .parity-run-selector label { color: var(--color-fg-muted); font-size: 11px; }
 .parity-run-selector select { min-height: var(--control-height); border: 1px solid var(--border-soft); border-radius: var(--radius-control); background: var(--color-input); color: var(--color-fg); }
@@ -1123,7 +1125,7 @@ body {
 .parity-acceptance > .btn { min-height: var(--control-height); white-space: nowrap; }
 
 @media (max-width: 900px) {
-  .parity-source-grid, .parity-source-grid.migration, .parity-manual-item, .parity-acceptance { grid-template-columns: minmax(0, 1fr); }
+  .parity-source-grid, .parity-source-grid.migration, .parity-evidence-input, .parity-manual-item, .parity-acceptance { grid-template-columns: minmax(0, 1fr); }
   .parity-totals, .parity-totals.migration { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .parity-asset-list > div { grid-template-columns: minmax(0, 1fr); gap: 5px; padding-block: 8px; }
 }

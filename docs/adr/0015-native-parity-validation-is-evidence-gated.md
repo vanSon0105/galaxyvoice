@@ -29,6 +29,13 @@ Native parity acceptance is evidence-gated.
   evidence remain unchanged; every required automated check passes; every
   required manual item has a positive answer and note; and the user records
   explicit final acceptance.
+- The public run contract accepts only discriminated typed evidence. Generic
+  pass/fail assertions are not behavioral proof: repository workflows require
+  checksum-bound Galaxy artifact evidence, and migration checks execute the
+  Galaxy-owned read-only rehearsal against explicitly confirmed copied sources.
+- Performance evidence records matched hardware identity, resolved device, and
+  raw native/reference measurements. Reports redact approved external roots and
+  absolute paths before persistence.
 - A required `fail`, `blocked`, or `manual_pending` result prevents acceptance.
   In particular, performance metrics without matched VoiceStudio reference
   evidence remain `blocked`; they are never interpreted as zero or as a pass.
@@ -39,6 +46,9 @@ Native parity acceptance is evidence-gated.
   Accepted Parity Report exists and the Phase 16 retirement decision is
   explicitly approved. Phase 15 does not retire, remove, patch, or import
   VoiceStudio.
+- Acceptance first stages an immutable deterministic report revision and only
+  then publishes the acceptance overlay. A publication failure leaves the run
+  unaccepted and retryable under the same guarded acceptance identity.
 
 Issue 17 may be resolved from the implemented read-only migration policy and
 fixture-backed dry-run evidence. That resolution does not mean a production

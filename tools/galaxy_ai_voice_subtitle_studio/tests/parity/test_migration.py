@@ -643,7 +643,7 @@ def test_absolute_asset_hints_are_redacted_after_classification(
 
     asset = next(item for item in report.assets if item.role == "generated_audio")
     assert asset.state == "linked"
-    assert asset.hint.replace("\\", "/") == "<home>/linked.wav"
+    assert asset.hint == "<home-path>"
     assert str(fake_home) not in repr(report)
 
 
@@ -665,12 +665,12 @@ def test_every_source_controlled_candidate_field_is_redacted() -> None:
     rendered = repr(candidate)
     assert str(Path.home()) not in rendered
     assert "TOP-SECRET" not in rendered
-    assert candidate.source_id.startswith("<home>")
-    assert candidate.data["name"].startswith("<home>")
-    assert candidate.data["title"].startswith("<home>")
-    assert candidate.assets[0].hint.startswith("<home>")
+    assert candidate.source_id == "<home-path>"
+    assert candidate.data["name"] == "<home-path>"
+    assert candidate.data["title"] == "<home-path>"
+    assert candidate.assets[0].hint == "<home-path>"
     nested_keys = tuple(candidate.data["design_state"])
-    assert nested_keys == (str(Path("<home>") / "private" / "api_key=***"),)
+    assert nested_keys == ("<home-path>",)
 
 
 def test_global_report_warnings_are_redacted() -> None:

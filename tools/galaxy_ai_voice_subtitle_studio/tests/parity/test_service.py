@@ -166,7 +166,7 @@ def test_independent_case_exception_is_failed_and_later_cases_continue(
 ) -> None:
     called: list[str] = []
 
-    def validate(case, assets, *, probe, measurements):
+    def validate(case, assets, *, probe, measurements, **_kwargs):
         called.append(case.case_id)
         if case.case_id == "case.0":
             raise RuntimeError("Authorization: Bearer secret-token")
@@ -200,7 +200,7 @@ def test_cancellation_persists_partial_evidence_and_cannot_be_accepted(
     entered = threading.Event()
     release = threading.Event()
 
-    def validate(case, assets, *, probe, measurements):
+    def validate(case, assets, *, probe, measurements, **_kwargs):
         entered.set()
         release.wait(timeout=5)
         return CaseResult(
@@ -238,7 +238,7 @@ def test_acceptance_recomputes_snapshot_hashes_and_manual_answers(
 ) -> None:
     monkeypatch.setattr(
         "app.parity.service.validate_case",
-        lambda case, assets, *, probe, measurements: CaseResult(
+        lambda case, assets, *, probe, measurements, **_kwargs: CaseResult(
             case.case_id,
             "pass",
             (CheckResult("output_format", "pass", "ok"),),
@@ -358,7 +358,7 @@ def test_acceptance_rejects_blocked_or_changed_catalogue_run(
 ) -> None:
     result_status = "blocked"
 
-    def validate(case, assets, *, probe, measurements):
+    def validate(case, assets, *, probe, measurements, **_kwargs):
         return CaseResult(
             case.case_id,
             result_status,
@@ -396,7 +396,7 @@ def test_acceptance_is_final_and_regenerates_reports(
 ) -> None:
     monkeypatch.setattr(
         "app.parity.service.validate_case",
-        lambda case, assets, *, probe, measurements: CaseResult(
+        lambda case, assets, *, probe, measurements, **_kwargs: CaseResult(
             case.case_id,
             "pass",
             (CheckResult("output_format", "pass", "ok"),),
@@ -437,7 +437,7 @@ def test_acceptance_recomputes_case_status_from_checks(
 ) -> None:
     monkeypatch.setattr(
         "app.parity.service.validate_case",
-        lambda case, assets, *, probe, measurements: CaseResult(
+        lambda case, assets, *, probe, measurements, **_kwargs: CaseResult(
             case.case_id,
             "pass",
             (CheckResult("output_format", "blocked", "reference unavailable"),),
@@ -637,7 +637,7 @@ def test_worker_inspects_run_owned_manifest_snapshot_not_swapped_source(
     inspected_corpus_ids: list[str] = []
     real_inspect = __import__("app.parity.corpus", fromlist=["inspect_manifest"]).inspect_manifest
 
-    def inspect_snapshot(manifest, *, approved_roots, asset_root):
+    def inspect_snapshot(manifest, *, approved_roots, asset_root, check_cancelled=None):
         inspected_corpus_ids.append(manifest.corpus_id)
         source.write_text("replacement corpus", encoding="utf-8")
         source.write_bytes(original_bytes)
@@ -645,6 +645,7 @@ def test_worker_inspects_run_owned_manifest_snapshot_not_swapped_source(
             manifest,
             approved_roots=approved_roots,
             asset_root=asset_root,
+            check_cancelled=check_cancelled,
         )
 
     monkeypatch.setattr("app.parity.service.inspect_manifest", inspect_snapshot)
@@ -717,15 +718,16 @@ def test_worker_uses_captured_manifest_when_snapshot_swaps_inside_inspection(
     real_inspect = __import__("app.parity.corpus", fromlist=["inspect_manifest"]).inspect_manifest
     swapped_snapshots: list[Path] = []
 
-    def swap_inside_inspect(manifest, *, approved_roots, asset_root):
+    def swap_inside_inspect(manifest, *, approved_roots, asset_root, check_cancelled=None):
         snapshot = next((repository.root / "runs").glob("*/inputs/manifest.json"))
         swapped_snapshots.append(snapshot)
         snapshot.write_bytes(swapped_bytes)
         try:
             return real_inspect(
-                manifest,
-                approved_roots=approved_roots,
-                asset_root=asset_root,
+                    manifest,
+                    approved_roots=approved_roots,
+                    asset_root=asset_root,
+                    check_cancelled=check_cancelled,
             )
         finally:
             snapshot.write_bytes(original_bytes)
@@ -783,12 +785,12 @@ def test_acceptance_holds_matching_done_task_through_repository_commit(
     task_present_at_commit: list[bool] = []
     real_commit = repository.commit_acceptance
 
-    def observed_commit(snapshot, acceptance):
+    def observed_commit(snapshot, acceptance, **kwargs):
         commit_entered.set()
         assert create_attempted.wait(timeout=5)
         create_finished.wait(timeout=1)
         task_present_at_commit.append(registry.get(task.task_id) is not None)
-        return real_commit(snapshot, acceptance)
+        return real_commit(snapshot, acceptance, **kwargs)
 
     def create_pruning_task() -> None:
         assert commit_entered.wait(timeout=5)
@@ -828,10 +830,10 @@ def test_acceptance_rechecks_selected_source_inside_guarded_commit(
     mutation_finished = threading.Event()
     real_commit = repository.commit_acceptance
 
-    def commit_after_mutation(snapshot, acceptance):
+    def commit_after_mutation(snapshot, acceptance, **kwargs):
         commit_entered.set()
         assert mutation_finished.wait(timeout=5)
-        return real_commit(snapshot, acceptance)
+        return real_commit(snapshot, acceptance, **kwargs)
 
     def mutate_source() -> None:
         assert commit_entered.wait(timeout=5)
@@ -872,10 +874,10 @@ def test_acceptance_fails_closed_on_selected_source_io_inside_guarded_commit(
     removal_finished = threading.Event()
     real_commit = repository.commit_acceptance
 
-    def commit_after_removal(snapshot, acceptance):
+    def commit_after_removal(snapshot, acceptance, **kwargs):
         commit_entered.set()
         assert removal_finished.wait(timeout=5)
-        return real_commit(snapshot, acceptance)
+        return real_commit(snapshot, acceptance, **kwargs)
 
     def remove_source() -> None:
         assert commit_entered.wait(timeout=5)
@@ -912,7 +914,7 @@ def test_acceptance_compare_and_commit_detects_manual_race(
     )
     real_commit = repository.commit_acceptance
 
-    def race(snapshot, acceptance):
+    def race(snapshot, acceptance, **kwargs):
         repository.record_manual_answer(
             task.run_id,
             ManualAnswer(
@@ -922,7 +924,7 @@ def test_acceptance_compare_and_commit_detects_manual_race(
                 "2026-08-30T10:07:00+00:00",
             ),
         )
-        return real_commit(snapshot, acceptance)
+        return real_commit(snapshot, acceptance, **kwargs)
 
     monkeypatch.setattr(repository, "commit_acceptance", race)
 

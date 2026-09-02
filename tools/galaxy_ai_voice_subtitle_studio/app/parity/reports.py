@@ -115,6 +115,7 @@ def _report_payload(run: ParityRun) -> dict[str, Any]:
                 "run_revision": run.acceptance.run_revision,
                 "manual_revision": run.acceptance.manual_revision,
                 "input_revision": run.acceptance.input_revision,
+                "report_revision": run.acceptance.report_revision,
             }
             if run.acceptance is not None
             else None

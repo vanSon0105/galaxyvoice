@@ -129,6 +129,7 @@ export interface MigrationInspection {
   assets: MigrationAsset[]
   unsupported: Array<{ source: string; reason: string }>
   warnings: string[]
+  sandbox_cleaned: boolean
 }
 
 export interface CheckResult {
@@ -176,6 +177,7 @@ export interface Acceptance {
   run_revision: string
   manual_revision: string
   input_revision: string
+  report_revision: string
 }
 
 export interface ParityRun {
@@ -216,10 +218,46 @@ export interface ParityRunSummary {
   accepted: boolean
 }
 
+export interface HardwareIdentity {
+  platform: string
+  architecture: string
+  cpu_model: string
+  logical_cpu_count: number
+  memory_bytes: number
+  accelerator_model?: string
+}
+
+export interface PerformanceEvidenceSample {
+  wall_seconds: number
+  peak_ram_bytes: number
+  peak_vram_bytes?: number | null
+  response_ms: number[]
+  applicable_metrics: Array<'wall_seconds' | 'peak_ram_bytes' | 'peak_vram_bytes'>
+  hardware_identity: HardwareIdentity
+  resolved_device: string
+}
+
+export type ParityEvidence =
+  | { kind: 'media'; role: string; expected: MediaExpectation }
+  | { kind: 'duration'; native_seconds: number; reference_seconds: number }
+  | { kind: 'subtitles'; native: Array<{ start_ms: number; end_ms: number; text: string }>; reference: Array<{ start_ms: number; end_ms: number; text: string }> }
+  | { kind: 'identity'; native: Record<string, string>; reference: Record<string, string> }
+  | { kind: 'loudness'; measured_lufs: number }
+  | { kind: 'performance'; native: PerformanceEvidenceSample; reference: PerformanceEvidenceSample }
+  | { kind: 'cancellation'; acknowledgement_seconds: number; device: string }
+  | { kind: 'recovery'; interrupted: boolean; task_status: string; resumable: boolean; recovery_route?: string | null }
+  | { kind: 'artifact'; role: string; sha256: string }
+  | { kind: 'migration'; source_roles: string[]; copied_source_confirmed: boolean }
+
+export interface ParityEvidenceBundle {
+  schema_version: 1
+  evidence_by_case: Record<string, Record<string, ParityEvidence>>
+}
+
 export interface StartParityRunRequest {
   manifest_path: string
   approved_roots: string[]
-  measurements_by_case?: Record<string, Record<string, JsonValue>>
+  evidence_by_case?: Record<string, Record<string, ParityEvidence>>
   threshold_overrides?: Array<{
     case_id: string
     threshold_id: string

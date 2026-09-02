@@ -5,17 +5,41 @@ from __future__ import annotations
 import json
 import math
 import sqlite3
-import stat
 import subprocess
+import time
 import unicodedata
 import wave
 import zipfile
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Protocol
+from pathlib import Path
+from typing import Any, Callable, Protocol
 
 from ..common.ffmpeg import find_ffprobe
+from ..common.errors import TaskCancelledError
+from .archive_policy import (
+    ArchivePolicy,
+    copy_archive_member,
+    validate_archive_members,
+)
+from .evidence import (
+    ArtifactCheckEvidence,
+    CancellationCheckEvidence,
+    DurationCheckEvidence,
+    IdentityCheckEvidence,
+    LoudnessCheckEvidence,
+    MediaCheckEvidence,
+    MigrationCheckEvidence,
+    PerformanceCheckEvidence,
+    PerformanceSample,
+    RecoveryCheckEvidence,
+    RecoverySample,
+    SubtitleCheckEvidence,
+    hardware_payload,
+    judge_artifact_evidence,
+    judge_migration_evidence,
+    validate_hardware_identity,
+)
 from .models import (
     CaseResult,
     CheckResult,
@@ -46,25 +70,6 @@ PERFORMANCE_METRICS = (
     "peak_vram_bytes",
 )
 REQUIRED_PERFORMANCE_METRICS = frozenset({"wall_seconds", "peak_ram_bytes"})
-_WINDOWS_RESERVED_DEVICE_BASENAMES = frozenset(
-    {
-        "aux",
-        "clock$",
-        "con",
-        "conin$",
-        "conout$",
-        "nul",
-        "prn",
-        *(f"com{number}" for number in range(1, 10)),
-        *(f"lpt{number}" for number in range(1, 10)),
-        "com\u00b9",
-        "com\u00b2",
-        "com\u00b3",
-        "lpt\u00b9",
-        "lpt\u00b2",
-        "lpt\u00b3",
-    }
-)
 _JSON_SUFFIXES = frozenset({".json"})
 _SQLITE_SUFFIXES = frozenset({".db", ".sqlite", ".sqlite3"})
 _TEXT_SUFFIXES = frozenset({".csv", ".md", ".srt", ".tsv", ".txt", ".vtt"})
@@ -80,36 +85,21 @@ class MediaProbeUnavailable(RuntimeError):
 
 
 @dataclass(frozen=True)
-class PerformanceSample:
-    wall_seconds: float
-    peak_ram_bytes: int | None = None
-    peak_vram_bytes: int | None = None
-    response_ms: tuple[float, ...] = ()
-    applicable_metrics: frozenset[str] = frozenset(PERFORMANCE_METRICS)
-
-    def __post_init__(self) -> None:
-        object.__setattr__(self, "response_ms", tuple(self.response_ms))
-        object.__setattr__(self, "applicable_metrics", frozenset(self.applicable_metrics))
-
-
-@dataclass(frozen=True)
-class RecoverySample:
-    interrupted: bool
-    task_status: str
-    resumable: bool
-    recovery_route: str | None
-
-
-@dataclass(frozen=True)
-class BehavioralCheckEvidence:
-    passed: bool
-    message: str = "Behavioral assertion completed"
-
-
 class DefaultMediaProbe:
     """Use the standard library for WAV and ffprobe for other media."""
 
+    def __init__(
+        self,
+        *,
+        check_cancelled: Callable[[], None] | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        object.__setattr__(self, "_check_cancelled", check_cancelled)
+        object.__setattr__(self, "_timeout_seconds", timeout_seconds)
+
     def inspect(self, path: Path) -> MediaInfo:
+        if self._check_cancelled is not None:
+            self._check_cancelled()
         suffix = path.suffix.casefold()
         if suffix in {".wav", ".wave"}:
             return _inspect_wav(path)
@@ -121,30 +111,46 @@ class DefaultMediaProbe:
             return _inspect_text(path)
         if suffix in _ZIP_SUFFIXES:
             return _inspect_zip(path)
-        return FfprobeMediaProbe().inspect(path)
+        return FfprobeMediaProbe(
+            check_cancelled=self._check_cancelled,
+            timeout_seconds=self._timeout_seconds,
+        ).inspect(path)
 
 
 class FfprobeMediaProbe:
+    def __init__(
+        self,
+        *,
+        check_cancelled: Callable[[], None] | None = None,
+        timeout_seconds: float = 30.0,
+    ) -> None:
+        self._check_cancelled = check_cancelled
+        self._timeout_seconds = timeout_seconds
+
     def inspect(self, path: Path) -> MediaInfo:
         executable = find_ffprobe()
         if executable is None:
             raise MediaProbeUnavailable("ffprobe is required to inspect this media asset")
-        completed = subprocess.run(
-            [
-                executable,
-                "-v",
-                "error",
-                "-show_entries",
-                "format=format_name,duration:stream=codec_type,codec_name,channels,sample_rate",
-                "-of",
-                "json",
-                str(path),
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        command = [
+            executable,
+            "-v",
+            "error",
+            "-show_entries",
+            "format=format_name,duration:stream=codec_type,codec_name,channels,sample_rate",
+            "-of",
+            "json",
+            str(path),
+        ]
+        if self._check_cancelled is None:
+            completed = subprocess.run(
+                command,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=self._timeout_seconds,
+            )
+        else:
+            completed = self._run_cancellable(command)
         if completed.returncode != 0:
             detail = completed.stderr.strip() or "ffprobe could not inspect media"
             raise ValueError(detail)
@@ -153,6 +159,31 @@ class FfprobeMediaProbe:
         except json.JSONDecodeError as error:
             raise ValueError("ffprobe returned invalid JSON") from error
         return _media_info_from_ffprobe(payload)
+
+    def _run_cancellable(self, command: list[str]) -> subprocess.CompletedProcess[str]:
+        process = subprocess.Popen(
+            command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        deadline = time.monotonic() + max(0.1, self._timeout_seconds)
+        try:
+            while process.poll() is None:
+                self._check_cancelled()  # type: ignore[misc]
+                if time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(command, self._timeout_seconds)
+                time.sleep(0.05)
+            stdout, stderr = process.communicate(timeout=1)
+        except BaseException:
+            process.terminate()
+            try:
+                process.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1)
+            raise
+        return subprocess.CompletedProcess(command, process.returncode or 0, stdout, stderr)
 
 
 def load_strict_json(raw: str) -> Any:
@@ -285,6 +316,33 @@ def judge_performance(
         return _result("performance", "blocked", "Matched native and reference performance samples are required")
     if not isinstance(native, PerformanceSample) or not isinstance(reference, PerformanceSample):
         return _result("performance", "fail", "Performance samples are invalid")
+    if not validate_hardware_identity(native.hardware_identity) or not validate_hardware_identity(
+        reference.hardware_identity
+    ):
+        return _result(
+            "performance",
+            "blocked",
+            "Matched hardware identity is required",
+        )
+    if native.hardware_identity != reference.hardware_identity:
+        return _result(
+            "performance",
+            "blocked",
+            "Native and reference hardware identities do not match",
+        )
+    if (
+        not isinstance(native.resolved_device, str)
+        or not native.resolved_device.strip()
+        or not isinstance(reference.resolved_device, str)
+        or not reference.resolved_device.strip()
+        or native.resolved_device.strip().casefold()
+        != reference.resolved_device.strip().casefold()
+    ):
+        return _result(
+            "performance",
+            "blocked",
+            "Native and reference resolved devices do not match",
+        )
     if not _finite_number(max_ratio) or max_ratio <= 0 or not _finite_number(max_response_p95_ms) or max_response_p95_ms < 0:
         return _result("performance", "fail", "Performance thresholds are invalid")
     known_metrics = frozenset(PERFORMANCE_METRICS)
@@ -367,6 +425,10 @@ def judge_performance(
         "max_ratio": max_ratio,
         "max_response_p95_ms": max_response_p95_ms,
         "not_applicable_metrics": tuple(not_applicable_metrics),
+        "hardware_identity": hardware_payload(native.hardware_identity),
+        "resolved_device": native.resolved_device,
+        "native": _performance_payload(native),
+        "reference": _performance_payload(reference),
     }
     measurements["response_p95_ms"] = response_p95
     return _result(
@@ -454,7 +516,10 @@ def validate_case(
     probe: MediaProbe,
     measurements: Mapping[str, Any],
     allow_threshold_relaxation: bool = False,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> CaseResult:
+    if check_cancelled is not None:
+        check_cancelled()
     missing_roles = tuple(role for role in case.fixture_roles if role not in assets)
     if missing_roles:
         checks = tuple(
@@ -467,21 +532,26 @@ def validate_case(
         )
         return CaseResult(case_id=case.case_id, status="blocked", checks=checks)
 
-    results = tuple(
-        _validate_check_safely(
+    results: list[CheckResult] = []
+    for check_id in case.checks:
+        if check_cancelled is not None:
+            check_cancelled()
+        results.append(
+            _validate_check_safely(
             check_id,
+            case_id=case.case_id,
             assets=assets,
             probe=probe,
             measurements=measurements,
             thresholds=case.thresholds,
             allow_threshold_relaxation=allow_threshold_relaxation,
+            check_cancelled=check_cancelled,
         )
-        for check_id in case.checks
-    )
+        )
     return CaseResult(
         case_id=case.case_id,
-        status=_aggregate_status(results),
-        checks=results,
+        status=_aggregate_status(tuple(results)),
+        checks=tuple(results),
     )
 
 
@@ -528,11 +598,13 @@ def media_matches(
 def _validate_check(
     check_id: str,
     *,
+    case_id: str,
     assets: Mapping[str, Path],
     probe: MediaProbe,
     measurement: Any,
     thresholds: Mapping[str, Any],
     allow_threshold_relaxation: bool,
+    check_cancelled: Callable[[], None] | None,
 ) -> CheckResult:
     if check_id in {"output_format", "output_streams"}:
         return _judge_output_format(
@@ -543,26 +615,18 @@ def _validate_check(
         )
     if measurement is None:
         return _result(check_id, "blocked", "Required measurement is unavailable")
-    mapping_checks = {
-        "duration",
-        "subtitle_order",
-        "subtitle_timing",
-        "identity_mapping",
-        "speaker_mapping",
-        "language_mapping",
-        "loudness",
-        "performance",
-        "interaction_responsiveness",
-        "cancellation_acknowledgement",
-        "task_reconciliation",
-        "recovery_route",
-    }
-    if check_id in mapping_checks and not isinstance(measurement, Mapping):
-        return _result(check_id, "blocked", "Measurement must be an object")
     if check_id == "duration":
+        if isinstance(measurement, DurationCheckEvidence):
+            native_seconds = measurement.native_seconds
+            reference_seconds = measurement.reference_seconds
+        elif isinstance(measurement, Mapping):
+            native_seconds = measurement.get("native_seconds")
+            reference_seconds = measurement.get("reference_seconds")
+        else:
+            return _result(check_id, "blocked", "Duration evidence is required")
         return judge_duration(
-            measurement.get("native_seconds"),
-            measurement.get("reference_seconds"),
+            native_seconds,
+            reference_seconds,
             absolute_ms=_tightened_threshold(
                 thresholds,
                 "duration_absolute_ms",
@@ -577,11 +641,21 @@ def _validate_check(
             ),
         )
     if check_id in {"subtitle_order", "subtitle_timing"}:
+        if isinstance(measurement, SubtitleCheckEvidence):
+            native_cues = tuple(_subtitle_cue_payload(item) for item in measurement.native)
+            reference_cues = tuple(
+                _subtitle_cue_payload(item) for item in measurement.reference
+            )
+        elif isinstance(measurement, Mapping):
+            native_cues = measurement.get("native")
+            reference_cues = measurement.get("reference")
+        else:
+            return _result(check_id, "blocked", "Subtitle evidence is required")
         return _with_check_id(
             check_id,
             judge_subtitles(
-                measurement.get("native"),
-                measurement.get("reference"),
+                native_cues,
+                reference_cues,
                 timing_tolerance_ms=thresholds.get(
                     "subtitle_timing_tolerance_ms",
                     0,
@@ -589,16 +663,30 @@ def _validate_check(
             ),
         )
     if check_id in {"identity_mapping", "speaker_mapping", "language_mapping"}:
+        if isinstance(measurement, IdentityCheckEvidence):
+            native_identity = measurement.native
+            reference_identity = measurement.reference
+        elif isinstance(measurement, Mapping):
+            native_identity = measurement.get("native")
+            reference_identity = measurement.get("reference")
+        else:
+            return _result(check_id, "blocked", "Identity evidence is required")
         return _with_check_id(
             check_id,
             judge_identity_mapping(
-                measurement.get("native"),
-                measurement.get("reference"),
+                native_identity,
+                reference_identity,
             ),
         )
     if check_id == "loudness":
+        if isinstance(measurement, LoudnessCheckEvidence):
+            measured_lufs = measurement.measured_lufs
+        elif isinstance(measurement, Mapping):
+            measured_lufs = measurement.get("measured_lufs")
+        else:
+            return _result(check_id, "blocked", "Loudness evidence is required")
         return judge_loudness(
-            measurement.get("measured_lufs"),
+            measured_lufs,
             target_lufs=float(thresholds.get("narration_loudness_target_lufs", DEFAULT_LOUDNESS_TARGET_LUFS)),
             tolerance_lu=_tightened_threshold(
                 thresholds,
@@ -608,11 +696,19 @@ def _validate_check(
             ),
         )
     if check_id in {"performance", "interaction_responsiveness"}:
+        if isinstance(measurement, PerformanceCheckEvidence):
+            native_performance = measurement.native
+            reference_performance = measurement.reference
+        elif isinstance(measurement, Mapping):
+            native_performance = measurement.get("native")
+            reference_performance = measurement.get("reference")
+        else:
+            return _result(check_id, "blocked", "Performance evidence is required")
         return _with_check_id(
             check_id,
             judge_performance(
-                native=measurement.get("native"),
-                reference=measurement.get("reference"),
+                native=native_performance,
+                reference=reference_performance,
                 max_ratio=_tightened_threshold(
                     thresholds,
                     "reference_performance_ratio",
@@ -628,11 +724,19 @@ def _validate_check(
             ),
         )
     if check_id == "cancellation_acknowledgement":
+        if isinstance(measurement, CancellationCheckEvidence):
+            acknowledgement_seconds = measurement.acknowledgement_seconds
+            device = measurement.device
+        elif isinstance(measurement, Mapping):
+            acknowledgement_seconds = measurement.get("acknowledgement_seconds")
+            device = str(measurement.get("device", ""))
+        else:
+            return _result(check_id, "blocked", "Cancellation evidence is required")
         return _with_check_id(
             check_id,
             judge_cancellation(
-                measurement.get("acknowledgement_seconds"),
-                device=str(measurement.get("device", "")),
+                acknowledgement_seconds,
+                device=device,
                 cpu_seconds=_tightened_threshold(
                     thresholds,
                     "cpu_cancellation_seconds",
@@ -648,15 +752,23 @@ def _validate_check(
             ),
         )
     if check_id in {"task_reconciliation", "recovery_route"}:
-        return _with_check_id(check_id, judge_recovery(measurement.get("sample")))
-    if isinstance(measurement, BehavioralCheckEvidence):
-        if not isinstance(measurement.passed, bool) or not isinstance(measurement.message, str):
-            return _result(check_id, "fail", "Behavioral evidence is invalid")
-        return _result(
+        if isinstance(measurement, RecoveryCheckEvidence):
+            recovery_sample = measurement.sample
+        elif isinstance(measurement, Mapping):
+            recovery_sample = measurement.get("sample")
+        else:
+            return _result(check_id, "blocked", "Recovery evidence is required")
+        return _with_check_id(check_id, judge_recovery(recovery_sample))
+    if isinstance(measurement, ArtifactCheckEvidence):
+        return judge_artifact_evidence(
+            case_id,
             check_id,
-            "pass" if measurement.passed else "fail",
-            measurement.message,
+            measurement,
+            assets,
+            check_cancelled=check_cancelled,
         )
+    if isinstance(measurement, MigrationCheckEvidence):
+        return judge_migration_evidence(check_id, measurement)
     return _result(check_id, "blocked", "No deterministic judge is registered for this evidence")
 
 
@@ -667,18 +779,27 @@ def _judge_output_format(
     assets: Mapping[str, Path],
     probe: MediaProbe,
 ) -> CheckResult:
-    if not isinstance(measurement, Mapping):
+    if isinstance(measurement, MediaCheckEvidence):
+        role = measurement.role
+        expected = measurement.expected
+    elif isinstance(measurement, Mapping):
+        role = measurement.get("role")
+        expected_payload = measurement.get("expected")
+        if not isinstance(expected_payload, Mapping):
+            return _result(check_id, "blocked", "Output format expectation is required")
+        try:
+            expected = MediaExpectation(**dict(expected_payload))
+        except (TypeError, ValueError):
+            return _result(check_id, "fail", "Output format expectation is invalid")
+    else:
         return _result(check_id, "blocked", "Output format expectation is required")
-    role = measurement.get("role")
-    expected_payload = measurement.get("expected")
-    if not isinstance(role, str) or role not in assets or not isinstance(expected_payload, Mapping):
+    if not isinstance(role, str) or role not in assets:
         return _result(
             check_id,
             "blocked",
             "Output asset and media expectations are required",
         )
     try:
-        expected = MediaExpectation(**dict(expected_payload))
         actual = probe.inspect(assets[role])
     except MediaProbeUnavailable as error:
         return _result(check_id, "blocked", str(error))
@@ -727,61 +848,7 @@ def _inspect_zip(path: Path) -> MediaInfo:
 
 
 def _validate_zip_metadata(infos: Sequence[zipfile.ZipInfo]) -> None:
-    if len(infos) > MAX_ARCHIVE_MEMBERS:
-        raise ValueError("archive member count limit exceeded")
-    seen_names: set[str] = set()
-    total_size = 0
-    for info in infos:
-        name = info.filename
-        if not name:
-            raise ValueError("archive member name is empty")
-        if any(ord(character) < 32 or ord(character) == 127 for character in name):
-            raise ValueError(f"archive member contains control characters: {name!r}")
-        path = PurePosixPath(name)
-        if path.is_absolute() or ".." in path.parts or "\\" in name:
-            raise ValueError(f"unsafe archive member path: {name!r}")
-        if PureWindowsPath(name).drive:
-            raise ValueError(f"Windows drive archive member path: {name!r}")
-        normalized_components: list[str] = []
-        has_trailing_dot_or_space = False
-        for component in path.parts:
-            normalized_component = unicodedata.normalize("NFC", component)
-            if ":" in normalized_component:
-                raise ValueError(f"Windows colon archive member path: {name!r}")
-            windows_component = normalized_component.rstrip(" .")
-            if not windows_component:
-                raise ValueError(f"empty Windows archive member component: {name!r}")
-            has_trailing_dot_or_space |= windows_component != normalized_component
-            device_basename = windows_component.split(".", maxsplit=1)[0].casefold()
-            if device_basename in _WINDOWS_RESERVED_DEVICE_BASENAMES:
-                raise ValueError(f"Windows device archive member path: {name!r}")
-            normalized_components.append(windows_component.casefold())
-        normalized_name = "/".join(normalized_components)
-        if normalized_name in seen_names:
-            raise ValueError(f"duplicate archive member: {name!r}")
-        if has_trailing_dot_or_space:
-            raise ValueError(f"Windows-normalizing archive member path: {name!r}")
-        seen_names.add(normalized_name)
-        mode = info.external_attr >> 16
-        if stat.S_ISLNK(mode):
-            raise ValueError(f"archive symbolic link: {name!r}")
-        file_type = stat.S_IFMT(mode)
-        if file_type not in {0, stat.S_IFREG, stat.S_IFDIR}:
-            raise ValueError(f"unsupported archive member type: {name!r}")
-        if info.flag_bits & 0x1:
-            raise ValueError(f"encrypted archive member: {name!r}")
-        if info.file_size < 0 or info.compress_size < 0:
-            raise ValueError(f"invalid archive member size: {name!r}")
-        if info.is_dir() and (info.file_size or info.compress_size):
-            raise ValueError(f"archive directory contains payload bytes: {name!r}")
-        if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
-            raise ValueError(f"archive member size limit exceeded: {name!r}")
-        total_size += info.file_size
-        if total_size > MAX_ARCHIVE_TOTAL_BYTES:
-            raise ValueError("archive total size limit exceeded")
-        compression_ratio = info.file_size / max(info.compress_size, 1)
-        if info.file_size and compression_ratio > MAX_COMPRESSION_RATIO:
-            raise ValueError(f"archive compression ratio limit exceeded: {name!r}")
+    validate_archive_members(infos, policy=_archive_policy())
 
 
 def _verify_zip_streams(
@@ -792,19 +859,23 @@ def _verify_zip_streams(
     for info in infos:
         if info.is_dir():
             continue
-        streamed_member = 0
-        with archive.open(info) as source:
-            while chunk := source.read(_ARCHIVE_READ_CHUNK_BYTES):
-                streamed_member += len(chunk)
-                streamed_total += len(chunk)
-                if streamed_member > MAX_ARCHIVE_MEMBER_BYTES:
-                    raise ValueError(
-                        f"archive member streamed size limit exceeded: {info.filename!r}"
-                    )
-                if streamed_total > MAX_ARCHIVE_TOTAL_BYTES:
-                    raise ValueError("archive streamed total size limit exceeded")
-        if streamed_member != info.file_size:
-            raise ValueError(f"archive member size changed while reading: {info.filename!r}")
+        streamed_total += copy_archive_member(
+            archive,
+            info,
+            None,
+            policy=_archive_policy(),
+            remaining_total=MAX_ARCHIVE_TOTAL_BYTES - streamed_total,
+        )
+
+
+def _archive_policy() -> ArchivePolicy:
+    return ArchivePolicy(
+        max_members=MAX_ARCHIVE_MEMBERS,
+        max_member_bytes=MAX_ARCHIVE_MEMBER_BYTES,
+        max_total_bytes=MAX_ARCHIVE_TOTAL_BYTES,
+        max_compression_ratio=MAX_COMPRESSION_RATIO,
+        read_chunk_bytes=_ARCHIVE_READ_CHUNK_BYTES,
+    )
 
 
 def _inspect_wav(path: Path) -> MediaInfo:
@@ -935,6 +1006,25 @@ def _percentile_95(samples: Sequence[float]) -> float:
     return ordered[index]
 
 
+def _performance_payload(sample: PerformanceSample) -> dict[str, object]:
+    return {
+        "wall_seconds": sample.wall_seconds,
+        "peak_ram_bytes": sample.peak_ram_bytes,
+        "peak_vram_bytes": sample.peak_vram_bytes,
+        "response_ms": tuple(sample.response_ms),
+        "applicable_metrics": tuple(sorted(sample.applicable_metrics)),
+        "resolved_device": sample.resolved_device,
+    }
+
+
+def _subtitle_cue_payload(value: Any) -> dict[str, object]:
+    return {
+        "start_ms": value.start_ms,
+        "end_ms": value.end_ms,
+        "text": value.text,
+    }
+
+
 def _finite_number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
@@ -977,22 +1067,28 @@ def _result(
 def _validate_check_safely(
     check_id: str,
     *,
+    case_id: str,
     assets: Mapping[str, Path],
     probe: MediaProbe,
     measurements: Mapping[str, Any],
     thresholds: Mapping[str, Any],
     allow_threshold_relaxation: bool,
+    check_cancelled: Callable[[], None] | None,
 ) -> CheckResult:
     try:
         measurement = measurements.get(check_id)
         return _validate_check(
             check_id,
+            case_id=case_id,
             assets=assets,
             probe=probe,
             measurement=measurement,
             thresholds=thresholds,
             allow_threshold_relaxation=allow_threshold_relaxation,
+            check_cancelled=check_cancelled,
         )
+    except TaskCancelledError:
+        raise
     except Exception as error:
         return _result(
             check_id,

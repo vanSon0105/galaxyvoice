@@ -30,6 +30,10 @@ explicitly approved.
   for comparison until both gates pass.
 - Interrupted parity work is reopened from Settings with `Mở đối chiếu parity`
   or directly at `/settings/parity`.
+- Parity evidence enters through a typed JSON contract. Behavioral passes must
+  be bound to Galaxy artifacts or Galaxy-owned migration dry-runs; performance
+  evidence retains matched hardware/device provenance, and exported diagnostics
+  redact approved external roots and absolute paths.
 
 ## Decisions so far
 

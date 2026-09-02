@@ -371,6 +371,8 @@ def test_acceptance_compare_and_commit_rejects_changed_manual_revision(tmp_path:
                 catalogue_hash=completed.catalogue_hash,
                 manifest_hash=completed.manifest_hash,
             ),
+            json_bytes=b"{}",
+            markdown="report",
         )
 
 

@@ -367,6 +367,7 @@ class TaskRegistry:
         record: TaskRecord,
         operation: Callable[[TaskContext], Any],
         result_serializer: Callable[[Any], Any] | None = None,
+        terminal_callback: Callable[[str, Any, BaseException | None], None] | None = None,
     ) -> None:
         task_id = record.task_id
 
@@ -389,8 +390,22 @@ class TaskRegistry:
                     context.check_cancelled()
                     payload = result_serializer(result) if result_serializer else None
                     safe_payload = _safe_checkpoint(payload)
+                    status = self.finish(
+                        task_id,
+                        status=DONE,
+                        result=result,
+                        result_payload=safe_payload,
+                        before_finish=terminal_callback,
+                    ) or DONE
             except TaskCancelledError:
-                self.finish(task_id, status=CANCELLED)
+                try:
+                    self.finish(
+                        task_id,
+                        status=CANCELLED,
+                        before_finish=terminal_callback,
+                    )
+                except Exception:
+                    self.finish(task_id, status=CANCELLED)
                 self._emit({"type": "task", "task_id": task_id, "status": CANCELLED})
                 return
             except Exception as error:
@@ -400,7 +415,15 @@ class TaskRegistry:
                     record.kind,
                     redact_sensitive_text(error),
                 )
-                status = self.finish(task_id, status=FAILED, error=str(error)) or FAILED
+                try:
+                    status = self.finish(
+                        task_id,
+                        status=FAILED,
+                        error=str(error),
+                        before_finish=terminal_callback,
+                    ) or FAILED
+                except Exception:
+                    status = self.finish(task_id, status=FAILED, error=str(error)) or FAILED
                 event: dict[str, Any] = {"type": "task", "task_id": task_id, "status": status}
                 if status == FAILED:
                     finished = self.get(task_id)
@@ -409,12 +432,6 @@ class TaskRegistry:
                     )
                 self._emit(event)
                 return
-            status = self.finish(
-                task_id,
-                status=DONE,
-                result=result,
-                result_payload=safe_payload,
-            ) or DONE
             event = {"type": "task", "task_id": task_id, "status": status}
             if status == DONE:
                 event["result"] = safe_payload
@@ -597,6 +614,7 @@ class TaskRegistry:
         result: Any = None,
         result_payload: Any = None,
         error: str | None = None,
+        before_finish: Callable[[str, Any, BaseException | None], None] | None = None,
     ) -> str | None:
         with self._lock:
             record = self._tasks.get(task_id)
@@ -606,6 +624,9 @@ class TaskRegistry:
                 return record.status
             if record.stop_event.is_set():
                 status, result, error = CANCELLED, None, None
+            if before_finish is not None:
+                callback_error = RuntimeError(error) if error else None
+                before_finish(status, result, callback_error)
             record.status = status
             record.result = result
             record.result_payload = _safe_checkpoint(result_payload)

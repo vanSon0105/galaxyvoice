@@ -251,7 +251,10 @@ A persistent, input-bound Phase 15 evidence record for the approved parity
 catalogue and corpus. Its catalogue version, corpus manifest, source and
 reference fingerprints, thresholds, automated results, and measurements are
 immutable after completion; only manual evidence and final acceptance are
-recorded as guarded overlays.
+recorded as guarded overlays. Public callers submit a discriminated evidence
+bundle that is parsed into Galaxy domain types. Behavioral checks require
+checksum-bound Galaxy artifacts or a Galaxy-owned migration dry-run; a caller
+boolean cannot make a required check pass.
 
 ### Accepted Parity Report
 
@@ -260,7 +263,9 @@ whose required automated checks pass, whose required manual UAT items have
 positive answers and notes, and whose final acceptance was explicitly recorded
 by the local user. It is the sole valid input to Phase 16's VoiceStudio
 retirement decision. Automated test completion or an unaccepted report is not
-native parity acceptance.
+native parity acceptance. Acceptance stages a deterministic report revision
+before publishing its guarded overlay, so a failed publication can be retried
+without stranding an accepted run.
 
 ### Advanced Capability Disposition
 

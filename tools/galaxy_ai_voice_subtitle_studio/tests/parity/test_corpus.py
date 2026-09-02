@@ -349,7 +349,10 @@ def test_zip_probe_rejects_collisions_after_windows_name_normalization(
 
     persona = inspection.assets_by_role["persona"]
     assert persona.status == "unsupported"
-    assert "duplicate archive member" in persona.findings[0].message
+    assert any(
+        reason in persona.findings[0].message
+        for reason in ("duplicate archive member", "Windows-normalizing archive member")
+    )
 
 
 @pytest.mark.parametrize("unsafe_kind", ["duplicate", "symlink", "directory_payload"])
@@ -482,10 +485,10 @@ def test_asset_fingerprint_io_error_is_isolated_per_asset(
     )
     real_fingerprint = corpus_module.fingerprint_source
 
-    def fingerprint(path: Path):
+    def fingerprint(path: Path, **kwargs):
         if path.name == "first.txt":
             raise error
-        return real_fingerprint(path)
+        return real_fingerprint(path, **kwargs)
 
     monkeypatch.setattr(corpus_module, "fingerprint_source", fingerprint)
 

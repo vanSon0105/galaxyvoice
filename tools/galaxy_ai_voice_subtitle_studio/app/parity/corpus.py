@@ -6,8 +6,9 @@ import math
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from ..common.errors import TaskCancelledError
 from .models import (
     AssetStatus,
     AssetInspection,
@@ -46,6 +47,7 @@ def inspect_corpus(
     *,
     approved_roots: Sequence[Path],
     asset_root: Path | None = None,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> CorpusInspection:
     resolved_manifest = resolve_approved_path(manifest_path, approved_roots)
     manifest = _read_manifest(resolved_manifest)
@@ -53,6 +55,7 @@ def inspect_corpus(
         manifest,
         approved_roots=approved_roots,
         asset_root=asset_root or resolved_manifest.parent,
+        check_cancelled=check_cancelled,
     )
 
 
@@ -61,22 +64,28 @@ def inspect_manifest(
     *,
     approved_roots: Sequence[Path],
     asset_root: Path,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> CorpusInspection:
     """Inspect assets using an already captured and parsed manifest."""
     assets_by_role: dict[str, AssetInspection] = {}
     roles_by_case: dict[str, tuple[str, ...]] = {}
-    probe: MediaProbe = DefaultMediaProbe()
+    probe: MediaProbe = DefaultMediaProbe(check_cancelled=check_cancelled)
 
     for manifest_case in manifest.cases:
+        if check_cancelled is not None:
+            check_cancelled()
         roles_by_case[manifest_case.case_id] = tuple(
             asset.role for asset in manifest_case.assets
         )
         for asset in manifest_case.assets:
+            if check_cancelled is not None:
+                check_cancelled()
             assets_by_role[asset.role] = _inspect_asset(
                 asset,
                 manifest_root=Path(asset_root).expanduser().resolve(strict=False),
                 approved_roots=approved_roots,
                 probe=probe,
+                check_cancelled=check_cancelled,
             )
 
     return CorpusInspection(
@@ -199,6 +208,7 @@ def _inspect_asset(
     manifest_root: Path,
     approved_roots: Sequence[Path],
     probe: MediaProbe,
+    check_cancelled: Callable[[], None] | None,
 ) -> AssetInspection:
     relative = Path(asset.path)
     if relative.is_absolute() or ".." in relative.parts:
@@ -212,7 +222,10 @@ def _inspect_asset(
     if not resolved.exists():
         return _asset_result(asset, resolved, "missing", "missing", "Asset file does not exist")
     try:
-        fingerprint = fingerprint_source(resolved)
+        fingerprint = fingerprint_source(
+            resolved,
+            check_cancelled=check_cancelled,
+        )
     except UnsafePathError as error:
         return _asset_result(asset, resolved, "unsafe_path", "unsafe_path", str(error))
     except FileNotFoundError as error:
@@ -229,6 +242,8 @@ def _inspect_asset(
         return AssetInspection(role=asset.role, path=resolved, status="ready")
     try:
         media = probe.inspect(resolved)
+    except TaskCancelledError:
+        raise
     except FileNotFoundError as error:
         return _asset_result(asset, resolved, "missing", "missing", str(error))
     except OSError as error:

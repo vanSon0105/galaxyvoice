@@ -75,6 +75,7 @@ class AcceptanceRecord:
     run_revision: str = ""
     manual_revision: str = ""
     input_revision: str = ""
+    report_revision: str = ""
 
 
 @dataclass(frozen=True)
@@ -296,24 +297,51 @@ class ParityRepository:
         with self._lock:
             return self._acceptance_snapshot_unlocked(run_id)
 
+    def prepare_acceptance(
+        self,
+        snapshot: AcceptanceSnapshot,
+        acceptance: AcceptanceRecord,
+    ) -> AcceptanceRecord:
+        """Persist retry identity without making the run accepted."""
+        with self._lock:
+            current = self._require_matching_snapshot_unlocked(snapshot)
+            if current.run.acceptance is not None:
+                raise ImmutableRunError(
+                    f"Parity run is already accepted: {snapshot.run.run_id}"
+                )
+            prepared = replace(
+                acceptance,
+                run_revision=current.run_revision,
+                manual_revision=current.manual_revision,
+                input_revision=current.input_revision,
+                report_revision="",
+            )
+            desired = _acceptance_intent_payload(prepared)
+            path = self._acceptance_intent_path(current.run.run_id)
+            if _lexists(path):
+                existing = _acceptance_intent_from_payload(
+                    _read_object(path, set(desired))
+                )
+                existing_identity = _acceptance_intent_payload(
+                    replace(existing, accepted_at=prepared.accepted_at)
+                )
+                if existing_identity == desired:
+                    return existing
+            _write_json_atomic(path, desired)
+            return prepared
+
     def commit_acceptance(
         self,
         snapshot: AcceptanceSnapshot,
         acceptance: AcceptanceRecord,
+        *,
+        json_bytes: bytes,
+        markdown: str,
     ) -> ParityRun:
         with self._lock:
-            current = self._acceptance_snapshot_unlocked(snapshot.run.run_id)
+            current = self._require_matching_snapshot_unlocked(snapshot)
             if current.run.acceptance is not None:
                 raise ImmutableRunError(f"Parity run is already accepted: {snapshot.run.run_id}")
-            if (
-                current.run_revision != snapshot.run_revision
-                or current.manual_revision != snapshot.manual_revision
-                or current.input_revision != snapshot.input_revision
-                or current.selected_source_path != snapshot.selected_source_path
-                or current.selected_source_fingerprint
-                != snapshot.selected_source_fingerprint
-            ):
-                raise ImmutableRunError("Parity evidence changed during acceptance")
             if acceptance.catalogue_hash != current.run.catalogue_hash:
                 raise ImmutableRunError("Catalogue hash changed during acceptance")
             if acceptance.manifest_hash != current.run.manifest_hash:
@@ -325,15 +353,65 @@ class ParityRepository:
                 input_revision=current.input_revision,
             )
             _validate_acceptance(committed)
+            intent = _acceptance_intent_from_payload(
+                _read_object(
+                    self._acceptance_intent_path(current.run.run_id),
+                    set(_acceptance_intent_payload(replace(committed, report_revision=""))),
+                )
+            )
+            if _acceptance_intent_payload(intent) != _acceptance_intent_payload(
+                replace(committed, report_revision="")
+            ):
+                raise ImmutableRunError("Acceptance retry identity changed")
+            self._stage_report_revision_unlocked(
+                current.run.run_id,
+                json_bytes,
+                markdown.encode("utf-8"),
+                committed.report_revision,
+            )
             _write_json_atomic(
                 self._acceptance_path(current.run.run_id),
                 {"schema_version": _SCHEMA_VERSION, "acceptance": _acceptance_payload(committed)},
             )
+            try:
+                self._acceptance_intent_path(current.run.run_id).unlink(missing_ok=True)
+            except OSError:
+                pass
             return self._with_overlays(current.run)
 
     def record_acceptance(self, run_id: str, acceptance: AcceptanceRecord) -> ParityRun:
         snapshot = self.acceptance_snapshot(run_id)
-        return self.commit_acceptance(snapshot, acceptance)
+        from .reports import render_reports
+
+        committed = self.prepare_acceptance(snapshot, replace(
+            acceptance,
+            run_revision=snapshot.run_revision,
+            manual_revision=snapshot.manual_revision,
+            input_revision=snapshot.input_revision,
+        ))
+        draft = replace(snapshot.run, acceptance=committed)
+        revision_input = render_reports(
+            replace(draft, report_json_path="", report_markdown_path="")
+        )
+        revision = _digest(
+            revision_input.json_bytes + b"\0" + revision_input.markdown.encode("utf-8")
+        )
+        committed = replace(committed, report_revision=revision)
+        json_path, markdown_path = self.report_revision_paths(run_id, revision)
+        rendered = render_reports(
+            replace(
+                draft,
+                acceptance=committed,
+                report_json_path=json_path,
+                report_markdown_path=markdown_path,
+            )
+        )
+        return self.commit_acceptance(
+            snapshot,
+            committed,
+            json_bytes=rendered.json_bytes,
+            markdown=rendered.markdown,
+        )
 
     def report_revision_paths(self, run_id: str, revision: str) -> tuple[str, str]:
         validated_run_id = _validate_run_id(run_id)
@@ -361,29 +439,12 @@ class ParityRepository:
             except (KeyError, OSError, ParityRepositoryError, ValueError):
                 raise KeyError(run_id)
             report_root = self._mkdir_managed("reports", _validate_run_id(run_id))
-            revisions = self._mkdir_managed("reports", run_id, "revisions")
-            revision_dir = self._managed_path("reports", run_id, "revisions", revision)
-            if not _lexists(revision_dir):
-                staging = revisions / f".revision-{uuid.uuid4().hex}.tmp"
-                staging.mkdir()
-                try:
-                    _write_bytes_atomic(staging / "report.json", bytes(json_bytes))
-                    _write_bytes_atomic(staging / "report.md", markdown_bytes)
-                    os.replace(staging, revision_dir)
-                finally:
-                    if _lexists(staging):
-                        shutil.rmtree(staging)
-            else:
-                self._require_plain_directory(revision_dir, "Report revision")
-                self._require_regular_file(revision_dir / "report.json", "JSON report")
-                self._require_regular_file(revision_dir / "report.md", "Markdown report")
-                if (
-                    (revision_dir / "report.json").read_bytes() != json_bytes
-                    or (revision_dir / "report.md").read_bytes() != markdown_bytes
-                ):
-                    raise ParityRepositoryError("Report revision content mismatch")
-            self._require_regular_file(revision_dir / "report.json", "JSON report")
-            self._require_regular_file(revision_dir / "report.md", "Markdown report")
+            self._stage_report_revision_unlocked(
+                run_id,
+                bytes(json_bytes),
+                markdown_bytes,
+                revision,
+            )
             _write_json_atomic(
                 report_root / "current.json",
                 {
@@ -402,13 +463,17 @@ class ParityRepository:
         except KeyError:
             raise ValueError(f"Unsupported parity report format: {report_format}") from None
         with self._lock:
-            if self.get_run(run_id) is None:
+            run = self.get_run(run_id)
+            if run is None:
                 raise FileNotFoundError(f"Parity report not found: {run_id}")
             try:
-                pointer = self._report_pointer_unlocked(run_id)
-                if pointer is None:
-                    raise FileNotFoundError(run_id)
-                revision, _, _ = pointer
+                if run.acceptance is not None:
+                    revision = run.acceptance.report_revision
+                else:
+                    pointer = self._report_pointer_unlocked(run_id)
+                    if pointer is None:
+                        raise FileNotFoundError(run_id)
+                    revision, _, _ = pointer
                 revision_dir = self._managed_path("reports", run_id, "revisions", revision)
                 return (revision_dir / filename).read_bytes()
             except (FileNotFoundError, OSError, ParityRepositoryError, ValueError):
@@ -434,6 +499,21 @@ class ParityRepository:
             selected_source_path=run.manifest_path,
             selected_source_fingerprint=selected_source_fingerprint,
         )
+
+    def _require_matching_snapshot_unlocked(
+        self,
+        snapshot: AcceptanceSnapshot,
+    ) -> AcceptanceSnapshot:
+        current = self._acceptance_snapshot_unlocked(snapshot.run.run_id)
+        if (
+            current.run_revision != snapshot.run_revision
+            or current.manual_revision != snapshot.manual_revision
+            or current.input_revision != snapshot.input_revision
+            or current.selected_source_path != snapshot.selected_source_path
+            or current.selected_source_fingerprint != snapshot.selected_source_fingerprint
+        ):
+            raise ImmutableRunError("Parity evidence changed during acceptance")
+        return current
 
     def _require_run(self, run_id: str) -> ParityRun:
         path = self._run_path(run_id)
@@ -480,7 +560,53 @@ class ParityRepository:
                 raise ParityRepositoryError("Accepted manual revision changed")
             if acceptance.input_revision != _digest(input_bytes):
                 raise ParityRepositoryError("Accepted input revision changed")
+            revision_dir = self._managed_path(
+                "reports", run.run_id, "revisions", acceptance.report_revision
+            )
+            self._require_regular_file(revision_dir / "report.json", "Accepted JSON report")
+            self._require_regular_file(revision_dir / "report.md", "Accepted Markdown report")
+            json_path, markdown_path = self.report_revision_paths(
+                run.run_id,
+                acceptance.report_revision,
+            )
+            run = replace(
+                run,
+                report_json_path=json_path,
+                report_markdown_path=markdown_path,
+            )
         return replace(run, manual_answers=answers, acceptance=acceptance)
+
+    def _stage_report_revision_unlocked(
+        self,
+        run_id: str,
+        json_bytes: bytes,
+        markdown_bytes: bytes,
+        revision: str,
+    ) -> None:
+        revision = _hash_string(revision, "report revision")
+        revisions = self._mkdir_managed("reports", run_id, "revisions")
+        revision_dir = self._managed_path("reports", run_id, "revisions", revision)
+        if not _lexists(revision_dir):
+            staging = revisions / f".revision-{uuid.uuid4().hex}.tmp"
+            staging.mkdir()
+            try:
+                _write_bytes_atomic(staging / "report.json", bytes(json_bytes))
+                _write_bytes_atomic(staging / "report.md", markdown_bytes)
+                os.replace(staging, revision_dir)
+            finally:
+                if _lexists(staging):
+                    shutil.rmtree(staging)
+        else:
+            self._require_plain_directory(revision_dir, "Report revision")
+            self._require_regular_file(revision_dir / "report.json", "JSON report")
+            self._require_regular_file(revision_dir / "report.md", "Markdown report")
+            if (
+                (revision_dir / "report.json").read_bytes() != json_bytes
+                or (revision_dir / "report.md").read_bytes() != markdown_bytes
+            ):
+                raise ParityRepositoryError("Report revision content mismatch")
+        self._require_regular_file(revision_dir / "report.json", "JSON report")
+        self._require_regular_file(revision_dir / "report.md", "Markdown report")
 
     def _report_pointer_unlocked(
         self,
@@ -536,6 +662,13 @@ class ParityRepository:
 
     def _acceptance_path(self, run_id: str) -> Path:
         return self._managed_path("runs", _validate_run_id(run_id), "acceptance.json")
+
+    def _acceptance_intent_path(self, run_id: str) -> Path:
+        return self._managed_path(
+            "runs",
+            _validate_run_id(run_id),
+            "acceptance.pending.json",
+        )
 
     def _prepare_root(self) -> Path:
         prefixes = _absolute_path_prefixes(self.root)
@@ -1036,8 +1169,45 @@ def _acceptance_payload(acceptance: AcceptanceRecord) -> dict[str, str]:
                 "run_revision": acceptance.run_revision,
                 "manual_revision": acceptance.manual_revision,
                 "input_revision": acceptance.input_revision,
+                "report_revision": acceptance.report_revision,
             }
         )
+    )
+
+
+def _acceptance_intent_payload(acceptance: AcceptanceRecord) -> dict[str, Any]:
+    return {
+        "schema_version": _SCHEMA_VERSION,
+        "note": str(redact_report_value(acceptance.note)),
+        "accepted_at": acceptance.accepted_at,
+        "catalogue_hash": acceptance.catalogue_hash,
+        "manifest_hash": acceptance.manifest_hash,
+        "run_revision": acceptance.run_revision,
+        "manual_revision": acceptance.manual_revision,
+        "input_revision": acceptance.input_revision,
+    }
+
+
+def _acceptance_intent_from_payload(value: Mapping[str, Any]) -> AcceptanceRecord:
+    fields = {
+        "schema_version",
+        "note",
+        "accepted_at",
+        "catalogue_hash",
+        "manifest_hash",
+        "run_revision",
+        "manual_revision",
+        "input_revision",
+    }
+    _require_exact_fields(value, fields, "acceptance intent")
+    return AcceptanceRecord(
+        note=_nonempty_string(value["note"], "acceptance note"),
+        accepted_at=_nonempty_string(value["accepted_at"], "acceptance timestamp"),
+        catalogue_hash=_hash_string(value["catalogue_hash"], "accepted catalogue hash"),
+        manifest_hash=_hash_string(value["manifest_hash"], "accepted manifest hash"),
+        run_revision=_hash_string(value["run_revision"], "accepted run revision"),
+        manual_revision=_hash_string(value["manual_revision"], "accepted manual revision"),
+        input_revision=_hash_string(value["input_revision"], "accepted input revision"),
     )
 
 
@@ -1050,6 +1220,7 @@ def _acceptance_from_payload(value: Mapping[str, Any]) -> AcceptanceRecord:
         "run_revision",
         "manual_revision",
         "input_revision",
+        "report_revision",
     }
     _require_exact_fields(value, fields, "acceptance")
     acceptance = AcceptanceRecord(
@@ -1060,6 +1231,7 @@ def _acceptance_from_payload(value: Mapping[str, Any]) -> AcceptanceRecord:
         run_revision=_hash_string(value["run_revision"], "accepted run revision"),
         manual_revision=_hash_string(value["manual_revision"], "accepted manual revision"),
         input_revision=_hash_string(value["input_revision"], "accepted input revision"),
+        report_revision=_hash_string(value["report_revision"], "accepted report revision"),
     )
     _validate_acceptance(acceptance)
     return acceptance
@@ -1074,6 +1246,7 @@ def _validate_acceptance(value: AcceptanceRecord) -> None:
         value.run_revision,
         value.manual_revision,
         value.input_revision,
+        value.report_revision,
     ):
         if not _SHA256.fullmatch(digest):
             raise ValueError("Acceptance revisions must be SHA-256 values")

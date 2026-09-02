@@ -40,19 +40,24 @@ selected source is a copy, while retaining live-root, repository, filename,
 link, and reparse defenses. Settings, secrets, raw engine payloads, logs,
 caches, and unsafe exports do not enter candidates.
 
+Corpus and migration ZIP inspection now share one pre-extraction archive
+policy. It rejects traversal, Windows reserved devices and colon components,
+trailing-dot/space aliases, Unicode-normalized duplicates, encrypted entries,
+unsupported member types, links, excessive member/total size, and compression
+bombs before any member is opened or extracted.
+
 Verification run from `tools/galaxy_ai_voice_subtitle_studio`:
 
 ```text
-python -m pytest tests/parity/test_migration.py tests/parity/test_security.py -q -rs
-55 passed, 2 skipped in 9.09s
+python -m pytest tests/parity/test_migration.py tests/parity/test_security.py tests/parity/test_final_fix_wave.py -q -rs
+85 passed in 12.29s
 
-python -m pytest -q -rs
-542 passed, 2 skipped, 1 warning, 60 subtests passed in 43.59s
+python -m pytest tests -q
+751 passed, 1 warning, 60 subtests passed in 76.82s
 ```
 
-The two skips are the existing Windows symlink-privilege cases in Task 1
-security coverage; all migration tests executed. The warning is Starlette's
-existing `httpx` test-client deprecation warning.
+All migration, archive-policy, and final-fix security tests executed. The
+warning is Starlette's existing `httpx` test-client deprecation warning.
 
 This resolution is limited to migration policy and read-only dry-run evidence.
 It does not provide a production apply/import command, satisfy the real-corpus

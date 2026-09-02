@@ -8,7 +8,7 @@ import re
 import stat
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from ..common.diagnostics import redact_sensitive_text
 from .models import SourceFingerprint
@@ -20,6 +20,7 @@ _SENSITIVE_KEY = re.compile(
 )
 _HASH_CHUNK_SIZE = 8 * 1024 * 1024
 _REPARSE_POINT_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+_GALAXY_ROUTE = re.compile(r"/(?:settings|voice)(?:/[A-Za-z0-9._~-]+)*")
 
 
 class UnsafePathError(ValueError):
@@ -38,7 +39,13 @@ def resolve_approved_path(path: Path, roots: Sequence[Path]) -> Path:
     return resolved
 
 
-def fingerprint_source(path: Path) -> SourceFingerprint:
+def fingerprint_source(
+    path: Path,
+    *,
+    check_cancelled: Callable[[], None] | None = None,
+) -> SourceFingerprint:
+    if check_cancelled is not None:
+        check_cancelled()
     source = Path(path)
     try:
         source_info = source.lstat()
@@ -52,7 +59,7 @@ def fingerprint_source(path: Path) -> SourceFingerprint:
         )
     if stat.S_ISREG(source_info.st_mode):
         digest = hashlib.sha256()
-        byte_size = _hash_file(source, digest)
+        byte_size = _hash_file(source, digest, check_cancelled=check_cancelled)
         return SourceFingerprint(
             kind="file",
             sha256=digest.hexdigest(),
@@ -61,7 +68,11 @@ def fingerprint_source(path: Path) -> SourceFingerprint:
         )
     if stat.S_ISDIR(source_info.st_mode):
         digest = hashlib.sha256(b"directory\0")
-        byte_size, entry_count = _hash_directory(source, digest)
+        byte_size, entry_count = _hash_directory(
+            source,
+            digest,
+            check_cancelled=check_cancelled,
+        )
         return SourceFingerprint(
             kind="directory",
             sha256=digest.hexdigest(),
@@ -71,24 +82,40 @@ def fingerprint_source(path: Path) -> SourceFingerprint:
     raise FileNotFoundError(f"Fingerprint source is not a regular file or directory: {path}")
 
 
-def _hash_file(path: Path, digest: Any) -> int:
+def _hash_file(
+    path: Path,
+    digest: Any,
+    *,
+    check_cancelled: Callable[[], None] | None = None,
+) -> int:
     byte_size = 0
     with path.open("rb") as source:
         while chunk := source.read(_HASH_CHUNK_SIZE):
+            if check_cancelled is not None:
+                check_cancelled()
             digest.update(chunk)
             byte_size += len(chunk)
     return byte_size
 
 
-def _hash_directory(root: Path, digest: Any) -> tuple[int, int]:
+def _hash_directory(
+    root: Path,
+    digest: Any,
+    *,
+    check_cancelled: Callable[[], None] | None = None,
+) -> tuple[int, int]:
     byte_size = 0
     entry_count = 0
 
     def visit(directory: Path) -> None:
         nonlocal byte_size, entry_count
+        if check_cancelled is not None:
+            check_cancelled()
         with os.scandir(directory) as iterator:
             entries = sorted(iterator, key=lambda entry: entry.name)
         for entry in entries:
+            if check_cancelled is not None:
+                check_cancelled()
             entry_count += 1
             entry_path = Path(entry.path)
             relative_path = entry_path.relative_to(root).as_posix().encode("utf-8")
@@ -101,7 +128,11 @@ def _hash_directory(root: Path, digest: Any) -> tuple[int, int]:
                 visit(entry_path)
             elif stat.S_ISREG(mode):
                 _hash_entry_header(digest, b"F", relative_path)
-                size = _hash_file(entry_path, digest)
+                size = _hash_file(
+                    entry_path,
+                    digest,
+                    check_cancelled=check_cancelled,
+                )
                 digest.update(b"\0")
                 byte_size += size
             else:
@@ -144,26 +175,44 @@ def _hash_entry_header(digest: Any, kind: bytes, relative_path: bytes) -> None:
     digest.update(b"\0")
 
 
-def redact_report_value(value: Any) -> Any:
+def redact_report_value(
+    value: Any,
+    *,
+    approved_roots: Sequence[Path] = (),
+) -> Any:
     if isinstance(value, Mapping):
         return {
-            _redact_mapping_key(key): (
-                "***" if _SENSITIVE_KEY.search(str(key)) else redact_report_value(item)
+            _redact_mapping_key(key, approved_roots=approved_roots): (
+                "***"
+                if _SENSITIVE_KEY.search(str(key))
+                else redact_report_value(item, approved_roots=approved_roots)
             )
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [redact_report_value(item) for item in value]
+        return [
+            redact_report_value(item, approved_roots=approved_roots)
+            for item in value
+        ]
     if isinstance(value, tuple):
-        return tuple(redact_report_value(item) for item in value)
+        return tuple(
+            redact_report_value(item, approved_roots=approved_roots)
+            for item in value
+        )
     if isinstance(value, str):
-        return _redact_home_prefix(redact_sensitive_text(value))
+        return _redact_absolute_paths(
+            _redact_home_prefix(redact_sensitive_text(value)),
+            approved_roots=approved_roots,
+        )
     return value
 
 
-def _redact_mapping_key(key: Any) -> Any:
+def _redact_mapping_key(key: Any, *, approved_roots: Sequence[Path]) -> Any:
     if isinstance(key, str):
-        return _redact_home_prefix(redact_sensitive_text(key))
+        return _redact_absolute_paths(
+            _redact_home_prefix(redact_sensitive_text(key)),
+            approved_roots=approved_roots,
+        )
     return key
 
 
@@ -172,5 +221,45 @@ def _redact_home_prefix(value: str) -> str:
     variants = (home, home.replace("\\", "/"), home.replace("/", "\\"))
     redacted = value
     for prefix in dict.fromkeys(variants):
-        redacted = re.sub(re.escape(prefix), "<home>", redacted, flags=re.IGNORECASE)
+        pattern = re.escape(prefix) + r"(?:(?:[\\/])[^\s\"'<>|,;)]*)?"
+        redacted = re.sub(pattern, "<home-path>", redacted, flags=re.IGNORECASE)
+    return redacted
+
+
+def _redact_absolute_paths(
+    value: str,
+    *,
+    approved_roots: Sequence[Path],
+) -> str:
+    redacted = value
+    roots = tuple(
+        dict.fromkeys(
+            str(Path(root).expanduser().resolve(strict=False))
+            for root in approved_roots
+        )
+    )
+    for index, root in enumerate(roots, start=1):
+        variants = tuple(dict.fromkeys((root, root.replace("\\", "/"), root.replace("/", "\\"))))
+        for variant in sorted(variants, key=len, reverse=True):
+            pattern = re.escape(variant) + r"(?:(?:[\\/])[^\s\"'<>|,;)]*)?"
+            redacted = re.sub(
+                pattern,
+                f"<external-path:{index}>",
+                redacted,
+                flags=re.IGNORECASE,
+            )
+    redacted = re.sub(
+        r"(?<![A-Za-z0-9_])(?:[A-Za-z]:[\\/])[^\s\"'<>|,;)]*",
+        "<absolute-path>",
+        redacted,
+    )
+    redacted = re.sub(
+        r"(?<![.:A-Za-z0-9_])/(?:[^\s/\"'<>|,;)]+/)*[^\s\"'<>|,;)]*",
+        lambda match: (
+            match.group(0)
+            if _GALAXY_ROUTE.fullmatch(match.group(0))
+            else "<absolute-path>"
+        ),
+        redacted,
+    )
     return redacted

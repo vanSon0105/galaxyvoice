@@ -24,6 +24,7 @@ from ..runtime.jobs import (
     TaskRegistry,
 )
 from .corpus import inspect_corpus, inspect_manifest, parse_manifest_bytes
+from .evidence import MigrationCheckEvidence
 from .migration import MigrationDryRun, inspect_migration_source
 from .models import (
     CaseResult,
@@ -46,7 +47,7 @@ from .repository import (
     RunStatus,
     ThresholdOverride,
 )
-from .security import resolve_approved_path
+from .security import redact_report_value, resolve_approved_path
 from .validators import DefaultMediaProbe, validate_case
 
 
@@ -210,10 +211,20 @@ class ParityService:
                 task,
                 lambda context: self._execute_run(context, request, run_id, manifest),
                 lambda completed_run_id: {"run_id": completed_run_id},
+                terminal_callback=lambda status, result, error: self._terminalize_task_run(
+                    run_id,
+                    status,
+                    error,
+                    approved_roots=request.approved_roots,
+                ),
             )
         except Exception as error:
             self.task_registry.finish(task.task_id, status=FAILED, error=str(error))
-            self._terminalize_submit_failure(run_id, error)
+            self._terminalize_submit_failure(
+                run_id,
+                error,
+                approved_roots=request.approved_roots,
+            )
             raise
         return task
 
@@ -312,6 +323,31 @@ class ParityService:
             accepted_at=_now(),
             catalogue_hash=run.catalogue_hash,
             manifest_hash=run.manifest_hash,
+            run_revision=snapshot.run_revision,
+            manual_revision=snapshot.manual_revision,
+            input_revision=snapshot.input_revision,
+        )
+        acceptance = self.repository.prepare_acceptance(snapshot, acceptance)
+
+        draft = replace(run, acceptance=acceptance)
+        revision_input = render_reports(
+            replace(draft, report_json_path="", report_markdown_path="")
+        )
+        report_revision = hashlib.sha256(
+            revision_input.json_bytes + b"\0" + revision_input.markdown.encode("utf-8")
+        ).hexdigest()
+        acceptance = replace(acceptance, report_revision=report_revision)
+        json_path, markdown_path = self.repository.report_revision_paths(
+            run.run_id,
+            report_revision,
+        )
+        rendered = render_reports(
+            replace(
+                draft,
+                acceptance=acceptance,
+                report_json_path=json_path,
+                report_markdown_path=markdown_path,
+            )
         )
 
         def commit_with_task_guard(task: TaskRecord) -> ParityRun:
@@ -319,7 +355,12 @@ class ParityService:
                 raise ParityNotReadyError("Matching parity task must be terminal done")
             if task.status != DONE:
                 raise ParityNotReadyError("Parity task must be terminal done")
-            return self.repository.commit_acceptance(snapshot, acceptance)
+            return self.repository.commit_acceptance(
+                snapshot,
+                acceptance,
+                json_bytes=rendered.json_bytes,
+                markdown=rendered.markdown,
+            )
 
         try:
             accepted = self.task_registry.run_with_task_guard(
@@ -330,7 +371,7 @@ class ParityService:
             raise ParityNotReadyError("Matching parity task must be terminal done") from error
         except (ImmutableRunError, ParityRepositoryError, ValueError) as error:
             raise ParityNotReadyError(str(error)) from error
-        return self._write_reports(accepted)
+        return accepted
 
     def _execute_run(
         self,
@@ -351,9 +392,11 @@ class ParityService:
                 manifest,
                 approved_roots=request.approved_roots,
                 asset_root=Path(run.manifest_path).parent,
+                check_cancelled=context.check_cancelled,
             )
-            probe = DefaultMediaProbe()
+            probe = DefaultMediaProbe(check_cancelled=context.check_cancelled)
             total = max(1, len(self.catalogue.cases))
+            migration_cache: dict[tuple[str, ...], MigrationCheckEvidence] = {}
             relaxed_cases = {
                 item.case_id for item in run.threshold_overrides if item.relaxation
             }
@@ -378,11 +421,19 @@ class ParityService:
                     kwargs: dict[str, Any] = {}
                     if case.case_id in relaxed_cases:
                         kwargs["allow_threshold_relaxation"] = True
+                    evidence = self._resolve_case_evidence(
+                        request.measurements_by_case.get(case.case_id, {}),
+                        assets,
+                        approved_roots=request.approved_roots,
+                        check_cancelled=context.check_cancelled,
+                        migration_cache=migration_cache,
+                    )
                     result = validate_case(
                         case,
                         assets,
                         probe=probe,
-                        measurements=request.measurements_by_case.get(case.case_id, {}),
+                        measurements=evidence,
+                        check_cancelled=context.check_cancelled,
                         **kwargs,
                     )
                 except TaskCancelledError:
@@ -395,8 +446,13 @@ class ParityService:
                             CheckResult(
                                 check_id="case_execution",
                                 status="fail",
-                                message=redact_sensitive_text(
-                                    f"Case execution failed: {type(error).__name__}: {error}"
+                                message=str(
+                                    redact_report_value(
+                                        redact_sensitive_text(
+                                            f"Case execution failed: {type(error).__name__}: {error}"
+                                        ),
+                                        approved_roots=request.approved_roots,
+                                    )
                                 ),
                             ),
                         ),
@@ -410,36 +466,121 @@ class ParityService:
                     }
                 )
                 context.check_cancelled()
-            self._finish_run(run_id, "completed", case_results, warnings)
             context.report("Đã hoàn tất đối chiếu native.", progress=1.0)
             return run_id
         except TaskCancelledError:
-            self._finish_if_running(run_id, "cancelled", case_results, warnings)
             raise
-        except Exception as error:
-            warnings.append(
-                redact_sensitive_text(f"Run failed: {type(error).__name__}: {error}")
-            )
-            self._finish_if_running(run_id, "failed", case_results, warnings)
+        except Exception:
             raise
 
-    def _terminalize_submit_failure(self, run_id: str, error: Exception) -> None:
+    def _resolve_case_evidence(
+        self,
+        evidence: Mapping[str, Any],
+        assets: Mapping[str, Path],
+        *,
+        approved_roots: Sequence[Path],
+        check_cancelled: Any,
+        migration_cache: dict[tuple[str, ...], MigrationCheckEvidence],
+    ) -> Mapping[str, Any]:
+        resolved: dict[str, Any] = {}
+        for check_id, item in evidence.items():
+            check_cancelled()
+            if not isinstance(item, MigrationCheckEvidence) or item.dry_runs:
+                resolved[check_id] = item
+                continue
+            if item.copied_source_confirmed is not True:
+                resolved[check_id] = item
+                continue
+            roles = item.source_roles
+            cached = migration_cache.get(roles)
+            if cached is None:
+                dry_runs = []
+                for role in roles:
+                    check_cancelled()
+                    source = assets.get(role)
+                    if source is None:
+                        raise ValueError(f"Migration evidence role is unavailable: {role}")
+                    dry_runs.append(
+                        inspect_migration_source(
+                            source,
+                            approved_roots=approved_roots,
+                            copied_source_confirmed=item.copied_source_confirmed,
+                            check_cancelled=check_cancelled,
+                        )
+                    )
+                cached = MigrationCheckEvidence(
+                    source_roles=roles,
+                    copied_source_confirmed=True,
+                    dry_runs=tuple(dry_runs),
+                )
+                migration_cache[roles] = cached
+            resolved[check_id] = cached
+        return MappingProxyType(resolved)
+
+    def _terminalize_task_run(
+        self,
+        run_id: str,
+        task_status: str,
+        error: BaseException | None,
+        *,
+        approved_roots: Sequence[Path],
+    ) -> None:
+        status_by_task: dict[str, RunStatus] = {
+            DONE: "completed",
+            CANCELLED: "cancelled",
+            INTERRUPTED: "interrupted",
+            FAILED: "failed",
+        }
+        run_status = status_by_task.get(task_status)
+        if run_status is None:
+            raise ValueError(f"Unsupported parity task status: {task_status}")
+        current = self.repository.get_run(run_id)
+        if current is None or current.status != "running":
+            return
+        terminal_warnings = list(current.warnings)
+        if error is not None:
+            terminal_warnings.append(
+                str(
+                    redact_report_value(
+                        redact_sensitive_text(
+                            f"Run failed: {type(error).__name__}: {error}"
+                        ),
+                        approved_roots=approved_roots,
+                    )
+                )
+            )
+        self._finish_run(
+            run_id,
+            run_status,
+            list(current.case_results),
+            terminal_warnings,
+        )
+
+    def _terminalize_submit_failure(
+        self,
+        run_id: str,
+        error: Exception,
+        *,
+        approved_roots: Sequence[Path],
+    ) -> None:
         run = self.repository.get_run(run_id)
         if run is None or run.status != "running":
             return
         try:
-            failed = self.repository.finish_run(
-                run_id,
-                status="failed",
-                case_results=run.case_results,
-                warnings=(
+            warning = str(
+                redact_report_value(
                     redact_sensitive_text(
                         f"Task submission failed: {type(error).__name__}: {error}"
                     ),
-                ),
-                completed_at=_now(),
+                    approved_roots=approved_roots,
+                )
             )
-            self._write_reports(failed)
+            self._finish_run(
+                run_id,
+                "failed",
+                list(run.case_results),
+                [warning],
+            )
         except Exception:
             # The original submission error remains the caller-visible failure.
             pass
@@ -451,14 +592,25 @@ class ParityService:
         case_results: list[CaseResult],
         warnings: list[str],
     ) -> ParityRun:
-        run = self.repository.finish_run(
+        current = self.repository.get_run(run_id)
+        if current is None:
+            raise KeyError(run_id)
+        completed_at = _now()
+        candidate = replace(
+            current,
+            status=status,
+            case_results=tuple(case_results),
+            warnings=tuple(warnings),
+            completed_at=completed_at,
+        )
+        self._write_reports(candidate)
+        return self.repository.finish_run(
             run_id,
             status=status,
             case_results=tuple(case_results),
             warnings=tuple(warnings),
-            completed_at=_now(),
+            completed_at=completed_at,
         )
-        return self._write_reports(run)
 
     def _finish_if_running(
         self,

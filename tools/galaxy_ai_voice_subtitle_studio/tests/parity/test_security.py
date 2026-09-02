@@ -159,7 +159,7 @@ def test_redaction_removes_sensitive_values_and_home_prefixes(
         "api_key": "***",
         "nested": [
             {"Authorization": "***"},
-            os.fspath(Path("<home>") / "media" / "voice.wav"),
+            "<home-path>",
         ],
         "tuple": ("safe", {"password": "***"}),
     }
@@ -177,6 +177,5 @@ def test_redaction_sanitizes_nested_source_controlled_mapping_keys(
 
     redacted = redact_report_value(source)
 
-    safe_key = os.fspath(Path("<home>") / "private" / "api_key=***")
-    assert redacted == {"design_state": {safe_key: "***"}}
+    assert redacted == {"design_state": {"<home-path>": "***"}}
     assert tuple(source["design_state"]) == (unsafe_key,)

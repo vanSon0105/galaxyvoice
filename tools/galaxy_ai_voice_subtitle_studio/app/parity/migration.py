@@ -18,12 +18,17 @@ from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from tempfile import TemporaryDirectory
 from types import MappingProxyType
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from urllib.parse import quote
 
 from ..common.ffmpeg import find_ffprobe
 from ..common.paths import repository_root
 from ..voice_library.models import ConsentRecord, VoiceProfileRecord
+from .archive_policy import (
+    ArchivePolicy,
+    copy_archive_member,
+    validate_archive_members,
+)
 from .models import SourceFingerprint
 from .security import fingerprint_source, redact_report_value, resolve_approved_path
 
@@ -221,6 +226,7 @@ class MigrationDryRun:
     assets: tuple[MigrationAsset, ...] = ()
     unsupported: tuple[MigrationFinding, ...] = ()
     warnings: tuple[str, ...] = ()
+    sandbox_cleaned: bool = False
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -254,6 +260,7 @@ class _Inspection:
     assets: list[MigrationAsset] = field(default_factory=list)
     unsupported: list[MigrationFinding] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
+    check_cancelled: Callable[[], None] = field(default=lambda: None, repr=False)
 
 
 def inspect_migration_source(
@@ -262,16 +269,19 @@ def inspect_migration_source(
     approved_roots: Sequence[Path],
     copied_source_confirmed: bool,
     sandbox_root: Path | None = None,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> MigrationDryRun:
     """Inspect a copied database, data directory, or persona bundle without writes."""
 
     if copied_source_confirmed is not True:
         raise ValueError("Explicit copied source confirmation is required")
+    cancel = check_cancelled or (lambda: None)
+    cancel()
     selection = _select_migration_source(Path(source), approved_roots)
     resolved_source = selection.path
-    before = fingerprint_source(resolved_source)
+    before = fingerprint_source(resolved_source, check_cancelled=cancel)
     approved = tuple(Path(root).expanduser().resolve(strict=False) for root in approved_roots)
-    inspection = _Inspection()
+    inspection = _Inspection(check_cancelled=cancel)
 
     sandbox_parent = None
     if sandbox_root is not None:
@@ -281,6 +291,7 @@ def inspect_migration_source(
         sandbox_parent.mkdir(parents=True, exist_ok=True)
 
     with TemporaryDirectory(dir=sandbox_parent) as temporary:
+        cancel()
         sandbox = Path(temporary)
         if selection.kind == "directory":
             _inspect_directory(resolved_source, approved, sandbox, inspection)
@@ -289,10 +300,12 @@ def inspect_migration_source(
         elif selection.kind == "sqlite":
             _inspect_database(resolved_source, resolved_source.parent, approved, inspection)
         _validate_normalized_candidates(sandbox, inspection)
+    sandbox_cleaned = not sandbox.exists()
 
     if selection.kind == "sqlite":
         _reject_sqlite_sidecars(resolved_source)
-    after = fingerprint_source(resolved_source)
+    cancel()
+    after = fingerprint_source(resolved_source, check_cancelled=cancel)
     if after != before:
         raise SourceChangedError("Migration source changed during read-only inspection")
 
@@ -311,6 +324,7 @@ def inspect_migration_source(
         assets=tuple(inspection.assets),
         unsupported=tuple(inspection.unsupported),
         warnings=tuple(inspection.warnings),
+        sandbox_cleaned=sandbox_cleaned,
     )
 
 
@@ -393,9 +407,11 @@ def _walk_regular_files(root: Path, inspection: _Inspection) -> list[Path]:
     files: list[Path] = []
 
     def visit(directory: Path) -> None:
+        inspection.check_cancelled()
         with os.scandir(directory) as iterator:
             entries = sorted(iterator, key=lambda item: item.name.casefold())
         for entry in entries:
+            inspection.check_cancelled()
             path = Path(entry.path)
             info = entry.stat(follow_symlinks=False)
             if _is_link_like(info):
@@ -432,14 +448,17 @@ def _inspect_database(
             if not str(row[0]).startswith("sqlite_")
         }
         for table in sorted(tables - set(_KNOWN_COLUMNS) - _UNSUPPORTED_TABLES):
+            inspection.check_cancelled()
             inspection.warnings.append(
                 f"forward-version: unknown table '{table}' was not mapped"
             )
         for table in sorted(tables & _UNSUPPORTED_TABLES):
+            inspection.check_cancelled()
             inspection.unsupported.append(
                 MigrationFinding(table, "runtime, credential, or application state is not migrated")
             )
         for table, known_columns in _KNOWN_COLUMNS.items():
+            inspection.check_cancelled()
             if table not in tables:
                 continue
             actual_columns = _table_columns(connection, table)
@@ -502,6 +521,7 @@ def _map_table(
     }[table]
     target = getattr(inspection, table)
     for row in rows:
+        inspection.check_cancelled()
         candidate = mapper(row, data_root, approved_roots)
         if table == "export_history" and (
             not candidate.assets
@@ -1019,6 +1039,7 @@ def _inspect_bundle(bundle: Path, sandbox: Path, inspection: _Inspection) -> Non
         bundle_sandbox.mkdir()
         streamed_total = 0
         for info in infos:
+            inspection.check_cancelled()
             if info.is_dir():
                 continue
             role = _bundle_asset_role(info.filename)
@@ -1036,6 +1057,7 @@ def _inspect_bundle(bundle: Path, sandbox: Path, inspection: _Inspection) -> Non
                     info,
                     destination,
                     remaining_total=MAX_ARCHIVE_TOTAL_BYTES - streamed_total,
+                    check_cancelled=inspection.check_cancelled,
                 )
             except (OSError, ValueError, zipfile.BadZipFile) as error:
                 inspection.warnings.append(f"Bundle rejected ({bundle.name}): {error}")
@@ -1095,20 +1117,12 @@ def _inspect_bundle(bundle: Path, sandbox: Path, inspection: _Inspection) -> Non
 
 def _archive_rejection(infos: list[zipfile.ZipInfo]) -> str:
     members = infos
-    if len(members) > MAX_ARCHIVE_MEMBERS:
-        return "archive member count limit exceeded"
-    total = sum(max(0, info.file_size) for info in members)
-    if total > MAX_ARCHIVE_TOTAL_BYTES:
-        return "archive total size limit exceeded"
-    seen_names: set[str] = set()
+    try:
+        validate_archive_members(members, policy=_archive_policy())
+    except ValueError as error:
+        return str(error)
     seen_controls: set[str] = set()
     for info in members:
-        name_key = info.filename.casefold()
-        if name_key in seen_names:
-            return f"duplicate archive member: {info.filename}"
-        seen_names.add(name_key)
-        if any(ord(character) < 32 or ord(character) == 127 for character in info.filename):
-            return f"archive member contains control characters: {info.filename!r}"
         control = _archive_control_key(info.filename)
         if control and control in seen_controls:
             return f"duplicate archive control member: {control}"
@@ -1139,19 +1153,10 @@ def _unsafe_archive_assets(infos: list[zipfile.ZipInfo]) -> tuple[MigrationAsset
 
 
 def _unsafe_archive_member(info: zipfile.ZipInfo) -> str:
-    name = info.filename
-    path = PurePosixPath(name)
-    mode = info.external_attr >> 16
-    if path.is_absolute() or ".." in path.parts or "\\" in name:
-        return "archive path traversal"
-    if path.parts and path.parts[0].endswith(":"):
-        return "archive absolute path"
-    if stat.S_ISLNK(mode):
-        return "archive symbolic link"
-    if info.file_size > MAX_ARCHIVE_MEMBER_BYTES:
-        return "archive member size limit exceeded"
-    if info.file_size and info.file_size / max(info.compress_size, 1) > MAX_COMPRESSION_RATIO:
-        return "archive compression ratio limit exceeded"
+    try:
+        validate_archive_members([info], policy=_archive_policy())
+    except ValueError as error:
+        return str(error)
     return ""
 
 
@@ -1161,17 +1166,25 @@ def _copy_bounded_member(
     destination: Path,
     *,
     remaining_total: int,
+    check_cancelled: Callable[[], None] | None = None,
 ) -> int:
-    written = 0
-    with archive.open(info) as source, destination.open("wb") as output:
-        while chunk := source.read(64 * 1024):
-            written += len(chunk)
-            if written > MAX_ARCHIVE_MEMBER_BYTES:
-                raise ValueError(f"Archive member exceeded size limit: {info.filename}")
-            if written > remaining_total:
-                raise ValueError("Archive streamed total size limit exceeded")
-            output.write(chunk)
-    return written
+    return copy_archive_member(
+        archive,
+        info,
+        destination,
+        policy=_archive_policy(),
+        remaining_total=remaining_total,
+        check_cancelled=check_cancelled,
+    )
+
+
+def _archive_policy() -> ArchivePolicy:
+    return ArchivePolicy(
+        max_members=MAX_ARCHIVE_MEMBERS,
+        max_member_bytes=MAX_ARCHIVE_MEMBER_BYTES,
+        max_total_bytes=MAX_ARCHIVE_TOTAL_BYTES,
+        max_compression_ratio=MAX_COMPRESSION_RATIO,
+    )
 
 
 def _bundle_asset_role(name: str) -> str:

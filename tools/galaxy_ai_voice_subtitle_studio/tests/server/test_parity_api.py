@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
+from hashlib import sha256
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -33,7 +34,20 @@ from app.parity import (
     StartParityRun,
 )
 from app.parity.repository import ManualAnswer, ManualItem, ParityRun
+from app.parity.evidence import (
+    ArtifactCheckEvidence,
+    CancellationCheckEvidence,
+    DurationCheckEvidence,
+    IdentityCheckEvidence,
+    LoudnessCheckEvidence,
+    MediaCheckEvidence,
+    MigrationCheckEvidence,
+    PerformanceCheckEvidence,
+    RecoveryCheckEvidence,
+    SubtitleCheckEvidence,
+)
 from app.parity.security import UnsafePathError
+from app.parity.validators import PerformanceSample, RecoverySample
 from app.runtime.jobs import TaskRecord, TaskRegistry
 from app.server.main import create_app
 
@@ -451,8 +465,14 @@ def test_start_list_and_detail_response_shapes(
         json={
             "manifest_path": "C:/fixtures/manifest.json",
             "approved_roots": ["C:/fixtures"],
-            "measurements_by_case": {
-                "shared.project_portability": {"duration_ms": 120}
+            "evidence_by_case": {
+                "shared.project_portability": {
+                    "project_reopen": {
+                        "kind": "artifact",
+                        "role": "portable_project",
+                        "sha256": "f" * 64,
+                    }
+                }
             },
             "threshold_overrides": [
                 {
@@ -492,9 +512,13 @@ def test_start_list_and_detail_response_shapes(
     assert service.start_request is not None
     assert service.start_request.manifest_path == Path("C:/fixtures/manifest.json")
     assert service.start_request.approved_roots == (Path("C:/fixtures"),)
-    assert service.start_request.measurements_by_case == {
-        "shared.project_portability": {"duration_ms": 120}
-    }
+    evidence = service.start_request.measurements_by_case[
+        "shared.project_portability"
+    ]["project_reopen"]
+    assert evidence == ArtifactCheckEvidence(
+        role="portable_project",
+        sha256="f" * 64,
+    )
     assert service.start_request.threshold_overrides[0].threshold_id == (
         "duration_absolute_ms"
     )
@@ -521,6 +545,287 @@ def test_start_list_and_detail_response_shapes(
         "duration_ms": 120
     }
     assert detail.json()["manual_items"][0]["item_id"].endswith(":manual:1")
+
+
+def test_run_contract_parses_all_external_evidence_into_domain_types(
+    client: TestClient,
+    service: StubParityService,
+) -> None:
+    hardware = {
+        "platform": "windows",
+        "architecture": "amd64",
+        "cpu_model": "Test CPU",
+        "logical_cpu_count": 8,
+        "memory_bytes": 17179869184,
+        "accelerator_model": "Test GPU",
+    }
+    response = client.post(
+        "/api/parity/runs",
+        json={
+            "manifest_path": "C:/fixtures/manifest.json",
+            "approved_roots": ["C:/fixtures"],
+            "evidence_by_case": {
+                "case.all": {
+                    "media": {
+                        "kind": "media",
+                        "role": "native_audio",
+                        "expected": {"extension": ".wav", "audio_streams": 1},
+                    },
+                    "duration": {
+                        "kind": "duration",
+                        "native_seconds": 1.0,
+                        "reference_seconds": 1.0,
+                    },
+                    "subtitles": {
+                        "kind": "subtitles",
+                        "native": [{"start_ms": 0, "end_ms": 500, "text": "Hello"}],
+                        "reference": [{"start_ms": 0, "end_ms": 500, "text": "Hello"}],
+                    },
+                    "identity": {
+                        "kind": "identity",
+                        "native": {"speaker": "voice-1"},
+                        "reference": {"speaker": "voice-1"},
+                    },
+                    "loudness": {"kind": "loudness", "measured_lufs": -16.0},
+                    "performance": {
+                        "kind": "performance",
+                        "native": {
+                            "wall_seconds": 1.1,
+                            "peak_ram_bytes": 110,
+                            "peak_vram_bytes": None,
+                            "response_ms": [10, 20],
+                            "applicable_metrics": ["wall_seconds", "peak_ram_bytes"],
+                            "hardware_identity": hardware,
+                            "resolved_device": "cpu",
+                        },
+                        "reference": {
+                            "wall_seconds": 1.0,
+                            "peak_ram_bytes": 100,
+                            "peak_vram_bytes": None,
+                            "response_ms": [8, 12],
+                            "applicable_metrics": ["wall_seconds", "peak_ram_bytes"],
+                            "hardware_identity": hardware,
+                            "resolved_device": "cpu",
+                        },
+                    },
+                    "recovery": {
+                        "kind": "recovery",
+                        "interrupted": True,
+                        "task_status": "interrupted",
+                        "resumable": True,
+                        "recovery_route": "/settings/parity",
+                    },
+                    "cancellation": {
+                        "kind": "cancellation",
+                        "acknowledgement_seconds": 0.25,
+                        "device": "cpu",
+                    },
+                    "artifact": {
+                        "kind": "artifact",
+                        "role": "portable_project",
+                        "sha256": "a" * 64,
+                    },
+                    "migration": {
+                        "kind": "migration",
+                        "source_roles": ["voicestudio_copy", "persona_bundle"],
+                        "copied_source_confirmed": True,
+                    },
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 202
+    assert service.start_request is not None
+    evidence = service.start_request.measurements_by_case["case.all"]
+    assert isinstance(evidence["media"], MediaCheckEvidence)
+    assert isinstance(evidence["duration"], DurationCheckEvidence)
+    assert isinstance(evidence["subtitles"], SubtitleCheckEvidence)
+    assert isinstance(evidence["identity"], IdentityCheckEvidence)
+    assert isinstance(evidence["loudness"], LoudnessCheckEvidence)
+    assert isinstance(evidence["performance"], PerformanceCheckEvidence)
+    assert isinstance(evidence["performance"].native, PerformanceSample)
+    assert isinstance(evidence["recovery"], RecoveryCheckEvidence)
+    assert isinstance(evidence["recovery"].sample, RecoverySample)
+    assert isinstance(evidence["cancellation"], CancellationCheckEvidence)
+    assert isinstance(evidence["artifact"], ArtifactCheckEvidence)
+    assert isinstance(evidence["migration"], MigrationCheckEvidence)
+    assert evidence["migration"].copied_source_confirmed is True
+
+
+def test_raw_untyped_measurement_payload_is_rejected(client: TestClient) -> None:
+    response = client.post(
+        "/api/parity/runs",
+        json={
+            "manifest_path": "C:/fixtures/manifest.json",
+            "approved_roots": ["C:/fixtures"],
+            "measurements_by_case": {
+                "shared.project_portability": {"project_reopen": {"passed": True}}
+            },
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_run_migration_evidence_requires_explicit_copied_source_confirmation(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/parity/runs",
+        json={
+            "manifest_path": "C:/fixtures/manifest.json",
+            "approved_roots": ["C:/fixtures"],
+            "evidence_by_case": {
+                "migration.voicestudio_copy": {
+                    "source_immutability": {
+                        "kind": "migration",
+                        "source_roles": ["voicestudio_copy"],
+                        "copied_source_confirmed": False,
+                    }
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_public_api_can_complete_and_accept_content_bound_evidence(
+    tmp_path: Path,
+) -> None:
+    project = {"project_id": "project-1", "revision": 1, "content": {"text": "hello"}}
+    project_digest = sha256(
+        json.dumps(project, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    artifact = tmp_path / "portable.json"
+    artifact.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "producer": "galaxy-ai-voice-subtitle-studio",
+                "case_id": "shared.project_portability",
+                "checks": {
+                    "project_reopen": {
+                        "kind": "repository_round_trip",
+                        "before": project,
+                        "after": project,
+                        "before_sha256": project_digest,
+                        "after_sha256": project_digest,
+                        "before_location": "selected-root-a",
+                        "after_location": "selected-root-a",
+                    }
+                },
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    artifact_bytes = artifact.read_bytes()
+    manifest = tmp_path / "manifest.json"
+    manifest.write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "corpus_id": "public-contract",
+                "created_at": "2026-08-30T00:00:00Z",
+                "cases": [
+                    {
+                        "case_id": "shared.project_portability",
+                        "assets": [
+                            {
+                                "role": "portable_project",
+                                "path": artifact.name,
+                                "sha256": sha256(artifact_bytes).hexdigest(),
+                                "byte_size": len(artifact_bytes),
+                            }
+                        ],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    catalogue = ParityCatalogue(
+        version="public-v1",
+        cases=(
+            ParityCase(
+                case_id="shared.project_portability",
+                area="shared",
+                title="Project reopen",
+                required=True,
+                fixture_roles=("portable_project",),
+                checks=("project_reopen",),
+                manual_prompts=("Confirm project content.",),
+            ),
+        ),
+    )
+    registry = TaskRegistry()
+    service = ParityService(
+        catalogue,
+        ParityRepository(tmp_path / "state"),
+        registry,
+    )
+    app = create_app(parity_service=service)
+    payload = {
+        "manifest_path": str(manifest),
+        "approved_roots": [str(tmp_path)],
+        "evidence_by_case": {
+            "shared.project_portability": {
+                "project_reopen": {
+                    "kind": "artifact",
+                    "role": "portable_project",
+                    "sha256": sha256(artifact_bytes).hexdigest(),
+                }
+            }
+        },
+    }
+
+    with TestClient(app) as real_client:
+        started = real_client.post("/api/parity/runs", json=payload)
+        assert started.status_code == 202
+        task = registry.get(started.json()["task_id"])
+        assert task is not None and task.thread is not None
+        task.thread.join(timeout=5)
+        detail = real_client.get(f"/api/parity/runs/{started.json()['run_id']}")
+        assert detail.status_code == 200
+        assert detail.json()["case_results"][0]["status"] == "pass"
+        assert detail.json()["ready_for_acceptance"] is False
+
+        manual = real_client.post(
+            f"/api/parity/runs/{started.json()['run_id']}/manual-items/"
+            "shared.project_portability.manual.1",
+            json={"accepted": True, "note": "Reviewed the reopened project."},
+        )
+        assert manual.status_code == 200
+        assert manual.json()["ready_for_acceptance"] is True
+        accepted = real_client.post(
+            f"/api/parity/runs/{started.json()['run_id']}/accept",
+            json={"note": "Accepted public evidence contract."},
+        )
+        assert accepted.status_code == 200
+        report = real_client.get(
+            f"/api/parity/runs/{started.json()['run_id']}/report?format=json"
+        )
+        assert report.status_code == 200
+        assert report.json()["acceptance"]["note"] == "Accepted public evidence contract."
+
+        missing = real_client.post(
+            "/api/parity/runs",
+            json={
+                "manifest_path": str(manifest),
+                "approved_roots": [str(tmp_path)],
+                "evidence_by_case": {},
+            },
+        )
+        missing_task = registry.get(missing.json()["task_id"])
+        assert missing_task is not None and missing_task.thread is not None
+        missing_task.thread.join(timeout=5)
+        blocked = real_client.get(f"/api/parity/runs/{missing.json()['run_id']}")
+        assert blocked.json()["case_results"][0]["status"] == "blocked"
+        assert blocked.json()["ready_for_acceptance"] is False
 
 
 def test_unknown_runs_and_reports_return_404(client: TestClient) -> None:

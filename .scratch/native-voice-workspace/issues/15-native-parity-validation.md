@@ -24,6 +24,15 @@ validators and reports, persistent task recovery, manual evidence recording,
 and backend-guarded acceptance workflow are available. This closes automated
 implementation only. It is not evidence that native parity has been accepted.
 
+The public run contract accepts only discriminated typed evidence. Settings can
+import or enter a versioned evidence JSON bundle; missing evidence remains
+`blocked`. Behavioral results cannot be supplied as `passed=true`: project
+reopen, portability, relink, handoff, and checkpoint checks require
+checksum-bound Galaxy artifact proofs, while migration checks execute the
+Galaxy-owned dry-run against explicitly confirmed copied sources. Performance
+results retain matched hardware identity, resolved device, raw native/reference
+measurements, ratios, and response samples in redacted reports.
+
 After interruption, reopen Settings and select `Mở đối chiếu parity`, or
 navigate directly to `/settings/parity`, to return to the persistent run.
 
@@ -32,14 +41,18 @@ navigate directly to `/settings/parity`, to return to the persistent run.
 - [ ] Select the approved external real corpus for every required case and
   preserve its manifest checksums; do not commit the selected media.
 - [ ] Supply the matched VoiceStudio reference artifacts and reference
-  measurements while VoiceStudio remains available for comparison.
+  measurements while VoiceStudio remains available for comparison. The
+  imported evidence bundle must identify matching hardware and resolved device
+  for native and reference performance samples.
 - [ ] Run the native validation against that unchanged corpus and resolve every
   required `fail` or `blocked` result. Wall time, peak RAM, and peak VRAM stay
   intentionally `blocked` wherever matched reference evidence is unavailable.
 - [ ] Complete every required manual UAT item with a positive answer and note,
   including output quality, usability, recovery, and comparison observations.
 - [ ] Review the deterministic JSON and Markdown reports and record explicit
-  final acceptance on the same unchanged run.
+  final acceptance on the same unchanged run. A failed publication can be
+  retried against the same staged acceptance identity; do not substitute an
+  unaccepted report revision.
 
 Only the canonical JSON report from that explicitly accepted run is an
 Accepted Parity Report and may enter Phase 16. Until that report exists, this

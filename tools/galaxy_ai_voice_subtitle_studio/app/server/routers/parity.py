@@ -28,7 +28,23 @@ from ...parity import (
     StartParityRun,
     ThresholdOverrideRequest,
     UnsafePathError,
+    MediaExpectation,
 )
+from ...parity.evidence import (
+    ArtifactCheckEvidence,
+    CancellationCheckEvidence,
+    DurationCheckEvidence,
+    HardwareIdentity,
+    IdentityCheckEvidence,
+    LoudnessCheckEvidence,
+    MediaCheckEvidence,
+    MigrationCheckEvidence,
+    PerformanceCheckEvidence,
+    RecoveryCheckEvidence,
+    SubtitleCheckEvidence,
+    SubtitleCueEvidence,
+)
+from ...parity.validators import PerformanceSample, RecoverySample
 router = APIRouter(prefix="/api/parity", tags=["parity"])
 LOGGER = get_logger("server.parity")
 
@@ -191,6 +207,7 @@ class MigrationInspectionResponse(ResponseModel):
     assets: list[MigrationAssetResponse]
     unsupported: list[MigrationFindingResponse]
     warnings: list[str]
+    sandbox_cleaned: bool
 
 
 class CorpusInspectRequest(RequestModel):
@@ -225,10 +242,147 @@ class ThresholdOverrideBody(RequestModel):
     note: NonEmptyText
 
 
+class HardwareIdentityBody(RequestModel):
+    platform: NonEmptyText
+    architecture: NonEmptyText
+    cpu_model: NonEmptyText
+    logical_cpu_count: Annotated[StrictInt, Field(gt=0)]
+    memory_bytes: Annotated[StrictInt, Field(gt=0)]
+    accelerator_model: str = ""
+
+
+class PerformanceSampleBody(RequestModel):
+    wall_seconds: Annotated[float, Field(gt=0)]
+    peak_ram_bytes: Annotated[StrictInt, Field(gt=0)]
+    peak_vram_bytes: Annotated[StrictInt, Field(gt=0)] | None = None
+    response_ms: list[Annotated[float, Field(ge=0)]] = Field(min_length=1)
+    applicable_metrics: list[
+        Literal["wall_seconds", "peak_ram_bytes", "peak_vram_bytes"]
+    ] = Field(min_length=2)
+    hardware_identity: HardwareIdentityBody
+    resolved_device: NonEmptyText
+
+    @model_validator(mode="after")
+    def validate_metric_contract(self) -> PerformanceSampleBody:
+        metrics = self.applicable_metrics
+        if len(metrics) != len(set(metrics)):
+            raise ValueError("Performance metrics must be unique")
+        if not {"wall_seconds", "peak_ram_bytes"}.issubset(metrics):
+            raise ValueError("Wall time and peak RAM must be applicable")
+        if ("peak_vram_bytes" in metrics) != (self.peak_vram_bytes is not None):
+            raise ValueError("VRAM value and applicability must match")
+        return self
+
+
+class MediaExpectationBody(RequestModel):
+    extension: NonEmptyText | None = None
+    container: NonEmptyText | None = None
+    audio_codec: NonEmptyText | None = None
+    video_codec: NonEmptyText | None = None
+    audio_streams: NonNegativeStrictInt | None = None
+    video_streams: NonNegativeStrictInt | None = None
+    subtitle_streams: NonNegativeStrictInt | None = None
+    channels: NonNegativeStrictInt | None = None
+    sample_rate: NonNegativeStrictInt | None = None
+    duration_seconds: Annotated[float, Field(ge=0)] | None = None
+
+
+class MediaEvidenceBody(RequestModel):
+    kind: Literal["media"]
+    role: NonEmptyText
+    expected: MediaExpectationBody
+
+
+class DurationEvidenceBody(RequestModel):
+    kind: Literal["duration"]
+    native_seconds: Annotated[float, Field(ge=0)]
+    reference_seconds: Annotated[float, Field(ge=0)]
+
+
+class SubtitleCueBody(RequestModel):
+    start_ms: NonNegativeStrictInt
+    end_ms: NonNegativeStrictInt
+    text: str
+
+
+class SubtitleEvidenceBody(RequestModel):
+    kind: Literal["subtitles"]
+    native: list[SubtitleCueBody]
+    reference: list[SubtitleCueBody]
+
+
+class IdentityEvidenceBody(RequestModel):
+    kind: Literal["identity"]
+    native: dict[NonEmptyText, NonEmptyText]
+    reference: dict[NonEmptyText, NonEmptyText]
+
+
+class LoudnessEvidenceBody(RequestModel):
+    kind: Literal["loudness"]
+    measured_lufs: float
+
+
+class PerformanceEvidenceBody(RequestModel):
+    kind: Literal["performance"]
+    native: PerformanceSampleBody
+    reference: PerformanceSampleBody
+
+
+class CancellationEvidenceBody(RequestModel):
+    kind: Literal["cancellation"]
+    acknowledgement_seconds: Annotated[float, Field(ge=0)]
+    device: NonEmptyText
+
+
+class RecoveryEvidenceBody(RequestModel):
+    kind: Literal["recovery"]
+    interrupted: StrictBool
+    task_status: NonEmptyText
+    resumable: StrictBool
+    recovery_route: NonEmptyText | None = None
+
+
+class ArtifactEvidenceBody(RequestModel):
+    kind: Literal["artifact"]
+    role: NonEmptyText
+    sha256: Sha256Text
+
+
+class MigrationEvidenceBody(RequestModel):
+    kind: Literal["migration"]
+    source_roles: list[NonEmptyText] = Field(min_length=1)
+    copied_source_confirmed: StrictBool
+
+    @model_validator(mode="after")
+    def validate_unique_roles(self) -> MigrationEvidenceBody:
+        if len(self.source_roles) != len(set(self.source_roles)):
+            raise ValueError("Migration source roles must be unique")
+        if self.copied_source_confirmed is not True:
+            raise ValueError("Explicit copied source confirmation is required")
+        return self
+
+
+EvidenceBody = Annotated[
+    MediaEvidenceBody
+    | DurationEvidenceBody
+    | SubtitleEvidenceBody
+    | IdentityEvidenceBody
+    | LoudnessEvidenceBody
+    | PerformanceEvidenceBody
+    | CancellationEvidenceBody
+    | RecoveryEvidenceBody
+    | ArtifactEvidenceBody
+    | MigrationEvidenceBody,
+    Field(discriminator="kind"),
+]
+
+
 class StartRunRequest(RequestModel):
     manifest_path: NonEmptyText
     approved_roots: list[NonEmptyText] = Field(min_length=1)
-    measurements_by_case: dict[str, dict[str, JsonValue]] = Field(default_factory=dict)
+    evidence_by_case: dict[NonEmptyText, dict[NonEmptyText, EvidenceBody]] = Field(
+        default_factory=dict
+    )
     threshold_overrides: list[ThresholdOverrideBody] = Field(default_factory=list)
     source_fingerprints: dict[FingerprintId, SourceFingerprintRequest] = Field(
         default_factory=dict
@@ -288,6 +442,7 @@ class AcceptanceResponse(ResponseModel):
     run_revision: str
     manual_revision: str
     input_revision: str
+    report_revision: str
 
 
 class ParityRunResponse(ResponseModel):
@@ -347,6 +502,76 @@ def _service(request: Request) -> ParityService:
 
 def _approved_roots(values: list[str]) -> tuple[Path, ...]:
     return tuple(Path(value) for value in values)
+
+
+def _hardware(value: HardwareIdentityBody) -> HardwareIdentity:
+    return HardwareIdentity(**value.model_dump())
+
+
+def _performance_sample(value: PerformanceSampleBody) -> PerformanceSample:
+    return PerformanceSample(
+        wall_seconds=value.wall_seconds,
+        peak_ram_bytes=value.peak_ram_bytes,
+        peak_vram_bytes=value.peak_vram_bytes,
+        response_ms=tuple(value.response_ms),
+        applicable_metrics=frozenset(value.applicable_metrics),
+        hardware_identity=_hardware(value.hardware_identity),
+        resolved_device=value.resolved_device,
+    )
+
+
+def _domain_evidence(value: EvidenceBody) -> object:
+    if isinstance(value, MediaEvidenceBody):
+        return MediaCheckEvidence(
+            role=value.role,
+            expected=MediaExpectation(**value.expected.model_dump(exclude_none=True)),
+        )
+    if isinstance(value, DurationEvidenceBody):
+        return DurationCheckEvidence(
+            native_seconds=value.native_seconds,
+            reference_seconds=value.reference_seconds,
+        )
+    if isinstance(value, SubtitleEvidenceBody):
+        return SubtitleCheckEvidence(
+            native=tuple(SubtitleCueEvidence(**item.model_dump()) for item in value.native),
+            reference=tuple(
+                SubtitleCueEvidence(**item.model_dump()) for item in value.reference
+            ),
+        )
+    if isinstance(value, IdentityEvidenceBody):
+        return IdentityCheckEvidence(
+            native=dict(value.native),
+            reference=dict(value.reference),
+        )
+    if isinstance(value, LoudnessEvidenceBody):
+        return LoudnessCheckEvidence(measured_lufs=value.measured_lufs)
+    if isinstance(value, PerformanceEvidenceBody):
+        return PerformanceCheckEvidence(
+            native=_performance_sample(value.native),
+            reference=_performance_sample(value.reference),
+        )
+    if isinstance(value, CancellationEvidenceBody):
+        return CancellationCheckEvidence(
+            acknowledgement_seconds=value.acknowledgement_seconds,
+            device=value.device,
+        )
+    if isinstance(value, RecoveryEvidenceBody):
+        return RecoveryCheckEvidence(
+            sample=RecoverySample(
+                interrupted=value.interrupted,
+                task_status=value.task_status,
+                resumable=value.resumable,
+                recovery_route=value.recovery_route,
+            ),
+        )
+    if isinstance(value, ArtifactEvidenceBody):
+        return ArtifactCheckEvidence(role=value.role, sha256=value.sha256)
+    if isinstance(value, MigrationEvidenceBody):
+        return MigrationCheckEvidence(
+            source_roles=tuple(value.source_roles),
+            copied_source_confirmed=value.copied_source_confirmed,
+        )
+    raise TypeError("Unknown parity evidence contract")
 
 
 def _input_failure(error: Exception, operation: str) -> NoReturn:
@@ -454,7 +679,13 @@ def start_run(body: StartRunRequest, request: Request) -> StartRunResponse:
         manifest_path=Path(body.manifest_path),
         approved_roots=_approved_roots(body.approved_roots),
         app_version=__version__,
-        measurements_by_case=body.measurements_by_case,
+        measurements_by_case={
+            case_id: {
+                check_id: _domain_evidence(evidence)
+                for check_id, evidence in checks.items()
+            }
+            for case_id, checks in body.evidence_by_case.items()
+        },
         threshold_overrides=tuple(
             ThresholdOverrideRequest(**item.model_dump()) for item in body.threshold_overrides
         ),

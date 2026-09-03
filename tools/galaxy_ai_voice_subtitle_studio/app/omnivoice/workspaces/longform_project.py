@@ -220,6 +220,34 @@ class LongformProjectRepository:
             )
             return saved
 
+    def resume(
+        self,
+        project_id: str,
+        *,
+        completed_item_ids: tuple[str, ...],
+        expected_revision: int,
+    ) -> LongformProject:
+        with self._lock:
+            project = self.get(project_id)
+            if project is None:
+                raise KeyError(project_id)
+            if project.revision != max(0, int(expected_revision)):
+                raise LongformRevisionConflict(
+                    f"Project revision changed (server {project.revision}, client {expected_revision})."
+                )
+            previous = _completed_item_ids(project.last_result)
+            completed = _normalized_item_ids(completed_item_ids)
+            if not set(previous).issubset(completed):
+                raise ValueError("Resume cannot discard completed longform items.")
+            if len(completed) <= len(previous):
+                raise ValueError("Resume must advance longform checkpoint progress.")
+            last_result = dict(project.last_result)
+            last_result["completed_item_ids"] = list(completed)
+            return self.save(
+                project.evolved(stage="render", last_result=last_result),
+                expected_revision=project.revision,
+            )
+
     def delete(self, project_id: str) -> None:
         with self._lock:
             self._document_path(project_id).unlink(missing_ok=True)
@@ -234,6 +262,23 @@ class LongformProjectRepository:
         if not safe or safe != project_id:
             raise ValueError("Longform project ID không hợp lệ.")
         return self.documents_dir / f"{safe}.json"
+
+
+def _completed_item_ids(value: Mapping[str, Any]) -> tuple[str, ...]:
+    raw = value.get("completed_item_ids", ())
+    if not isinstance(raw, (list, tuple)):
+        raise ValueError("Longform checkpoint progress is malformed.")
+    return _normalized_item_ids(tuple(raw))
+
+
+def _normalized_item_ids(values: tuple[object, ...]) -> tuple[str, ...]:
+    normalized: list[str] = []
+    for value in values:
+        item_id = str(value).strip()
+        if not item_id or item_id in normalized:
+            raise ValueError("Completed longform item IDs must be unique and non-empty.")
+        normalized.append(item_id)
+    return tuple(normalized)
 
 
 def _item_count(document: Mapping[str, Any]) -> int:

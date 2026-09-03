@@ -316,8 +316,9 @@ def _run_longform_checkpoint_check(
         resumed = resumed_repository.get(saved.project_id)
         if resumed is None or resumed.last_result.get("completed_item_ids") != ["1"]:
             return _failed(check_id, "Longform checkpoint could not be reopened")
-        completed = resumed_repository.save(
-            resumed.evolved(last_result={"completed_item_ids": ["1", "2"]}),
+        completed = resumed_repository.resume(
+            resumed.project_id,
+            completed_item_ids=("1", "2"),
             expected_revision=resumed.revision,
         )
         reopened = LongformProjectRepository(index).get(saved.project_id)

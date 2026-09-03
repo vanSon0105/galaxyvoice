@@ -3,12 +3,13 @@ from __future__ import annotations
 import os
 import json
 import subprocess
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 
 import pytest
 
-from app.parity import CaseResult, CheckResult
+from app.parity import CaseResult, CheckResult, SourceFingerprint
 from app.parity.repository import (
     AcceptanceRecord,
     ImmutableRunError,
@@ -62,6 +63,28 @@ def _pass_result() -> CaseResult:
         status="pass",
         checks=(CheckResult("duration", "pass", "Within threshold"),),
     )
+
+
+def test_repository_rejects_path_shaped_fingerprint_ids_before_persistence(
+    tmp_path: Path,
+) -> None:
+    repository = ParityRepository(tmp_path / "state")
+    run = replace(
+        _running_run(tmp_path),
+        source_fingerprints={
+            str((tmp_path / "private" / "source.json").resolve()): SourceFingerprint(
+                kind="file",
+                sha256="b" * 64,
+                byte_size=1,
+                entry_count=1,
+            )
+        },
+    )
+
+    with pytest.raises(ValueError, match="opaque identifier"):
+        _create(repository, run)
+
+    assert repository.get_run(run.run_id) is None
 
 
 def test_repository_persists_terminal_envelope_and_separate_overlays(tmp_path: Path) -> None:

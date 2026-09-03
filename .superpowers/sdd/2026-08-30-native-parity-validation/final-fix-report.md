@@ -94,6 +94,15 @@ follow-up closure removed the proof parser, executes the real Galaxy
 repositories, binds acceptance to the managed manifest snapshot, propagates ZIP
 chunk cancellation, and requires per-sample app version.
 
+The closure review then found three acceptance-boundary gaps: an external
+manifest could change after a completed run, caller code could inject an
+internal repository-pass record, and fingerprint map keys could retain path
+text. The final closure keeps source selection memory-only but revalidates the
+manifest and every declared asset in the guarded commit, requires explicit
+source reselection after restart, rejects caller-authored repository results,
+executes checkpoint advancement through `LongformProjectRepository.resume()`,
+and restricts fingerprint keys to opaque identifiers before persistence.
+
 ## Verification Commands And Outcomes
 
 Working directory unless stated otherwise:
@@ -104,25 +113,25 @@ Working directory unless stated otherwise:
 - `python -m pytest tests/parity -q`
   - Latest residual-closure run: Exit 0, `230 passed in 52.26s`.
 - `python -m pytest tests -q`
-  - Latest residual-closure run: Exit 0, `755 passed, 1 warning, 60 subtests passed in 123.04s`.
+  - Final closure run: Exit 0, `760 passed, 1 warning, 60 subtests passed in 118.91s`.
 - `python -m pytest tests/parity/test_migration.py tests/parity/test_security.py tests/parity/test_final_fix_wave.py -q -rs`
   - Exit 0: `85 passed in 12.29s`; no security test in this focused set skipped.
-- `python -m compileall -q app`
+- `python -m compileall -q app tests`
   - Exit 0 with no output.
 
 Working directory: `tools/galaxy_ai_voice_subtitle_studio/frontend`.
 
 - `npm test -- --run src/pages/ParityPage.test.tsx src/api/parity.test.ts`
-  - Latest residual-closure run: Exit 0, 2 files and 16 tests passed in 66.73s.
-- `npm test`
-  - Exit 0: 25 files and 92 tests passed in 13.43s.
+  - Final closure run: Exit 0, 2 files and 16 tests passed in 5.38s.
+- `npm test -- --run`
+  - Exit 0: 25 files and 92 tests passed in 17.45s.
 - `npm run lint`
   - Exit 0; `oxlint src` emitted no warnings or errors.
 - `npm run typecheck`
   - Exit 0; TypeScript emitted no diagnostics.
 - `npm run build`
-  - Exit 0; Vite 8.2.1 transformed 128 modules and built in 1.22s.
-  - Lazy parity chunk: `ParityPage-BsBYoHd4.js`, 16.56 kB (4.27 kB gzip).
+  - Exit 0; Vite 8.2.1 transformed 128 modules and built in 605ms.
+  - Lazy parity chunk: `ParityPage-C0N0LIxY.js`, 16.62 kB (4.28 kB gzip).
 
 Repository gates:
 
@@ -130,7 +139,7 @@ Repository gates:
   - Exit 0; only non-failing Windows LF-to-CRLF notices appeared.
 - Vendor working-tree diff
   - No output; the immutable VoiceStudio snapshot is unchanged.
-- Diff scans for `C:\Users\Rom`, the local repository path, private-key
+- Diff scans for user-home/repository absolute paths, private-key
   headers, high-confidence OpenAI/GitHub/Google token forms
   - No matches.
 - Tracked evidence-extension scan
@@ -157,7 +166,8 @@ warning. It does not affect parity behavior.
 - Verified raw performance measurements, per-sample app versions, and provenance
   survive persistence and report rendering.
 - Verified the selected absolute manifest path never enters the run envelope;
-  acceptance is bound to the managed snapshot and exported errors remain redacted.
+  acceptance is bound to the managed snapshot and an unchanged reselected
+  external source, while exported errors remain redacted.
 - Verified frontend `dist` was rebuilt from the tested source and the parity route
   remains Settings-owned and lazy-loaded.
 
@@ -175,5 +185,6 @@ warning. It does not affect parity behavior.
 Use Settings -> `Mở đối chiếu parity` or `/settings/parity`. Select the unchanged
 approved corpus, import the matched typed evidence bundle, resolve every required
 `fail`/`blocked`, complete every required manual item, review both reports, and
-explicitly accept that unchanged run. Until that happens, there is no Accepted
-Parity Report and Phase 16 has no valid retirement input.
+explicitly accept that unchanged run. If the app was restarted, select that same
+manifest and approved root again before acceptance. Until that happens, there is
+no Accepted Parity Report and Phase 16 has no valid retirement input.

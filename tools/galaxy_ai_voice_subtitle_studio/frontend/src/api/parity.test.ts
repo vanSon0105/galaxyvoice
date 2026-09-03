@@ -24,7 +24,11 @@ describe('parity API', () => {
 
     await startParityRun({ manifest_path: 'D:/fixtures/manifest.json', approved_roots: ['D:/fixtures'] })
     await recordParityManualAnswer('run/1', 'case/1', { accepted: false, note: 'Nghe thấy lỗi.' })
-    await acceptParityRun('run/1', { note: 'Đã kiểm tra đầy đủ.' })
+    await acceptParityRun('run/1', {
+      note: 'Đã kiểm tra đầy đủ.',
+      manifest_path: 'D:/fixtures/manifest.json',
+      approved_roots: ['D:/fixtures'],
+    })
     await cancelParityTask('task/1')
 
     expect(fetchMock).toHaveBeenNthCalledWith(1, '/api/parity/runs', expect.objectContaining({
@@ -39,7 +43,14 @@ describe('parity API', () => {
     expect(fetchMock).toHaveBeenNthCalledWith(
       3,
       '/api/parity/runs/run%2F1/accept',
-      expect.objectContaining({ method: 'POST' }),
+      expect.objectContaining({
+        method: 'POST',
+        body: JSON.stringify({
+          note: 'Đã kiểm tra đầy đủ.',
+          manifest_path: 'D:/fixtures/manifest.json',
+          approved_roots: ['D:/fixtures'],
+        }),
+      }),
     )
     expect(fetchMock).toHaveBeenNthCalledWith(
       4,

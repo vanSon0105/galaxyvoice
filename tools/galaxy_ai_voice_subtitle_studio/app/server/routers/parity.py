@@ -49,7 +49,15 @@ router = APIRouter(prefix="/api/parity", tags=["parity"])
 LOGGER = get_logger("server.parity")
 
 NonEmptyText = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
-FingerprintId = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
+FingerprintId = Annotated[
+    str,
+    StringConstraints(
+        strip_whitespace=True,
+        min_length=1,
+        max_length=128,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+    ),
+]
 Sha256Text = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 NonNegativeStrictInt = Annotated[StrictInt, Field(ge=0)]
 
@@ -495,6 +503,16 @@ class ManualAnswerRequest(RequestModel):
 
 class AcceptanceRequest(RequestModel):
     note: NonEmptyText
+    manifest_path: NonEmptyText | None = None
+    approved_roots: list[NonEmptyText] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_complete_source_selection(self) -> "AcceptanceRequest":
+        if (self.manifest_path is None) != (not self.approved_roots):
+            raise ValueError(
+                "manifest_path and approved_roots must be provided together"
+            )
+        return self
 
 
 def _service(request: Request) -> ParityService:
@@ -799,7 +817,12 @@ def accept_run(
     request: Request,
 ) -> ParityRunResponse:
     try:
-        run = _service(request).accept_run(run_id, note=body.note)
+        run = _service(request).accept_run(
+            run_id,
+            note=body.note,
+            manifest_path=Path(body.manifest_path) if body.manifest_path else None,
+            approved_roots=_approved_roots(body.approved_roots),
+        )
     except KeyError as error:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,

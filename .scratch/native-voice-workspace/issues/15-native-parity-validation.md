@@ -54,7 +54,9 @@ navigate directly to `/settings/parity`, to return to the persistent run.
 - [ ] Review the deterministic JSON and Markdown reports and record explicit
   final acceptance on the same unchanged run. A failed publication can be
   retried against the same staged acceptance identity; do not substitute an
-  unaccepted report revision.
+  unaccepted report revision. If Galaxy was restarted, select the original
+  manifest and approved root again so the service can revalidate the external
+  source without persisting its absolute path.
 
 Only the canonical JSON report from that explicitly accepted run is an
 Accepted Parity Report and may enter Phase 16. Until that report exists, this

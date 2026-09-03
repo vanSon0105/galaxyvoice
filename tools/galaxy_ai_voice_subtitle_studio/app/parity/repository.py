@@ -15,7 +15,7 @@ import uuid
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Literal, Mapping
+from typing import Any, Callable, Literal, Mapping
 
 from .models import CaseResult, CheckResult, SourceFingerprint
 from .security import redact_report_value
@@ -27,6 +27,7 @@ _RUN_STATUSES = TERMINAL_RUN_STATUSES | {"running"}
 _SCHEMA_VERSION = 1
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _RUN_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}")
+_FINGERPRINT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")
 _REPARSE_POINT_ATTRIBUTE = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
 _REPOSITORY_LOCK = threading.RLock()
 
@@ -338,6 +339,7 @@ class ParityRepository:
         *,
         json_bytes: bytes,
         markdown: str,
+        source_guard: Callable[[], None] | None = None,
     ) -> ParityRun:
         with self._lock:
             current = self._require_matching_snapshot_unlocked(snapshot)
@@ -370,6 +372,8 @@ class ParityRepository:
                 markdown.encode("utf-8"),
                 committed.report_revision,
             )
+            if source_guard is not None:
+                source_guard()
             _write_json_atomic(
                 self._acceptance_path(current.run.run_id),
                 {"schema_version": _SCHEMA_VERSION, "acceptance": _acceptance_payload(committed)},
@@ -1094,7 +1098,7 @@ def _fingerprints_payload(
     fingerprints: Mapping[str, SourceFingerprint],
 ) -> dict[str, dict[str, object]]:
     return {
-        key: {
+        _fingerprint_id(key): {
             "kind": value.kind,
             "sha256": value.sha256,
             "byte_size": value.byte_size,
@@ -1109,7 +1113,7 @@ def _fingerprints_from_payload(value: Any) -> dict[str, SourceFingerprint]:
     result: dict[str, SourceFingerprint] = {}
     fields = {"kind", "sha256", "byte_size", "entry_count"}
     for key, raw in payload.items():
-        _nonempty_string(key, "fingerprint ID")
+        fingerprint_id = _fingerprint_id(key)
         item = _object(raw, "fingerprint")
         _require_exact_fields(item, fields, "fingerprint")
         byte_size = item["byte_size"]
@@ -1123,13 +1127,20 @@ def _fingerprints_from_payload(value: Any) -> dict[str, SourceFingerprint]:
             or entry_count < 0
         ):
             raise ValueError("Fingerprint counts must be non-negative integers")
-        result[key] = SourceFingerprint(
+        result[fingerprint_id] = SourceFingerprint(
             kind=_nonempty_string(item["kind"], "fingerprint kind"),
             sha256=_hash_string(item["sha256"], "fingerprint hash"),
             byte_size=byte_size,
             entry_count=entry_count,
         )
     return result
+
+
+def _fingerprint_id(value: Any) -> str:
+    fingerprint_id = _nonempty_string(value, "fingerprint ID")
+    if _FINGERPRINT_ID.fullmatch(fingerprint_id) is None:
+        raise ValueError("Fingerprint ID must be an opaque identifier, not a path")
+    return fingerprint_id
 
 
 def _manual_answer_payload(answer: ManualAnswer) -> dict[str, object]:

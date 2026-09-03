@@ -317,7 +317,7 @@ def test_run_detail_uses_one_repository_snapshot_for_evidence_and_readiness(
     assert detail.run.manual_answers["case.0.manual.1"].accepted is True
 
 
-def test_acceptance_uses_managed_snapshot_after_selected_source_changes(
+def test_acceptance_rejects_changed_selected_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -348,7 +348,41 @@ def test_acceptance_uses_managed_snapshot_after_selected_source_changes(
         encoding="utf-8",
     )
 
-    accepted = service.accept_run(task.run_id, note="reviewed")
+    with pytest.raises(ParityNotReadyError, match="manifest changed"):
+        service.accept_run(task.run_id, note="reviewed")
+
+    assert service.get_run(task.run_id).acceptance is None  # type: ignore[union-attr]
+
+
+def test_acceptance_after_restart_requires_source_reselection(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr("app.parity.service.validate_case", _passing_validator)
+    manifest = _manifest(tmp_path)
+    registry = TaskRegistry()
+    repository = ParityRepository(tmp_path / "state")
+    service = ParityService(_catalogue(), repository, registry)
+    task = _start(service, manifest)
+    _join(task)
+    service.record_manual_item(
+        task.run_id,
+        "case.0.manual.1",
+        accepted=True,
+        note="listened",
+    )
+    restarted = ParityService(_catalogue(), repository, registry)
+
+    with pytest.raises(ParityNotReadyError, match="Select the original"):
+        restarted.accept_run(task.run_id, note="reviewed")
+
+    accepted = restarted.accept_run(
+        task.run_id,
+        note="reviewed",
+        manifest_path=manifest,
+        approved_roots=(tmp_path,),
+    )
+    assert accepted.acceptance is not None
 
     assert accepted.acceptance is not None
 
@@ -810,7 +844,7 @@ def test_acceptance_holds_matching_done_task_through_repository_commit(
     assert task_present_at_commit == [True]
 
 
-def test_acceptance_does_not_reopen_private_source_inside_guarded_commit(
+def test_acceptance_rechecks_source_inside_guarded_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -845,15 +879,16 @@ def test_acceptance_does_not_reopen_private_source_inside_guarded_commit(
     mutator = threading.Thread(target=mutate_source)
     mutator.start()
     try:
-        accepted = service.accept_run(task.run_id, note="approved")
+        with pytest.raises(ParityNotReadyError, match="manifest changed"):
+            service.accept_run(task.run_id, note="approved")
     finally:
         mutator.join(timeout=5)
 
     assert not mutator.is_alive()
-    assert accepted.acceptance is not None
+    assert service.get_run(task.run_id).acceptance is None  # type: ignore[union-attr]
 
 
-def test_acceptance_survives_selected_source_removal_using_managed_snapshot(
+def test_acceptance_rejects_selected_source_removal_inside_guarded_commit(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -888,12 +923,13 @@ def test_acceptance_survives_selected_source_removal_using_managed_snapshot(
     remover = threading.Thread(target=remove_source)
     remover.start()
     try:
-        accepted = service.accept_run(task.run_id, note="approved")
+        with pytest.raises(ParityNotReadyError, match="unavailable or unsafe"):
+            service.accept_run(task.run_id, note="approved")
     finally:
         remover.join(timeout=5)
 
     assert not remover.is_alive()
-    assert accepted.acceptance is not None
+    assert service.get_run(task.run_id).acceptance is None  # type: ignore[union-attr]
 
 
 def test_acceptance_compare_and_commit_detects_manual_race(

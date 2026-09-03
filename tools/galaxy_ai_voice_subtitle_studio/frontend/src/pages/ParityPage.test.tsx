@@ -336,12 +336,24 @@ describe('ParityPage', () => {
         checks: [{ check_id: 'project_reopen', status: 'pass', message: 'ok', measurements: {} }],
       }],
     })
+    fireEvent.change(screen.getByLabelText('Manifest corpus'), {
+      target: { value: 'D:/fixtures/manifest.json' },
+    })
+    fireEvent.change(screen.getByLabelText('Thư mục được phép'), {
+      target: { value: 'D:/fixtures' },
+    })
     const note = await screen.findByLabelText('Ghi chú chấp nhận cuối cùng')
     fireEvent.change(note, { target: { value: 'Đã xem toàn bộ bằng chứng.' } })
     expect(screen.getByRole('button', { name: 'Chấp nhận kết quả' })).toBeDisabled()
 
     cleanup()
     renderPage({ ...blockedRun, ready_for_acceptance: true })
+    fireEvent.change(await screen.findByLabelText('Manifest corpus'), {
+      target: { value: 'D:/fixtures/manifest.json' },
+    })
+    fireEvent.change(screen.getByLabelText('Thư mục được phép'), {
+      target: { value: 'D:/fixtures' },
+    })
     fireEvent.change(await screen.findByLabelText('Ghi chú chấp nhận cuối cùng'), {
       target: { value: 'Đã xem toàn bộ bằng chứng.' },
     })
@@ -401,6 +413,12 @@ describe('ParityPage', () => {
     expect(await screen.findByText('Không lưu được bằng chứng thủ công.')).toBeVisible()
     fireEvent.change(screen.getByLabelText('Ghi chú chấp nhận cuối cùng'), {
       target: { value: 'Acceptance run 1' },
+    })
+    fireEvent.change(screen.getByLabelText('Manifest corpus'), {
+      target: { value: 'D:/fixtures/manifest.json' },
+    })
+    fireEvent.change(screen.getByLabelText('Thư mục được phép'), {
+      target: { value: 'D:/fixtures' },
     })
     fireEvent.click(screen.getByRole('button', { name: 'Chấp nhận kết quả' }))
     expect(await screen.findByText('Backend từ chối chấp nhận lần chạy.')).toBeVisible()

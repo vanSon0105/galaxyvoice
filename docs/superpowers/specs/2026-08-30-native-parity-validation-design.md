@@ -239,6 +239,12 @@ final acceptance record. It records catalogue version, fixture manifest hash,
 app version, source/reference fingerprints, thresholds, checks, measurements,
 warnings, timestamps, and report paths.
 
+The selected manifest path and approved roots remain memory-only. Final
+acceptance re-hashes the selected manifest and all declared assets inside the
+guarded repository commit. After an application restart, acceptance requires
+the user to select the original manifest and approved root again; no absolute
+selection path is recovered from persisted run data.
+
 Execution uses `TaskRegistry` with kind `native-parity-validation`, recovery
 route `/settings/parity`, cooperative cancellation, progress, and redacted
 logs. Independent cases continue after another case fails. A cancelled or
@@ -265,7 +271,9 @@ The thin router exposes typed Pydantic responses:
 - `POST /api/parity/runs/{run_id}/manual-items/{item_id}` records a positive or
   negative UAT answer with a note; and
 - `POST /api/parity/runs/{run_id}/accept` records final local acceptance only
-  when the service recomputes the run as sign-off ready.
+  when the service recomputes the run as sign-off ready and revalidates the
+  selected source. The request may repeat `manifest_path` and `approved_roots`
+  when the memory-only selection is no longer available.
 
 Mutation endpoints reject paths outside user-selected approved roots. The API
 does not expose a VoiceStudio start, migration apply, retirement, or deletion

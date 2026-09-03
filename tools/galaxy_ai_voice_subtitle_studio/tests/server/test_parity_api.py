@@ -297,7 +297,15 @@ class StubParityService:
         self.run = replace(self.run, manual_answers={item_id: answer})
         return self.run
 
-    def accept_run(self, run_id: str, *, note: str) -> ParityRun:
+    def accept_run(
+        self,
+        run_id: str,
+        *,
+        note: str,
+        manifest_path: Path | None = None,
+        approved_roots: tuple[Path, ...] = (),
+    ) -> ParityRun:
+        del manifest_path, approved_roots
         if run_id == "incomplete":
             raise ParityNotReadyError("Parity run status running cannot be accepted")
         if run_id != self.run.run_id:
@@ -788,7 +796,11 @@ def test_public_api_can_complete_and_accept_content_bound_evidence(
         assert manual.json()["ready_for_acceptance"] is True
         accepted = real_client.post(
             f"/api/parity/runs/{started.json()['run_id']}/accept",
-            json={"note": "Accepted public evidence contract."},
+            json={
+                "note": "Accepted public evidence contract.",
+                "manifest_path": str(manifest),
+                "approved_roots": [str(tmp_path)],
+            },
         )
         assert accepted.status_code == 200
         report = real_client.get(
@@ -811,6 +823,26 @@ def test_public_api_can_complete_and_accept_content_bound_evidence(
         blocked = real_client.get(f"/api/parity/runs/{missing.json()['run_id']}")
         assert blocked.json()["case_results"][0]["status"] == "blocked"
         assert blocked.json()["ready_for_acceptance"] is False
+
+
+def test_start_run_rejects_path_shaped_fingerprint_ids(client: TestClient) -> None:
+    response = client.post(
+        "/api/parity/runs",
+        json={
+            "manifest_path": "D:/fixtures/manifest.json",
+            "approved_roots": ["D:/fixtures"],
+            "source_fingerprints": {
+                "D:/private/source.json": {
+                    "kind": "file",
+                    "sha256": "a" * 64,
+                    "byte_size": 1,
+                    "entry_count": 1,
+                }
+            },
+        },
+    )
+
+    assert response.status_code == 422
 
 
 def test_unknown_runs_and_reports_return_404(client: TestClient) -> None:

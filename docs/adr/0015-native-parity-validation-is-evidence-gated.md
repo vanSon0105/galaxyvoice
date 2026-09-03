@@ -38,6 +38,10 @@ Native parity acceptance is evidence-gated.
   identity, resolved device, and raw native/reference measurements. Run
   persistence retains only the managed manifest snapshot identity; reports and
   persisted envelopes redact approved external roots and absolute user paths.
+- Final acceptance revalidates the selected manifest and every declared asset
+  against the completed run immediately before publishing the acceptance
+  overlay. The selection is memory-only; after an application restart the user
+  must select the original manifest and approved root again.
 - A required `fail`, `blocked`, or `manual_pending` result prevents acceptance.
   In particular, performance metrics without matched VoiceStudio reference
   evidence remain `blocked`; they are never interpreted as zero or as a pass.

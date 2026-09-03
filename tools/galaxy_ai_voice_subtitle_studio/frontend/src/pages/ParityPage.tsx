@@ -182,7 +182,11 @@ export function ParityPage() {
   })
   const acceptMutation = useMutation({
     mutationFn: ({ runId, note }: { runId: string; note: string }) =>
-      acceptParityRun(runId, { note }),
+      acceptParityRun(runId, {
+        note,
+        manifest_path: manifestPath.trim(),
+        approved_roots: approvedRoots,
+      }),
     onSuccess: (updated) => {
       queryClient.setQueryData(['parity', 'run', updated.run_id], updated)
       setCommandMessage(t('parity.message.accepted'))
@@ -686,6 +690,8 @@ export function ParityPage() {
                   || manualMutation.isPending
                   || acceptMutation.isPending
                   || run.acceptance !== null
+                  || !manifestPath.trim()
+                  || approvedRoots.length === 0
                 }
                 onClick={() => acceptMutation.mutate({
                   runId: run.run_id,

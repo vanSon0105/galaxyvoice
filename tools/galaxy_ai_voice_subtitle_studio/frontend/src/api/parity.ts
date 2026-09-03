@@ -315,7 +315,7 @@ export const recordParityManualAnswer = (
 
 export const acceptParityRun = (
   runId: string,
-  request: { note: string },
+  request: { note: string; manifest_path: string; approved_roots: string[] },
 ): Promise<ParityRun> =>
   apiJson<ParityRun>(
     `/api/parity/runs/${encodeURIComponent(runId)}/accept`,

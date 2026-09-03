@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import math
+import threading
 import uuid
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
@@ -25,7 +26,11 @@ from ..runtime.jobs import (
 )
 from .behavior import run_repository_check
 from .corpus import inspect_corpus, inspect_manifest, parse_manifest_bytes
-from .evidence import ArtifactCheckEvidence, MigrationCheckEvidence
+from .evidence import (
+    ArtifactCheckEvidence,
+    MigrationCheckEvidence,
+    RepositoryCheckEvidence,
+)
 from .migration import MigrationDryRun, inspect_migration_source
 from .models import (
     CaseResult,
@@ -127,6 +132,12 @@ class StartParityRun:
         )
 
 
+@dataclass(frozen=True)
+class _SourceSelection:
+    manifest_path: Path
+    approved_roots: tuple[Path, ...]
+
+
 class ParityService:
     def __init__(
         self,
@@ -137,6 +148,8 @@ class ParityService:
         self.catalogue = catalogue
         self.repository = repository
         self.task_registry = task_registry
+        self._source_lock = threading.RLock()
+        self._run_sources: dict[str, _SourceSelection] = {}
 
     def list_catalogue(self) -> ParityCatalogue:
         return self.catalogue
@@ -207,6 +220,14 @@ class ParityService:
         except Exception as error:
             self.task_registry.finish(task.task_id, status=FAILED, error=str(error))
             raise
+        with self._source_lock:
+            self._run_sources[run_id] = _SourceSelection(
+                manifest_path=manifest_path,
+                approved_roots=tuple(
+                    Path(root).expanduser().resolve(strict=False)
+                    for root in request.approved_roots
+                ),
+            )
         try:
             self.task_registry.submit(
                 task,
@@ -307,7 +328,14 @@ class ParityService:
             raise ParityNotReadyError(str(error)) from error
         return self._write_reports(updated)
 
-    def accept_run(self, run_id: str, *, note: str) -> ParityRun:
+    def accept_run(
+        self,
+        run_id: str,
+        *,
+        note: str,
+        manifest_path: Path | None = None,
+        approved_roots: Sequence[Path] = (),
+    ) -> ParityRun:
         if not note.strip():
             raise ParityNotReadyError("Final acceptance requires a note")
         self._require_run(run_id)
@@ -362,11 +390,22 @@ class ParityService:
                 raise ParityNotReadyError("Matching parity task must be terminal done")
             if task.status != DONE:
                 raise ParityNotReadyError("Parity task must be terminal done")
+            source = self._acceptance_source(
+                run_id,
+                manifest_path=manifest_path,
+                approved_roots=approved_roots,
+            )
+
+            def source_guard() -> None:
+                self._assert_source_unchanged(run, source)
+
+            source_guard()
             return self.repository.commit_acceptance(
                 snapshot,
                 acceptance,
                 json_bytes=rendered.json_bytes,
                 markdown=rendered.markdown,
+                source_guard=source_guard,
             )
 
         try:
@@ -379,6 +418,72 @@ class ParityService:
         except (ImmutableRunError, ParityRepositoryError, ValueError) as error:
             raise ParityNotReadyError(str(error)) from error
         return accepted
+
+    def _acceptance_source(
+        self,
+        run_id: str,
+        *,
+        manifest_path: Path | None,
+        approved_roots: Sequence[Path],
+    ) -> _SourceSelection:
+        if manifest_path is not None or approved_roots:
+            if manifest_path is None or not approved_roots:
+                raise ParityNotReadyError(
+                    "Manifest path and approved roots are both required for acceptance"
+                )
+            resolved = resolve_approved_path(manifest_path, approved_roots)
+            selection = _SourceSelection(
+                manifest_path=resolved,
+                approved_roots=tuple(
+                    Path(root).expanduser().resolve(strict=False)
+                    for root in approved_roots
+                ),
+            )
+            with self._source_lock:
+                self._run_sources[run_id] = selection
+            return selection
+        with self._source_lock:
+            selection = self._run_sources.get(run_id)
+        if selection is None:
+            raise ParityNotReadyError(
+                "Select the original parity manifest again before acceptance"
+            )
+        return selection
+
+    @staticmethod
+    def _assert_source_unchanged(run: ParityRun, source: _SourceSelection) -> None:
+        try:
+            manifest_path = resolve_approved_path(
+                source.manifest_path,
+                source.approved_roots,
+            )
+            manifest_bytes = manifest_path.read_bytes()
+            if hashlib.sha256(manifest_bytes).hexdigest() != run.manifest_hash:
+                raise ParityNotReadyError(
+                    "Selected parity manifest changed after the run"
+                )
+            manifest = parse_manifest_bytes(manifest_bytes)
+            inspection = inspect_manifest(
+                manifest,
+                approved_roots=source.approved_roots,
+                asset_root=manifest_path.parent,
+            )
+        except ParityNotReadyError:
+            raise
+        except (OSError, ValueError) as error:
+            raise ParityNotReadyError(
+                "Selected parity corpus is unavailable or unsafe; select it again"
+            ) from error
+        changed_roles = sorted(
+            role
+            for role, asset in inspection.assets_by_role.items()
+            if asset.status != "ready"
+        )
+        if changed_roles:
+            raise ParityNotReadyError(
+                "Selected parity corpus changed after the run: "
+                + ", ".join(changed_roles)
+            )
 
     def _execute_run(
         self,
@@ -496,6 +601,10 @@ class ParityService:
         resolved: dict[str, Any] = {}
         for check_id, item in evidence.items():
             check_cancelled()
+            if isinstance(item, RepositoryCheckEvidence):
+                raise ValueError(
+                    "Repository evidence must be generated by a Galaxy probe"
+                )
             if isinstance(item, ArtifactCheckEvidence):
                 resolved[check_id] = run_repository_check(
                     case_id,

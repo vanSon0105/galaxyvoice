@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field
 from ...batch.omnivoice_adapter import OmniVoiceBatchAdapter
 from ...batch.system_voice_adapter import SystemVoiceBatchAdapter
 from ...common.cache import default_cache_dir
+from ...common.config import default_config_path, load_app_config
 from ...common.processes import managed_media_processes
 from ...omnivoice.client import OmniVoiceWorkerClient
 from ...omnivoice.runtime import OmniVoiceRuntime
@@ -38,6 +39,7 @@ from ...video_editor.service import (
     probe_audio_duration,
     probe_editor_media,
 )
+from ...video_editor.condensation import CueCondensationService, CueCondensationSpec
 from ...video_editor.speech import (
     EditorSpeechCueSpec,
     EditorSpeechItemResult,
@@ -46,6 +48,13 @@ from ...video_editor.speech import (
     EditorSpeechSpec,
 )
 from ...voice.srt import SubtitleCue
+from ...voice.translator import (
+    AITranslationOptions,
+    default_translation_api_key,
+    default_translation_provider,
+    resolve_translation_options,
+    validate_translation_options,
+)
 from ...runtime.resources import resource_keys_for_device
 from ...voice.tts import EDGE_ENGINE_CODE, create_tts_engine, tts_engine_codes
 from ..event_bus import event_bus
@@ -115,6 +124,16 @@ class EditorSpeechRequest(BaseModel):
     voice: EditorSpeechVoiceRequest = Field(default_factory=EditorSpeechVoiceRequest)
     engine_options: dict[str, Any] = Field(default_factory=dict)
     cues: list[EditorSpeechCueRequest] = Field(default_factory=list)
+
+
+class EditorCondensationRequest(BaseModel):
+    project_id: str = ""
+    track_id: str
+    cue_id: str
+    text: str
+    language: str = "vi"
+    cue_duration_ms: int = Field(gt=0)
+    audio_duration_ms: int = Field(gt=0)
 
 
 class VideoSegmentPayload(BaseModel):
@@ -203,6 +222,11 @@ def _omnivoice_runtime() -> OmniVoiceRuntime:
 def _omnivoice_worker_client() -> OmniVoiceWorkerClient:
     worker_path = Path(__file__).resolve().parents[2] / "omnivoice" / "worker.py"
     return get_shared_worker_client(_omnivoice_runtime(), worker_path)
+
+
+def _settings_path(request: Request) -> Path:
+    configured = getattr(request.app.state, "settings_path", None)
+    return Path(configured) if configured is not None else default_config_path()
 
 
 def _editor_speech_spec(body: EditorSpeechRequest) -> EditorSpeechSpec:
@@ -340,6 +364,54 @@ def start_speech(body: EditorSpeechRequest, request: Request) -> dict[str, str]:
 
     task_registry.submit(record, execute, serialize)
     return {"job_id": spec.job_id, "task_id": record.task_id}
+
+
+@router.post("/speech/condense")
+def start_condensation(body: EditorCondensationRequest, request: Request) -> dict[str, str]:
+    spec = CueCondensationSpec(
+        track_id=body.track_id.strip(),
+        cue_id=body.cue_id.strip(),
+        text=body.text,
+        language=body.language.strip() or "vi",
+        cue_duration_ms=body.cue_duration_ms,
+        audio_duration_ms=body.audio_duration_ms,
+    )
+    try:
+        spec.validate()
+        config = load_app_config(_settings_path(request))
+        provider = config.ai_provider or default_translation_provider()
+        options = resolve_translation_options(
+            AITranslationOptions(
+                source_language=spec.language,
+                target_language=spec.language,
+                provider=provider,
+                api_key=default_translation_api_key(provider),
+                model=config.ai_model,
+                base_url=config.ai_base_url,
+            )
+        )
+        validate_translation_options(options)
+    except (RuntimeError, ValueError) as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    record = task_registry.create(
+        "editor-condensation",
+        capability_id=f"ai.{options.provider}",
+        project_id=body.project_id.strip(),
+        resource_keys=("network",),
+        recovery_route="/editor",
+        recovery_hint="Chọn lại cue bị tràn để tạo đề xuất rút gọn.",
+    )
+    service = CueCondensationService()
+
+    def execute(context: TaskContext):
+        context.report("Đang tạo đề xuất rút gọn...", progress=0.05)
+        result = service.propose(spec, options, stop_event=record.stop_event)
+        context.report("Đã tạo đề xuất để xem trước.", progress=1.0)
+        return result
+
+    task_registry.submit(record, execute, lambda result: result.to_payload())
+    return {"task_id": record.task_id}
 
 
 @router.post("/load")

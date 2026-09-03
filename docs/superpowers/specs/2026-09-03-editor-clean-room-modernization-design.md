@@ -140,3 +140,20 @@ replace clips only through an explicit editor action.
    voice revision or synthesis context invalidates the prior entry.
 6. Phase 4 does not alter subtitle text, fit audio to cue duration, or introduce
    the Phase 5 shortening and timing-fit behavior.
+
+## Phase 5 Acceptance
+
+1. Every generated editor WAV is measured against its source cue before the
+   completed item event is emitted and before frontend placement begins.
+2. The result reports cue duration, audio duration, actual overflow, fit status,
+   and a bounded speed suggestion only when the required speed is considered
+   safe.
+3. Audio that cannot fit within the safe speed bound is reported without being
+   clipped, truncated, stretched, or silently moved.
+4. Condensation uses the AI provider, model, base URL, and environment-backed
+   API key already configured for Galaxy.
+5. AI output is presented beside the unchanged source cue as a proposal; only
+   an explicit Apply action replaces the cue text.
+6. A stale proposal cannot replace a cue whose source text changed while the AI
+   request was running, and applying a proposal requires generating audio again
+   for a new fit measurement.

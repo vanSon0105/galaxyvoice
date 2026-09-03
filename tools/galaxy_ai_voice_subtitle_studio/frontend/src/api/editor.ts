@@ -112,6 +112,11 @@ export interface EditorSpeechItemResult {
   wav_path: string | null
   error: string | null
   warnings: string[]
+  cue_duration_ms: number
+  audio_duration_ms: number
+  overflow_ms: number
+  fit_status: 'unmeasured' | 'fits' | 'speed-up' | 'condense'
+  suggested_speed: number | null
 }
 
 export interface EditorSpeechResult {
@@ -131,6 +136,26 @@ export interface EditorSpeechItemEvent extends EditorSpeechItemResult {
   completed: number
   failed: number
   total: number
+}
+
+export interface EditorCondensationRequest {
+  project_id: string
+  track_id: string
+  cue_id: string
+  text: string
+  language: string
+  cue_duration_ms: number
+  audio_duration_ms: number
+}
+
+export interface EditorCondensationResult {
+  track_id: string
+  cue_id: string
+  original_text: string
+  proposed_text: string
+  target_characters: number
+  provider: string
+  model: string
 }
 
 export function loadEditorMedia(path: string, kind: 'video' | 'audio'): Promise<EditorMedia> {
@@ -160,6 +185,14 @@ export async function startEditorExport(request: EditorExportRequest): Promise<s
 
 export function startEditorSpeech(request: EditorSpeechRequest): Promise<{ job_id: string; task_id: string }> {
   return apiJson<{ job_id: string; task_id: string }>('/api/editor/speech', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
+}
+
+export function startEditorCondensation(request: EditorCondensationRequest): Promise<{ task_id: string }> {
+  return apiJson<{ task_id: string }>('/api/editor/speech/condense', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),

@@ -2263,6 +2263,30 @@ body {
 .editor-tts-scope { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .editor-tts-panel > .btn { width: 100%; }
 
+.editor-fit-report,
+.editor-condensation-review {
+  display: grid;
+  gap: 5px;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  border-left: 3px solid var(--color-success);
+  border-radius: 4px;
+  background: var(--color-surface-raised);
+}
+
+.editor-fit-report.speed-up { border-left-color: var(--color-warning); }
+.editor-fit-report.condense { border-left-color: var(--color-danger); }
+.editor-fit-report strong,
+.editor-condensation-review strong { font-size: 11px; }
+.editor-fit-report small,
+.editor-condensation-review small { color: var(--color-fg-subtle); font-size: 10px; }
+.editor-fit-report span { color: var(--color-warning); font-size: 10px; }
+.editor-fit-report .btn { justify-self: start; min-height: 28px; }
+.editor-condensation-review { border-left-color: var(--color-accent); }
+.editor-condensation-review > div:first-child { display: flex; justify-content: space-between; gap: 8px; }
+.editor-condensation-review p { margin: 0; color: var(--color-fg); font-size: 11px; line-height: 1.5; }
+.editor-condensation-review .toolbar-row { gap: 6px; }
+
 .timeline-label-spacer { height: 28px; border-bottom: 1px solid var(--border-soft); }
 .timeline-track-label {
   display: grid;

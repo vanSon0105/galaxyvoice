@@ -1405,6 +1405,12 @@ def _chat_completion(messages: list[dict[str, str]], options: AITranslationOptio
         raise RuntimeError("AI translation API returned an unexpected response.") from error
 
 
+def complete_chat(messages: list[dict[str, str]], options: AITranslationOptions) -> str:
+    resolved = resolve_translation_options(options)
+    validate_translation_options(resolved)
+    return _chat_completion(messages, resolved)
+
+
 def _wait_for_nvidia_request() -> None:
     global _nvidia_next_request_at
     with _nvidia_request_lock:

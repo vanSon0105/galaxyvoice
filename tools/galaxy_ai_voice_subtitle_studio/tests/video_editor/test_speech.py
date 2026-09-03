@@ -182,6 +182,9 @@ class EditorSpeechServiceTests(unittest.TestCase):
         self.assertIn("\n\n", engine.generated[0].text)
         self.assertEqual([item.item_id for item in result.items], ["item-1", "item-2"])
         self.assertTrue(all(Path(item.wav_path).is_file() for item in result.items))
+        self.assertEqual(result.items[0].cue_duration_ms, 900)
+        self.assertGreater(result.items[0].audio_duration_ms, 0)
+        self.assertIn(result.items[0].fit_status, {"fits", "speed-up", "condense"})
 
     def test_cluster_without_proven_boundaries_falls_back_to_individual_cues(self) -> None:
         engine = _PcmEngine(cluster_has_boundary=False)
@@ -212,6 +215,23 @@ class EditorSpeechServiceTests(unittest.TestCase):
         self.assertTrue(Path(first.items[0].wav_path).is_file())
         self.assertTrue(Path(second.items[0].wav_path).is_file())
         self.assertTrue(Path(third.items[0].wav_path).is_file())
+
+    def test_unreadable_timing_metadata_does_not_discard_generated_audio(self) -> None:
+        engine = _FakeEngine()
+        cue = EditorSpeechCueSpec(
+            "item-1",
+            "subtitle-1",
+            "cue-1",
+            0,
+            "Xin chao",
+            end_ms=1_000,
+        )
+
+        result = EditorSpeechService().execute(replace(self._spec(), cues=(cue,)), engine)
+
+        self.assertEqual(result.completed_count, 1)
+        self.assertEqual(result.items[0].fit_status, "unmeasured")
+        self.assertIn("Không đo được độ vừa", result.items[0].warnings[0])
 
     def test_cluster_cache_restores_every_cue_without_rendering_the_context_again(self) -> None:
         engine = _PcmEngine()

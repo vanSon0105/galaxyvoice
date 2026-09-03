@@ -74,8 +74,9 @@ describe('EditorPage', () => {
       editable: true, identity_editable: true, deletable: true, compatibility: { studio: true, batch: true, editor: true, longform: true, dubbing: true },
     }])
     const startSpeech = vi.spyOn(editorApi, 'startEditorSpeech').mockResolvedValue({ job_id: 'editor-job-1', task_id: 'task-1' })
+    const startCondensation = vi.spyOn(editorApi, 'startEditorCondensation').mockResolvedValue({ task_id: 'condense-1' })
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
-    render(<QueryClientProvider client={client}><EditorPage /></QueryClientProvider>)
+    const view = render(<QueryClientProvider client={client}><EditorPage /></QueryClientProvider>)
 
     fireEvent.click(screen.getByRole('button', { name: 'Thêm SRT' }))
     expect(await screen.findByText('captions.srt')).toBeInTheDocument()
@@ -101,12 +102,46 @@ describe('EditorPage', () => {
         job_id: request.job_id, task_id: 'task-1', item_id: cue.item_id,
         track_id: cue.track_id, cue_id: cue.cue_id, start_ms: cue.start_ms,
         status: 'done', wav_path: 'D:/voice.wav', error: null, warnings: [],
+        cue_duration_ms: 1_000, audio_duration_ms: 1_400, overflow_ms: 400,
+        fit_status: 'condense', suggested_speed: null,
         completed: 1, failed: 0, total: 1,
       },
     })
 
     await waitFor(() => expect(editorApi.loadEditorMedia).toHaveBeenCalledWith('D:/voice.wav', 'audio'))
     expect(await screen.findByText('voice.wav')).toBeInTheDocument()
+    expect(screen.getByText('Audio tràn 0,40 giây')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Đề xuất rút gọn' }))
+    expect(startCondensation).toHaveBeenCalledWith({
+      project_id: '',
+      track_id: cue.track_id,
+      cue_id: cue.cue_id,
+      text: 'Xin chào',
+      language: 'vi',
+      cue_duration_ms: 1_000,
+      audio_duration_ms: 1_400,
+    })
+
+    taskState.tasks = [{
+      taskId: 'condense-1',
+      status: 'done',
+      result: {
+        track_id: cue.track_id,
+        cue_id: cue.cue_id,
+        original_text: 'Xin chào',
+        proposed_text: 'Chào bạn',
+        target_characters: 6,
+        provider: 'deepseek',
+        model: 'deepseek-chat',
+      },
+    }]
+    view.rerender(<QueryClientProvider client={client}><EditorPage /></QueryClientProvider>)
+
+    expect(await screen.findByText('Chào bạn')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('Xin chào')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Áp dụng đề xuất' }))
+    expect(screen.getByDisplayValue('Chào bạn')).toBeInTheDocument()
   })
 
   it('generates subtitle audio with a selected Windows system voice', async () => {

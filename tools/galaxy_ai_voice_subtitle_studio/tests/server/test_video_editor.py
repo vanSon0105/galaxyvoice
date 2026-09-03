@@ -14,6 +14,7 @@ from app.server.main import create_app
 from app.server.routers import video_editor as editor_router
 from app.server.tasks import CANCELLED, DONE, task_registry
 from app.video_editor.service import EditorExportResult, EditorMediaInfo
+from app.video_editor.condensation import CueCondensationResult, CueCondensationService
 from app.video_editor.speech import EditorSpeechItemResult, EditorSpeechResult, EditorSpeechService
 
 
@@ -232,6 +233,46 @@ class VideoEditorApiTests(unittest.TestCase):
         ]
         self.assertEqual(emitted[0]["payload"]["task_id"], task_id)
         self.assertEqual(emitted[0]["payload"]["track_id"], "subtitle-2")
+
+    def test_condensation_returns_a_proposal_without_replacing_the_cue(self) -> None:
+        (self.root / "config.json").write_text(
+            '{"version":6,"ai_provider":"ollama","ai_model":"local-test",'
+            '"ai_base_url":"http://127.0.0.1:11434/v1"}',
+            encoding="utf-8",
+        )
+        proposal = CueCondensationResult(
+            track_id="subtitle-1",
+            cue_id="cue-2",
+            original_text="Đây là câu phụ đề rất dài.",
+            proposed_text="Câu phụ đề dài.",
+            target_characters=18,
+            provider="ollama",
+            model="local-test",
+        )
+        with mock.patch.object(CueCondensationService, "propose", return_value=proposal) as propose:
+            response = self.client.post(
+                "/api/editor/speech/condense",
+                json={
+                    "project_id": "project-1",
+                    "track_id": "subtitle-1",
+                    "cue_id": "cue-2",
+                    "text": proposal.original_text,
+                    "language": "vi",
+                    "cue_duration_ms": 1_000,
+                    "audio_duration_ms": 1_700,
+                },
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            task_id = response.json()["task_id"]
+            self.assertEqual(_wait_status(task_id), DONE)
+
+        result = task_registry.get(task_id).result_payload
+        self.assertEqual(result["original_text"], proposal.original_text)
+        self.assertEqual(result["proposed_text"], proposal.proposed_text)
+        propose.assert_called_once()
+        options = propose.call_args.args[1]
+        self.assertEqual(options.provider, "ollama")
+        self.assertEqual(options.model, "local-test")
 
 
 if __name__ == "__main__":

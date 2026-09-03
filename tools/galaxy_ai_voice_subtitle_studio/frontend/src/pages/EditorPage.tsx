@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
-import { loadEditorCues, loadEditorMedia, startEditorExport, startEditorSpeech } from '../api/editor'
-import type { EditorExportResult, EditorMedia, EditorSpeechItemEvent, EditorSpeechResult, EditorSubtitleAsset } from '../api/editor'
+import { loadEditorCues, loadEditorMedia, startEditorCondensation, startEditorExport, startEditorSpeech } from '../api/editor'
+import type { EditorCondensationResult, EditorExportResult, EditorMedia, EditorSpeechItemEvent, EditorSpeechItemResult, EditorSpeechResult, EditorSubtitleAsset } from '../api/editor'
 import { fetchSettings, fetchSettingsMeta, updateSettings } from '../api/settings'
 import { openPath } from '../api/voice'
 import { fetchLibraryVoices, libraryVoiceRequest } from '../api/voiceLibrary'
@@ -84,6 +84,7 @@ export function EditorPage() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const seeded = useRef(false)
   const handledSpeechTask = useRef('')
+  const handledCondensationTask = useRef('')
   const activeSpeechJob = useRef('')
   const speechItemDeliveries = useRef(new Map<string, Promise<void>>())
 
@@ -112,12 +113,17 @@ export function EditorPage() {
   const [voiceId, setVoiceId] = useState('')
   const [ttsScope, setTtsScope] = useState<TtsScope>('selected')
   const [ttsTaskId, setTtsTaskId] = useState('')
+  const [condensationTaskId, setCondensationTaskId] = useState('')
+  const [speechFits, setSpeechFits] = useState<Record<string, EditorSpeechItemResult>>({})
+  const [condensationProposal, setCondensationProposal] = useState<EditorCondensationResult | null>(null)
   const [inspectorMode, setInspectorMode] = useState<InspectorMode>('subtitles')
 
   const exportTask = taskId ? tasks.find((item) => item.taskId === taskId) : undefined
   const speechTask = ttsTaskId ? tasks.find((item) => item.taskId === ttsTaskId) : undefined
+  const condensationTask = condensationTaskId ? tasks.find((item) => item.taskId === condensationTaskId) : undefined
   const running = isTaskActive(exportTask?.status)
   const speechRunning = isTaskActive(speechTask?.status)
+  const condensationRunning = isTaskActive(condensationTask?.status)
   const durationMs = Math.max(1, editorDuration(tracks))
   const videoTrackClips = useMemo(
     () => tracks.flatMap((track, trackOrder) => track.kind === 'video' && track.enabled ? track.clips.map((clip) => ({ track, trackOrder, clip })) : []),
@@ -137,6 +143,14 @@ export function EditorPage() {
   const activeCue = activeSubtitleTrack && selection?.trackId === activeSubtitleTrack.id
     ? activeSubtitleTrack.cues.find((cue) => cue.id === selection.itemId) ?? null
     : null
+  const activeFit = activeCue && activeSubtitleTrack
+    ? speechFits[`${activeSubtitleTrack.id}:${activeCue.id}`]
+    : undefined
+  const activeProposal = activeCue && activeSubtitleTrack
+    && condensationProposal?.track_id === activeSubtitleTrack.id
+    && condensationProposal.cue_id === activeCue.id
+    ? condensationProposal
+    : null
   const selectedClip = selectedTrack && selectedTrack.kind !== 'subtitle' && selection
     ? selectedTrack.clips.find((clip) => clip.id === selection.itemId) ?? null
     : null
@@ -151,6 +165,9 @@ export function EditorPage() {
 
   const deliverSpeechItem = useCallback(async (item: EditorSpeechItemEvent) => {
     if (item.status !== 'done' || !item.wav_path) return
+    if (item.fit_status && item.fit_status !== 'unmeasured') {
+      setSpeechFits((current) => ({ ...current, [`${item.track_id}:${item.cue_id}`]: item }))
+    }
     const deliveryKey = `${item.job_id}:${item.item_id}`
     const existing = speechItemDeliveries.current.get(deliveryKey)
     if (existing) return existing
@@ -227,6 +244,19 @@ export function EditorPage() {
   }, [deliverSpeechItem, speechTask])
 
   useEffect(() => {
+    if (!condensationTask || isTaskActive(condensationTask.status) || handledCondensationTask.current === condensationTask.taskId) return
+    handledCondensationTask.current = condensationTask.taskId
+    if (condensationTask.status === 'done' && condensationTask.result) {
+      setCondensationProposal(condensationTask.result as EditorCondensationResult)
+      setMessage('Đã có đề xuất rút gọn. Nội dung gốc chưa bị thay đổi.')
+    } else if (condensationTask.status === 'cancelled') {
+      setMessage('Đã hủy tạo đề xuất rút gọn.')
+    } else {
+      setMessage(condensationTask.error ?? 'Không tạo được đề xuất rút gọn.')
+    }
+  }, [condensationTask])
+
+  useEffect(() => {
     const player = videoRef.current
     if (!player || !previewClip) return
     player.volume = clamp(sourceVolume / 100, 0, 1)
@@ -292,7 +322,19 @@ export function EditorPage() {
   }
 
   const seek = (milliseconds: number) => setPlayheadMs(clamp(milliseconds, 0, durationMs))
-  const updateCue = (trackId: string, cueId: string, cue: TimelineCue) => setTracks((current) => current.map((track) => track.id === trackId && track.kind === 'subtitle' ? { ...track, cues: reindexTrackCues(track.cues.map((item) => item.id === cueId ? cue : item)) } : track))
+  const updateCue = (trackId: string, cueId: string, cue: TimelineCue) => {
+    setTracks((current) => current.map((track) => track.id === trackId && track.kind === 'subtitle' ? { ...track, cues: reindexTrackCues(track.cues.map((item) => item.id === cueId ? cue : item)) } : track))
+    setSpeechFits((current) => {
+      const key = `${trackId}:${cueId}`
+      if (!(key in current)) return current
+      const next = { ...current }
+      delete next[key]
+      return next
+    })
+    if (condensationProposal?.track_id === trackId && condensationProposal.cue_id === cueId) {
+      setCondensationProposal(null)
+    }
+  }
   const updateClip = (trackId: string, clipId: string, clip: TimelineMediaClip) => setTracks((current) => current.map((track) => track.id === trackId && track.kind !== 'subtitle' ? { ...track, clips: track.clips.map((item) => item.id === clipId ? clip : item) } : track))
 
   const updateActiveTime = (field: 'start_ms' | 'end_ms', value: string) => {
@@ -379,6 +421,36 @@ export function EditorPage() {
       activeSpeechJob.current = ''
       setMessage(cause instanceof Error ? cause.message : String(cause))
     }
+  }
+
+  const requestCondensation = async () => {
+    if (!activeCue || !activeSubtitleTrack || !activeFit || activeFit.audio_duration_ms <= activeFit.cue_duration_ms) return
+    setCondensationProposal(null)
+    try {
+      const response = await startEditorCondensation({
+        project_id: galaxyProjectId,
+        track_id: activeSubtitleTrack.id,
+        cue_id: activeCue.id,
+        text: activeCue.text,
+        language: selectedVoice?.language || 'vi',
+        cue_duration_ms: activeFit.cue_duration_ms,
+        audio_duration_ms: activeFit.audio_duration_ms,
+      })
+      setCondensationTaskId(response.task_id)
+      setMessage('Đang tạo đề xuất rút gọn...')
+    } catch (cause) {
+      setMessage(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
+  const applyCondensation = () => {
+    if (!activeCue || !activeSubtitleTrack || !activeProposal) return
+    if (activeCue.text !== activeProposal.original_text) {
+      setMessage('Câu gốc đã thay đổi; đề xuất cũ không còn được áp dụng.')
+      return
+    }
+    updateCue(activeSubtitleTrack.id, activeCue.id, { ...activeCue, text: activeProposal.proposed_text })
+    setMessage('Đã áp dụng đề xuất. Hãy tạo lại audio để kiểm tra độ vừa.')
   }
 
   const startExport = async () => {
@@ -491,6 +563,17 @@ export function EditorPage() {
             {activeCue && activeSubtitleTrack ? <div className="cue-editor">
               <div className="field-grid"><div className="field"><label>Bắt đầu</label><ClockInput value={activeCue.start_ms} onCommit={(value) => updateActiveTime('start_ms', value)} /></div><div className="field"><label>Kết thúc</label><ClockInput value={activeCue.end_ms} onCommit={(value) => updateActiveTime('end_ms', value)} /></div></div>
               <textarea className="srt-editor" rows={3} value={activeCue.text} onChange={(event) => updateCue(activeSubtitleTrack.id, activeCue.id, { ...activeCue, text: event.target.value })} />
+              {activeFit && <div className={`editor-fit-report ${activeFit.fit_status}`}>
+                {activeFit.fit_status === 'fits' ? <strong>Audio vừa thời lượng cue</strong> : <strong>Audio tràn {formatFitSeconds(activeFit.overflow_ms)} giây</strong>}
+                <small>{formatFitSeconds(activeFit.audio_duration_ms)} giây audio / {formatFitSeconds(activeFit.cue_duration_ms)} giây cue</small>
+                {activeFit.suggested_speed && <span>Gợi ý tốc độ an toàn: {activeFit.suggested_speed.toFixed(2)}×</span>}
+                {activeFit.fit_status !== 'fits' && <button className="btn" disabled={condensationRunning} onClick={() => void requestCondensation()}>{condensationRunning ? 'Đang đề xuất...' : 'Đề xuất rút gọn'}</button>}
+              </div>}
+              {activeProposal && <div className="editor-condensation-review">
+                <div><strong>Bản đề xuất</strong><small>{activeProposal.provider} · {activeProposal.model}</small></div>
+                <p>{activeProposal.proposed_text}</p>
+                <div className="toolbar-row"><button className="btn accent" onClick={applyCondensation}>Áp dụng đề xuất</button><button className="btn" onClick={() => setCondensationProposal(null)}>Bỏ</button></div>
+              </div>}
             </div> : <p className="field-hint">Chọn một câu phụ đề để sửa hoặc chuyển riêng câu đó thành giọng nói.</p>}
             <div className="editor-tts-panel">
               <div className="field"><label>Giọng từ Thư viện</label><select aria-label="Giọng từ Thư viện" value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">Chọn giọng</option>{(voicesQuery.data ?? []).map((voice) => <VoiceOption key={voice.voice_id} voice={voice} />)}</select></div>
@@ -552,6 +635,10 @@ function AudioPreview({ clip, playheadMs, playing, volume }: { clip: TimelineMed
     else audio.pause()
   }, [clip, playheadMs, playing, volume])
   return <audio ref={ref} src={clip.media.url} preload="metadata" />
+}
+
+function formatFitSeconds(milliseconds: number): string {
+  return (Math.max(0, milliseconds) / 1_000).toFixed(2).replace('.', ',')
 }
 
 function VoiceOption({ voice }: { voice: LibraryVoice }) {

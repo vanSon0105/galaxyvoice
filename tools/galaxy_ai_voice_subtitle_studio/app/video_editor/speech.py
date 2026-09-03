@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import shutil
 import threading
+import wave
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
@@ -24,6 +25,7 @@ from ..studio.service import StudioEngine
 from ..voice.audio import split_wav_on_silence
 from ..voice.text_splitter import normalize_text
 from .speech_planning import ShortCueLimits, SpeechCueGroup, plan_short_cues
+from .timing_fit import SpeechTimingFitPolicy, measure_speech_fit
 
 
 EditorSpeechProgress = Callable[[str, float], None]
@@ -126,6 +128,11 @@ class EditorSpeechItemResult:
     wav_path: str = ""
     error: str = ""
     warnings: tuple[str, ...] = ()
+    cue_duration_ms: int = 0
+    audio_duration_ms: int = 0
+    overflow_ms: int = 0
+    fit_status: str = "unmeasured"
+    suggested_speed: float | None = None
 
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)
@@ -178,10 +185,12 @@ class EditorSpeechService:
         checkpoint_interval_seconds: float = DEFAULT_PERSIST_INTERVAL_SECONDS,
         render_cache: SpeechRenderCache | None = None,
         short_cue_limits: ShortCueLimits | None = None,
+        fit_policy: SpeechTimingFitPolicy | None = None,
     ) -> None:
         self.checkpoint_interval_seconds = checkpoint_interval_seconds
         self.render_cache = render_cache
         self.short_cue_limits = short_cue_limits or ShortCueLimits()
+        self.fit_policy = fit_policy or SpeechTimingFitPolicy()
 
     def execute(
         self,
@@ -385,7 +394,7 @@ class EditorSpeechService:
                     positions[group.cues[-1].item_id] / total,
                 )
             return tuple(
-                self._successful_item(cue, self._cache_destination(root, cue))
+                self._successful_item(cue, self._cache_destination(root, cue), current_speed=spec.speed)
                 for cue in group.cues
             )
 
@@ -425,7 +434,14 @@ class EditorSpeechService:
                 self._write_item_manifest(output_path, key, context_text)
                 if self.render_cache is not None:
                     self.render_cache.store(key, output_path)
-                results.append(self._successful_item(cue, output_path, cluster_artifact.warnings))
+                results.append(
+                    self._successful_item(
+                        cue,
+                        output_path,
+                        cluster_artifact.warnings,
+                        current_speed=spec.speed,
+                    )
+                )
             return tuple(results)
         except TaskCancelledError:
             raise
@@ -523,7 +539,7 @@ class EditorSpeechService:
                 self._write_item_manifest(cache_path, cache_key, "")
                 if progress:
                     progress(f"Đã dùng cache cho câu {index + 1}/{total}.", index / total)
-                return self._successful_item(cue, cache_path)
+                return self._successful_item(cue, cache_path, current_speed=spec.speed)
             artifact = engine.generate(
                 generation_spec,
                 lambda message: progress(message, index / total) if progress else None,
@@ -531,7 +547,12 @@ class EditorSpeechService:
             wav_path = self._validated_wav(artifact, root)
             if self.render_cache is not None:
                 self.render_cache.store(cache_key, wav_path)
-            return self._successful_item(cue, wav_path, artifact.warnings)
+            return self._successful_item(
+                cue,
+                wav_path,
+                artifact.warnings,
+                current_speed=spec.speed,
+            )
         except TaskCancelledError:
             raise
         except Exception as error:
@@ -585,12 +606,25 @@ class EditorSpeechService:
             },
         )
 
-    @staticmethod
     def _successful_item(
+        self,
         cue: EditorSpeechCueSpec,
         wav_path: Path,
         warnings: tuple[str, ...] = (),
+        *,
+        current_speed: float,
     ) -> EditorSpeechItemResult:
+        fit = None
+        if cue.end_ms > cue.start_ms:
+            try:
+                fit = measure_speech_fit(
+                    wav_path,
+                    cue_duration_ms=cue.end_ms - cue.start_ms,
+                    current_speed=current_speed,
+                    policy=self.fit_policy,
+                )
+            except (OSError, EOFError, ValueError, wave.Error):
+                warnings = (*warnings, "Không đo được độ vừa giữa audio và cue phụ đề.")
         return EditorSpeechItemResult(
             item_id=cue.item_id,
             track_id=cue.track_id,
@@ -599,4 +633,9 @@ class EditorSpeechService:
             status="done",
             wav_path=str(wav_path.resolve()),
             warnings=warnings,
+            cue_duration_ms=fit.cue_duration_ms if fit else 0,
+            audio_duration_ms=fit.audio_duration_ms if fit else 0,
+            overflow_ms=fit.overflow_ms if fit else 0,
+            fit_status=fit.status if fit else "unmeasured",
+            suggested_speed=fit.suggested_speed if fit else None,
         )

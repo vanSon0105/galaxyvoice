@@ -21,6 +21,7 @@ from ...video_editor.service import (
     EDITOR_FPS_OPTIONS,
     EDITOR_RESOLUTIONS,
     EditorExportOptions,
+    EditorMediaClip,
     EditorVideoSegment,
     load_editor_subtitles,
     probe_audio_duration,
@@ -70,6 +71,29 @@ class VideoSegmentPayload(BaseModel):
         return EditorVideoSegment(self.source_start_ms, self.source_end_ms)
 
 
+class MediaClipPayload(BaseModel):
+    path: str
+    timeline_start_ms: int = Field(ge=0)
+    source_start_ms: int = Field(ge=0)
+    source_end_ms: int = Field(gt=0)
+    track_order: int = Field(ge=0)
+    volume: int = Field(100, ge=0, le=200)
+    has_audio: bool = True
+
+    def to_clip(self, label: str) -> EditorMediaClip:
+        if self.source_end_ms <= self.source_start_ms:
+            raise ValueError("Điểm kết thúc clip phải sau điểm bắt đầu.")
+        return EditorMediaClip(
+            path=_existing_file(self.path, label),
+            timeline_start_ms=self.timeline_start_ms,
+            source_start_ms=self.source_start_ms,
+            source_end_ms=self.source_end_ms,
+            track_order=self.track_order,
+            volume=self.volume,
+            has_audio=self.has_audio,
+        )
+
+
 class ExportRequest(BaseModel):
     galaxy_project_id: str = ""
     video_path: str
@@ -88,6 +112,8 @@ class ExportRequest(BaseModel):
     quality: int = Field(20, ge=14, le=32)
     subtitle_font_size: int = Field(22, ge=10, le=72)
     subtitle_margin: int = Field(36, ge=0, le=500)
+    video_clips: list[MediaClipPayload] = Field(default_factory=list)
+    audio_clips: list[MediaClipPayload] = Field(default_factory=list)
 
 
 def _existing_file(raw_path: str, label: str) -> Path:
@@ -183,6 +209,8 @@ def start_export(body: ExportRequest, request: Request) -> dict[str, str]:
     try:
         cues = tuple(item.to_cue() for item in body.cues)
         segments = tuple(item.to_segment() for item in body.segments)
+        video_clips = tuple(item.to_clip("Video clip") for item in body.video_clips)
+        audio_clips = tuple(item.to_clip("Audio clip") for item in body.audio_clips)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
@@ -193,6 +221,8 @@ def start_export(body: ExportRequest, request: Request) -> dict[str, str]:
         audio_path=audio_path,
         subtitle_cues=cues,
         video_segments=segments,
+        video_clips=video_clips,
+        audio_clips=audio_clips,
         audio_offset_ms=body.audio_offset_ms,
         audio_mode=body.audio_mode,
         source_volume=body.source_volume,
@@ -214,6 +244,12 @@ def start_export(body: ExportRequest, request: Request) -> dict[str, str]:
     record.on_cancel = lambda: managed_media_processes.terminate_task(record.task_id)
     configured = getattr(request.app.state, "settings_path", None)
     graph_service = project_graph_service(Path(configured) if configured is not None else None)
+    source_assets = tuple(dict.fromkeys(
+        [("source_video", str(video_path))]
+        + ([("source_audio", str(audio_path))] if audio_path is not None else [])
+        + [("source_video", str(clip.path)) for clip in video_clips]
+        + [("source_audio", str(clip.path)) for clip in audio_clips]
+    ))
 
     def run_export():
         from ...video_editor.service import export_editor_video
@@ -232,11 +268,7 @@ def start_export(body: ExportRequest, request: Request) -> dict[str, str]:
             workspace="editor",
             owner_id=record.task_id,
             label=body.project_name or result.video_path.stem,
-            sources=tuple(
-                (role, str(path))
-                for role, path in (("source_video", video_path), ("source_audio", audio_path))
-                if path is not None
-            ),
+            sources=source_assets,
             outputs=tuple(
                 (role, str(path))
                 for role, path in (

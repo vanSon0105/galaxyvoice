@@ -13,6 +13,7 @@ from app.video_editor.service import (
     INTEL_ENCODER,
     NVIDIA_ENCODER,
     EditorExportOptions,
+    EditorMediaClip,
     EditorMediaInfo,
     EditorVideoSegment,
     build_editor_export_command,
@@ -127,6 +128,34 @@ class EditorServiceTests(unittest.TestCase):
         self.assertEqual(command[command.index("-t") + 1], "4.500")
         self.assertIn("[editor_video]", command)
         self.assertIn("[editor_audio]", command)
+
+    def test_export_command_composites_positioned_video_and_audio_clips(self) -> None:
+        options = EditorExportOptions(
+            video_path=Path("base.mp4"),
+            output_dir=Path("exports"),
+            video_clips=(
+                EditorMediaClip(Path("base.mp4"), 0, 0, 8_000, 1, 100, True),
+                EditorMediaClip(Path("overlay.mp4"), 2_000, 500, 3_500, 0, 100, False),
+            ),
+            audio_clips=(
+                EditorMediaClip(Path("voice-one.wav"), 1_000, 0, 2_000, 2, 80, True),
+                EditorMediaClip(Path("voice-two.wav"), 4_000, 250, 2_250, 3, 90, True),
+            ),
+        )
+        media = EditorMediaInfo(8.0, 1920, 1080, 30.0, True)
+
+        command = build_editor_export_command(
+            "ffmpeg", options, media, Path("result.mp4"), encoder=CPU_ENCODER, subtitle_path=None,
+        )
+
+        graph = command[command.index("-filter_complex") + 1]
+        self.assertEqual(command.count("-i"), 4)
+        self.assertIn("overlay=eof_action=pass", graph)
+        self.assertIn("trim=start=0.500:end=3.500", graph)
+        self.assertIn("adelay=1000:all=1", graph)
+        self.assertIn("adelay=4000:all=1", graph)
+        self.assertIn("amix=inputs=3", graph)
+        self.assertEqual(command[command.index("-t") + 1], "8.000")
 
     def test_export_command_rejects_segment_outside_source(self) -> None:
         options = EditorExportOptions(

@@ -47,6 +47,18 @@ export interface EditorExportRequest {
   quality: number
   subtitle_font_size: number
   subtitle_margin: number
+  video_clips?: EditorExportClip[]
+  audio_clips?: EditorExportClip[]
+}
+
+export interface EditorExportClip {
+  path: string
+  timeline_start_ms: number
+  source_start_ms: number
+  source_end_ms: number
+  track_order: number
+  volume: number
+  has_audio: boolean
 }
 
 export interface EditorExportResult {

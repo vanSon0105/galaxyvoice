@@ -1,10 +1,13 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import * as editorApi from '../api/editor'
+import * as batchApi from '../api/batch'
 import * as settingsApi from '../api/settings'
+import * as voiceLibraryApi from '../api/voiceLibrary'
 import type { SettingsMeta } from '../api/settings'
+import * as dialogs from '../lib/dialogs'
 import { EditorPage } from './EditorPage'
 
 vi.mock('../ws/useTasks', () => ({ useTasks: () => ({ tasks: [], cancelTask: vi.fn() }) }))
@@ -19,7 +22,7 @@ const SETTINGS_META: SettingsMeta = {
   editor_audio_modes: [{ code: 'mix', label: 'Trộn âm thanh' }], omnivoice_devices: [],
 }
 
-afterEach(() => vi.restoreAllMocks())
+afterEach(() => { cleanup(); vi.restoreAllMocks() })
 
 describe('EditorPage', () => {
   it('keeps imported media in the bin until it is added to the timeline', async () => {
@@ -46,5 +49,36 @@ describe('EditorPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Xuất video' }))
     expect(await screen.findByText('Không lưu được config')).toBeInTheDocument()
     expect(startExport).not.toHaveBeenCalled()
+  })
+
+  it('starts subtitle speech generation with a selected library voice', async () => {
+    vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({ output_dir: 'D:/result', omnivoice_device: 'auto' })
+    vi.spyOn(settingsApi, 'fetchSettingsMeta').mockResolvedValue(SETTINGS_META)
+    vi.spyOn(dialogs, 'pickSrtFile').mockResolvedValue('D:/captions.srt')
+    vi.spyOn(editorApi, 'loadEditorCues').mockResolvedValue({
+      name: 'captions.srt', path: 'D:/captions.srt', cues: [{ index: 1, start_ms: 1_000, end_ms: 2_000, text: 'Xin chào' }],
+    })
+    vi.spyOn(voiceLibraryApi, 'fetchLibraryVoices').mockResolvedValue([{
+      voice_id: 'son', revision: 1, name: 'Sơn', source: 'cloned', language: 'vi', engine_id: 'omnivoice',
+      selection: { source: 'profile', profile_id: 'son-profile', reference_audio: '', reference_text: '', instruction: '', system_engine: '', system_voice: '' },
+      tags: [], notes: '', favorite: false, consent: { confirmed: true, basis: '', statement: '', recorded_at: '', provenance: '' },
+      stable_sample: true, created_at: '', updated_at: '', capabilities: [], preview_available: false, preview_url: '', usage_count: 0,
+      editable: true, identity_editable: true, deletable: true, compatibility: { studio: true, batch: true, longform: true, dubbing: true },
+    }])
+    const startBatch = vi.spyOn(batchApi, 'startBatchRun').mockResolvedValue({ batch_id: 'batch-1', task_id: 'task-1' })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><EditorPage /></QueryClientProvider>)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Thêm SRT' }))
+    expect(await screen.findByText('captions.srt')).toBeInTheDocument()
+    fireEvent.click(screen.getByTitle('Đưa vào timeline'))
+    fireEvent.change(await screen.findByLabelText('Giọng từ Thư viện'), { target: { value: 'son' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Chuyển thành audio' }))
+
+    expect(startBatch).toHaveBeenCalledWith(expect.objectContaining({
+      combine: false,
+      voice: expect.objectContaining({ profile_id: 'son-profile' }),
+      items: [expect.objectContaining({ text: 'Xin chào' })],
+    }))
   })
 })

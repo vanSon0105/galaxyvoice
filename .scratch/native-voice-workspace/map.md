@@ -55,6 +55,8 @@ explicitly approved.
 - [Native parity validation against VoiceStudio](issues/15-native-parity-validation.md) - The automated framework is implemented, but the ticket remains `ready-for-human` for the unchanged external-corpus run, matched reference evidence, manual UAT, and explicit acceptance. Completing that evidence gate supplies Phase 16 input; it does not authorize retirement.
 - [VoiceStudio legacy data migration policy](issues/17-voicestudio-data-migration-policy.md) - The Galaxy-owned read-only migration policy and fixture-backed dry-run are verified, so issue 17 is resolved without implying a production import or native parity acceptance.
 - [Expressive text and terminology contract](issues/18-expressive-text-and-terminology-contract.md) - Galaxy compiles canonical markup into separate display, spoken, timing, and engine-instruction fields with language-scoped pronunciation and explicit capability degradation.
+- [Native Dubbing media and URL ingest](issues/19-dubbing-native-media-ingest.md) - Deferred native ingest begins from a local path or optional managed URL download, reuses Transcript handoffs, and never persists optional YouTube cookies.
+- [Multi-track editor and subtitle-to-voice workflow](issues/20-editor-multitrack-subtitle-tts.md) - The editor gains ordered repeatable tracks and Voice Library-backed speech clips; meaning-preserving AI subtitle shortening remains a separate later Smart Fit stage.
 - Native workflow parity over engine parity - Galaxy reimplements its own
   workflows while VoiceStudio remains a comparison reference until the final
   retirement gate.

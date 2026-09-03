@@ -98,6 +98,25 @@ class EditorVideoSegment:
 
 
 @dataclass(frozen=True)
+class EditorMediaClip:
+    path: Path
+    timeline_start_ms: int
+    source_start_ms: int
+    source_end_ms: int
+    track_order: int
+    volume: int = 100
+    has_audio: bool = True
+
+    @property
+    def duration_ms(self) -> int:
+        return self.source_end_ms - self.source_start_ms
+
+    @property
+    def timeline_end_ms(self) -> int:
+        return self.timeline_start_ms + self.duration_ms
+
+
+@dataclass(frozen=True)
 class EditorExportOptions:
     video_path: Path
     output_dir: Path
@@ -115,6 +134,8 @@ class EditorExportOptions:
     subtitle_font_size: int = 22
     subtitle_margin: int = 36
     video_segments: tuple[EditorVideoSegment, ...] = ()
+    video_clips: tuple[EditorMediaClip, ...] = ()
+    audio_clips: tuple[EditorMediaClip, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -395,6 +416,15 @@ def build_editor_export_command(
         raise ValueError(f"Unsupported frame rate: {options.fps}")
     if options.audio_mode not in EDITOR_AUDIO_MODES:
         raise ValueError(f"Unsupported audio mode: {options.audio_mode}")
+    if options.video_clips:
+        return _build_multitrack_export_command(
+            ffmpeg,
+            options,
+            media,
+            output_path,
+            encoder=encoder,
+            subtitle_path=subtitle_path,
+        )
     segments = _normalized_video_segments(options.video_segments, media)
     custom_timeline = bool(options.video_segments)
     duration = sum(segment.duration_ms for segment in segments) / 1000
@@ -482,16 +512,26 @@ def export_editor_video(
         raise FileNotFoundError(f"Video file not found: {video_path}")
     if options.audio_path is not None and not Path(options.audio_path).expanduser().is_file():
         raise FileNotFoundError(f"Audio file not found: {options.audio_path}")
-    source_paths = (video_path,) + (
-        (Path(options.audio_path).expanduser(),) if options.audio_path is not None else ()
-    )
+    positioned_clips = (*options.video_clips, *options.audio_clips)
+    for clip in positioned_clips:
+        if not Path(clip.path).expanduser().is_file():
+            raise FileNotFoundError(f"Media clip not found: {clip.path}")
+    source_paths = tuple(dict.fromkeys(
+        [video_path]
+        + ([Path(options.audio_path).expanduser()] if options.audio_path is not None else [])
+        + [Path(clip.path).expanduser() for clip in positioned_clips]
+    ))
     ffmpeg = ffmpeg_path or find_ffmpeg()
     if not ffmpeg:
         raise RuntimeError(ffmpeg_missing_message("export an edited video"))
 
     media = probe_editor_media(video_path)
     segments = _normalized_video_segments(options.video_segments, media)
-    timeline_duration_seconds = sum(segment.duration_ms for segment in segments) / 1000
+    timeline_duration_seconds = (
+        max(clip.timeline_end_ms for clip in options.video_clips) / 1000
+        if options.video_clips
+        else sum(segment.duration_ms for segment in segments) / 1000
+    )
     target_size = EDITOR_RESOLUTIONS.get(options.resolution) or (media.width, media.height)
     target_fps = media.fps if options.fps == SOURCE_FPS else float(options.fps)
     guard_output_space(
@@ -506,7 +546,8 @@ def export_editor_video(
         ),
     )
     if (
-        options.audio_path is not None
+        not options.video_clips
+        and options.audio_path is not None
         and max(0, int(options.audio_offset_ms)) >= round(timeline_duration_seconds * 1000)
     ):
         raise ValueError("Audio phải bắt đầu trước khi video kết thúc.")
@@ -592,6 +633,8 @@ def export_editor_video(
                     }
                     for segment in segments
                 ],
+                "video_clips": [_media_clip_manifest(clip) for clip in options.video_clips],
+                "audio_clips": [_media_clip_manifest(clip) for clip in options.audio_clips],
                 "files": {
                     "video": output_path.name,
                     "subtitle": subtitle_path.name if subtitle_path else None,
@@ -609,6 +652,18 @@ def export_editor_video(
         except OSError:
             pass
         raise
+
+
+def _media_clip_manifest(clip: EditorMediaClip) -> dict[str, object]:
+    return {
+        "path": str(clip.path),
+        "timeline_start_ms": clip.timeline_start_ms,
+        "source_start_ms": clip.source_start_ms,
+        "source_end_ms": clip.source_end_ms,
+        "track_order": clip.track_order,
+        "volume": clip.volume,
+        "has_audio": clip.has_audio,
+    }
 
 
 def _run_export(
@@ -663,6 +718,121 @@ def _run_export(
     if return_code != 0:
         detail = "\n".join(output[-30:]) or f"FFmpeg exited with code {return_code}."
         raise RuntimeError(detail)
+
+
+def _build_multitrack_export_command(
+    ffmpeg: str,
+    options: EditorExportOptions,
+    media: EditorMediaInfo,
+    output_path: Path,
+    *,
+    encoder: str,
+    subtitle_path: Path | str | None,
+) -> list[str]:
+    video_clips = tuple(options.video_clips)
+    if not video_clips:
+        raise ValueError("At least one video clip is required.")
+    for clip in (*video_clips, *options.audio_clips):
+        if clip.timeline_start_ms < 0 or clip.source_start_ms < 0 or clip.source_end_ms <= clip.source_start_ms:
+            raise ValueError("Invalid positioned media clip.")
+
+    duration_seconds = max(clip.timeline_end_ms for clip in video_clips) / 1000
+    target_size = EDITOR_RESOLUTIONS[options.resolution]
+    width, height = target_size or (media.width - media.width % 2, media.height - media.height % 2)
+    target_fps = int(options.fps) if options.fps != SOURCE_FPS else max(1, round(media.fps))
+    command = [ffmpeg, "-y", "-hide_banner", "-loglevel", "error"]
+    for clip in (*video_clips, *options.audio_clips):
+        command.extend(["-i", str(clip.path)])
+
+    graph: list[str] = [
+        f"color=c=black:s={width}x{height}:r={target_fps}:d={_seconds(duration_seconds)}[video_base]"
+    ]
+    previous = "video_base"
+    indexed_video_clips = sorted(enumerate(video_clips), key=lambda item: item[1].track_order, reverse=True)
+    for layer, (input_index, clip) in enumerate(indexed_video_clips):
+        clip_label = f"video_clip_{layer}"
+        output_label = f"video_layer_{layer}"
+        start = _seconds(clip.source_start_ms / 1000)
+        end = _seconds(clip.source_end_ms / 1000)
+        offset = _seconds(clip.timeline_start_ms / 1000)
+        timeline_end = _seconds(clip.timeline_end_ms / 1000)
+        graph.append(
+            f"[{input_index}:v:0]trim=start={start}:end={end},setpts=PTS-STARTPTS+{offset}/TB,"
+            f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
+            f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1[{clip_label}]"
+        )
+        graph.append(
+            f"[{previous}][{clip_label}]overlay=eof_action=pass:shortest=0:"
+            f"enable='between(t,{offset},{timeline_end})'[{output_label}]"
+        )
+        previous = output_label
+
+    video_filters: list[str] = []
+    if subtitle_path is not None:
+        video_filters.append(
+            _subtitle_filter(
+                subtitle_path,
+                font_size=options.subtitle_font_size,
+                margin=options.subtitle_margin,
+            )
+        )
+    video_filters.append("format=yuv420p")
+    graph.append(f"[{previous}]{','.join(video_filters)}[editor_video]")
+
+    audio_labels: list[str] = []
+    if options.audio_mode == MIX_AUDIO:
+        for input_index, clip in enumerate(video_clips):
+            if clip.has_audio:
+                label = f"video_audio_{input_index}"
+                graph.append(_positioned_audio_filter(input_index, clip, label))
+                audio_labels.append(f"[{label}]")
+    audio_input_offset = len(video_clips)
+    for offset_index, clip in enumerate(options.audio_clips):
+        input_index = audio_input_offset + offset_index
+        label = f"external_audio_{offset_index}"
+        graph.append(_positioned_audio_filter(input_index, clip, label))
+        audio_labels.append(f"[{label}]")
+
+    duration = _seconds(duration_seconds)
+    if len(audio_labels) == 1:
+        graph.append(f"{audio_labels[0]}apad,atrim=duration={duration}[editor_audio]")
+    elif audio_labels:
+        graph.append(
+            f"{''.join(audio_labels)}amix=inputs={len(audio_labels)}:duration=longest:"
+            f"dropout_transition=0:normalize=0,apad,atrim=duration={duration}[editor_audio]"
+        )
+
+    command.extend(["-filter_complex", ";".join(graph), "-map", "[editor_video]"])
+    if audio_labels:
+        command.extend(["-map", "[editor_audio]"])
+    else:
+        command.append("-an")
+    command.extend(_video_encoder_args(encoder, options.quality))
+    if audio_labels:
+        command.extend(["-c:a", "aac", "-b:a", "192k"])
+    command.extend(
+        [
+            "-t",
+            duration,
+            "-movflags",
+            "+faststart",
+            "-progress",
+            "pipe:1",
+            "-nostats",
+            str(output_path),
+        ]
+    )
+    return command
+
+
+def _positioned_audio_filter(input_index: int, clip: EditorMediaClip, label: str) -> str:
+    start = _seconds(clip.source_start_ms / 1000)
+    end = _seconds(clip.source_end_ms / 1000)
+    delay = max(0, int(clip.timeline_start_ms))
+    return (
+        f"[{input_index}:a:0]atrim=start={start}:end={end},asetpts=PTS-STARTPTS,"
+        f"adelay={delay}:all=1,volume={_volume(clip.volume)}[{label}]"
+    )
 
 
 def _audio_filter_graph(options: EditorExportOptions, media: EditorMediaInfo) -> str:

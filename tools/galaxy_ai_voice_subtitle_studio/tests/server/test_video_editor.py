@@ -128,6 +128,45 @@ class VideoEditorApiTests(unittest.TestCase):
             self.assertEqual(_wait_status(task_id), CANCELLED)
             terminate.assert_called_once_with(task_id)
 
+    def test_export_accepts_positioned_multitrack_clips(self) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_export(options, **_kwargs):
+            captured["options"] = options
+            project = self.root / "multitrack"
+            project.mkdir(exist_ok=True)
+            video = project / "multitrack.mp4"
+            video.write_bytes(b"edited")
+            manifest = project / "editor_manifest.json"
+            manifest.write_text("{}", encoding="utf-8")
+            return EditorExportResult(project, video, None, manifest, [])
+
+        with mock.patch("app.video_editor.service.export_editor_video", side_effect=fake_export):
+            response = self.client.post(
+                "/api/editor/export",
+                json={
+                    "video_path": str(self.video),
+                    "output_dir": str(self.root),
+                    "video_clips": [{
+                        "path": str(self.video), "timeline_start_ms": 0,
+                        "source_start_ms": 0, "source_end_ms": 2_000,
+                        "track_order": 1, "volume": 100, "has_audio": True,
+                    }],
+                    "audio_clips": [{
+                        "path": str(self.audio), "timeline_start_ms": 500,
+                        "source_start_ms": 0, "source_end_ms": 1_000,
+                        "track_order": 2, "volume": 80, "has_audio": True,
+                    }],
+                },
+            )
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(_wait_status(response.json()["task_id"]), DONE)
+
+        options = captured["options"]
+        self.assertEqual(options.video_clips[0].timeline_start_ms, 0)
+        self.assertEqual(options.audio_clips[0].timeline_start_ms, 500)
+        self.assertEqual(options.audio_clips[0].volume, 80)
+
 
 if __name__ == "__main__":
     unittest.main()

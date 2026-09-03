@@ -1,8 +1,11 @@
-import { fireEvent, render } from '@testing-library/react'
-import { describe, expect, it, vi } from 'vitest'
+import { cleanup, fireEvent, render } from '@testing-library/react'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { Timeline } from './Timeline'
 import { TRACK_LABEL_WIDTH } from './geometry'
+import { createDefaultTracks } from './tracks'
+
+afterEach(cleanup)
 
 describe('Timeline playhead', () => {
   it('seeks continuously while the red playhead is dragged', () => {
@@ -10,16 +13,18 @@ describe('Timeline playhead', () => {
     const { container } = render(
       <Timeline
         durationMs={10_000}
-        audioOffsetMs={0}
-        cues={[]}
-        selectedCue={null}
+        tracks={createDefaultTracks()}
+        selection={null}
         playheadMs={1_000}
         zoom={100}
         onSeek={onSeek}
-        onSelectCue={vi.fn()}
+        onSelect={vi.fn()}
         onChangeCue={vi.fn()}
-        onAudioOffset={vi.fn()}
+        onChangeClip={vi.fn()}
         onDropAsset={vi.fn()}
+        onToggleTrackEnabled={vi.fn()}
+        onToggleTrackLocked={vi.fn()}
+        onAddTrack={vi.fn()}
       />,
     )
     const svg = container.querySelector('svg') as SVGSVGElement
@@ -34,5 +39,29 @@ describe('Timeline playhead', () => {
 
     expect(onSeek).toHaveBeenLastCalledWith(5_000)
     expect(onSeek).toHaveBeenCalledTimes(2)
+  })
+
+  it('offers all three track types from the add button', () => {
+    const onAddTrack = vi.fn()
+    const { container, getByRole } = render(
+      <Timeline
+        durationMs={10_000}
+        tracks={createDefaultTracks()}
+        selection={null}
+        playheadMs={0}
+        zoom={10}
+        onSeek={vi.fn()}
+        onSelect={vi.fn()}
+        onChangeCue={vi.fn()}
+        onChangeClip={vi.fn()}
+        onDropAsset={vi.fn()}
+        onToggleTrackEnabled={vi.fn()}
+        onToggleTrackLocked={vi.fn()}
+        onAddTrack={onAddTrack}
+      />,
+    )
+    fireEvent.click(container.querySelector('[title="Thêm track"]') as HTMLButtonElement)
+    fireEvent.click(getByRole('menuitem', { name: 'Thêm line audio' }))
+    expect(onAddTrack).toHaveBeenCalledWith('audio')
   })
 })

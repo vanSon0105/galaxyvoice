@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field
 
 from ...batch.omnivoice_adapter import OmniVoiceBatchAdapter
 from ...batch.system_voice_adapter import SystemVoiceBatchAdapter
+from ...common.cache import default_cache_dir
 from ...common.processes import managed_media_processes
 from ...omnivoice.client import OmniVoiceWorkerClient
 from ...omnivoice.runtime import OmniVoiceRuntime
@@ -24,6 +25,7 @@ from ...project_graph.runtime import project_graph_service
 from ...runtime.jobs import TaskContext
 from ...studio.execution import clamp_speech_workers
 from ...studio.models import StudioVoiceSelection
+from ...studio.render_cache import SpeechRenderCache
 from ...video_editor.service import (
     EDITOR_AUDIO_MODES,
     EDITOR_ENCODERS,
@@ -93,6 +95,7 @@ class EditorSpeechCueRequest(BaseModel):
     track_id: str
     cue_id: str
     start_ms: int = Field(ge=0)
+    end_ms: int | None = Field(None, gt=0)
     text: str
     language: str = ""
 
@@ -108,6 +111,7 @@ class EditorSpeechRequest(BaseModel):
     language: str = "vi"
     speed: float = 1.0
     max_workers: int = 3
+    voice_revision: int = Field(1, ge=1)
     voice: EditorSpeechVoiceRequest = Field(default_factory=EditorSpeechVoiceRequest)
     engine_options: dict[str, Any] = Field(default_factory=dict)
     cues: list[EditorSpeechCueRequest] = Field(default_factory=list)
@@ -213,6 +217,7 @@ def _editor_speech_spec(body: EditorSpeechRequest) -> EditorSpeechSpec:
         language=body.language.strip() or "vi",
         speed=body.speed,
         max_workers=clamp_speech_workers(body.max_workers),
+        voice_revision=body.voice_revision,
         voice=StudioVoiceSelection(**body.voice.model_dump()),
         engine_options=dict(body.engine_options),
         cues=tuple(
@@ -223,6 +228,7 @@ def _editor_speech_spec(body: EditorSpeechRequest) -> EditorSpeechSpec:
                 start_ms=cue.start_ms,
                 text=cue.text,
                 language=cue.language.strip(),
+                end_ms=cue.end_ms or 0,
             )
             for cue in body.cues
         ),
@@ -261,6 +267,9 @@ def start_speech(body: EditorSpeechRequest, request: Request) -> dict[str, str]:
 
     completed = 0
     failed = 0
+    service = EditorSpeechService(
+        render_cache=SpeechRenderCache(default_cache_dir() / "speech-renders")
+    )
 
     def item_finished(item: EditorSpeechItemResult) -> None:
         nonlocal completed, failed
@@ -282,7 +291,6 @@ def start_speech(body: EditorSpeechRequest, request: Request) -> dict[str, str]:
         )
 
     def execute(context: TaskContext) -> EditorSpeechResult:
-        service = EditorSpeechService()
         callbacks = {
             "progress": lambda message, value: context.report(message, progress=value),
             "checkpoint": context.save_checkpoint,

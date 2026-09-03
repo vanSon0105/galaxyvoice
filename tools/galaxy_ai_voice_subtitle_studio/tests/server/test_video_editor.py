@@ -172,8 +172,10 @@ class VideoEditorApiTests(unittest.TestCase):
     def test_speech_job_emits_each_completed_cue_with_editor_identity(self) -> None:
         audio = self.root / "generated.wav"
         audio.write_bytes(b"wav")
+        captured = {}
 
         def fake_execute(_service, spec, _engine, **callbacks):
+            captured["spec"] = spec
             item = EditorSpeechItemResult(
                 item_id="item-1",
                 track_id="subtitle-2",
@@ -200,6 +202,7 @@ class VideoEditorApiTests(unittest.TestCase):
                     "output_dir": str(self.root),
                     "engine_id": "sapi",
                     "device": "cpu",
+                    "voice_revision": 4,
                     "voice": {"source": "auto"},
                     "engine_options": {"voice_name": "Microsoft David Desktop"},
                     "cues": [{
@@ -207,6 +210,7 @@ class VideoEditorApiTests(unittest.TestCase):
                         "track_id": "subtitle-2",
                         "cue_id": "cue-7",
                         "start_ms": 1_250,
+                        "end_ms": 2_250,
                         "text": "Xin chao",
                     }],
                 },
@@ -218,6 +222,8 @@ class VideoEditorApiTests(unittest.TestCase):
 
         record = task_registry.get(task_id)
         self.assertEqual(record.workflow_id, "editor-job-1")
+        self.assertEqual(captured["spec"].voice_revision, 4)
+        self.assertEqual(captured["spec"].cues[0].end_ms, 2_250)
         self.assertEqual(record.result_payload["items"][0]["cue_id"], "cue-7")
         emitted = [
             call.args[0]

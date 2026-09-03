@@ -75,6 +75,7 @@ export interface EditorSpeechCueRequest {
   track_id: string
   cue_id: string
   start_ms: number
+  end_ms: number
   text: string
   language: string
 }
@@ -90,6 +91,7 @@ export interface EditorSpeechRequest {
   language: string
   speed: number
   max_workers?: number
+  voice_revision?: number
   voice: {
     source: string
     profile_id: string

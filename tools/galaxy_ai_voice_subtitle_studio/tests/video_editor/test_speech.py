@@ -4,11 +4,13 @@ import tempfile
 import threading
 import time
 import unittest
+import wave
 from dataclasses import replace
 from pathlib import Path
 
 from app.common.errors import TaskCancelledError
 from app.studio.models import StudioArtifact, StudioGenerationSpec, StudioVoiceSelection
+from app.studio.render_cache import SpeechRenderCache
 from app.video_editor.speech import (
     EditorSpeechCueSpec,
     EditorSpeechService,
@@ -63,6 +65,25 @@ class _ParallelEngine(_FakeEngine):
         finally:
             with self.lock:
                 self.active -= 1
+
+
+class _PcmEngine(_FakeEngine):
+    def __init__(self, *, cluster_has_boundary: bool = True) -> None:
+        super().__init__()
+        self.cluster_has_boundary = cluster_has_boundary
+
+    def generate(self, spec: StudioGenerationSpec, progress=None) -> StudioArtifact:
+        self.generated.append(spec)
+        project_dir = Path(spec.output_dir) / spec.output_name
+        project_dir.mkdir(parents=True)
+        wav_path = project_dir / "voice.wav"
+        if "\n\n" in spec.text and self.cluster_has_boundary:
+            _write_pcm_wav(wav_path, (300, 200, 500))
+        else:
+            _write_pcm_wav(wav_path, (500,))
+        manifest_path = project_dir / "manifest.json"
+        manifest_path.write_text("{}", encoding="utf-8")
+        return StudioArtifact(project_dir, wav_path, None, manifest_path)
 
 
 class EditorSpeechServiceTests(unittest.TestCase):
@@ -144,6 +165,83 @@ class EditorSpeechServiceTests(unittest.TestCase):
         self.assertEqual(result.completed_count, 6)
         self.assertEqual(engine.max_active, 3)
         self.assertEqual(engine.prewarm_calls, 1)
+
+    def test_short_cues_render_as_one_cluster_and_return_original_identities(self) -> None:
+        engine = _PcmEngine()
+        spec = replace(
+            self._spec(),
+            cues=(
+                EditorSpeechCueSpec("item-1", "subtitle-1", "cue-1", 0, "Xin chao", end_ms=900),
+                EditorSpeechCueSpec("item-2", "subtitle-1", "cue-2", 1_050, "Tam biet", end_ms=2_000),
+            ),
+        )
+
+        result = EditorSpeechService().execute(spec, engine)
+
+        self.assertEqual(len(engine.generated), 1)
+        self.assertIn("\n\n", engine.generated[0].text)
+        self.assertEqual([item.item_id for item in result.items], ["item-1", "item-2"])
+        self.assertTrue(all(Path(item.wav_path).is_file() for item in result.items))
+
+    def test_cluster_without_proven_boundaries_falls_back_to_individual_cues(self) -> None:
+        engine = _PcmEngine(cluster_has_boundary=False)
+        spec = replace(
+            self._spec(),
+            cues=(
+                EditorSpeechCueSpec("item-1", "subtitle-1", "cue-1", 0, "Xin chao", end_ms=900),
+                EditorSpeechCueSpec("item-2", "subtitle-1", "cue-2", 1_050, "Tam biet", end_ms=2_000),
+            ),
+        )
+
+        result = EditorSpeechService().execute(spec, engine)
+
+        self.assertEqual(len(engine.generated), 3)
+        self.assertEqual(result.completed_count, 2)
+
+    def test_render_cache_reuses_audio_and_invalidates_voice_revision(self) -> None:
+        engine = _PcmEngine()
+        cache = SpeechRenderCache(self.root / "cache")
+        service = EditorSpeechService(render_cache=cache)
+        single = replace(self._spec(), cues=(self._spec().cues[0],), voice_revision=1)
+
+        first = service.execute(single, engine)
+        second = service.execute(single, engine)
+        third = service.execute(replace(single, voice_revision=2), engine)
+
+        self.assertEqual(len(engine.generated), 2)
+        self.assertTrue(Path(first.items[0].wav_path).is_file())
+        self.assertTrue(Path(second.items[0].wav_path).is_file())
+        self.assertTrue(Path(third.items[0].wav_path).is_file())
+
+    def test_cluster_cache_restores_every_cue_without_rendering_the_context_again(self) -> None:
+        engine = _PcmEngine()
+        service = EditorSpeechService(render_cache=SpeechRenderCache(self.root / "cache"))
+        spec = replace(
+            self._spec(),
+            cues=(
+                EditorSpeechCueSpec("item-1", "subtitle-1", "cue-1", 0, "Xin chao", end_ms=900),
+                EditorSpeechCueSpec("item-2", "subtitle-1", "cue-2", 1_050, "Tam biet", end_ms=2_000),
+            ),
+        )
+
+        first = service.execute(spec, engine)
+        second = service.execute(spec, engine)
+
+        self.assertEqual(len(engine.generated), 1)
+        self.assertTrue(all(Path(item.wav_path).is_file() for item in first.items))
+        self.assertTrue(all(Path(item.wav_path).is_file() for item in second.items))
+
+
+def _write_pcm_wav(path: Path, durations_ms: tuple[int, ...]) -> None:
+    frames = bytearray()
+    for index, duration_ms in enumerate(durations_ms):
+        sample = (12_000 if index % 2 == 0 else 0).to_bytes(2, "little", signed=True)
+        frames.extend(sample * duration_ms)
+    with wave.open(str(path), "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(1_000)
+        handle.writeframes(frames)
 
 
 if __name__ == "__main__":

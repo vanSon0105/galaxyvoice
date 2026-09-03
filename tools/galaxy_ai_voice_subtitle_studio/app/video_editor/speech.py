@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import re
+import shutil
 import threading
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable
 
+from ..common.cache import write_json_atomic
 from ..common.errors import TaskCancelledError
 from ..common.paths import unique_project_dir
 from ..studio.execution import (
@@ -16,8 +18,12 @@ from ..studio.execution import (
     prewarm_engine,
     speech_worker_count,
 )
-from ..studio.models import StudioGenerationSpec, StudioVoiceSelection
+from ..studio.models import StudioArtifact, StudioGenerationSpec, StudioVoiceSelection
+from ..studio.render_cache import SpeechRenderCache
 from ..studio.service import StudioEngine
+from ..voice.audio import split_wav_on_silence
+from ..voice.text_splitter import normalize_text
+from .speech_planning import ShortCueLimits, SpeechCueGroup, plan_short_cues
 
 
 EditorSpeechProgress = Callable[[str, float], None]
@@ -25,6 +31,11 @@ EditorSpeechCheckpoint = Callable[[dict[str, object]], None]
 EditorSpeechControl = Callable[[], None]
 EditorSpeechItemCallback = Callable[["EditorSpeechItemResult"], None]
 _SAFE_ITEM_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+_CLUSTER_PAUSE_MS = 180
+
+
+class _UnprovenClusterAlignment(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -35,6 +46,7 @@ class EditorSpeechCueSpec:
     start_ms: int
     text: str
     language: str = ""
+    end_ms: int = 0
 
     def validate(self) -> None:
         if not _SAFE_ITEM_ID.fullmatch(self.item_id):
@@ -43,6 +55,8 @@ class EditorSpeechCueSpec:
             raise ValueError("Mỗi câu phụ đề phải giữ track_id và cue_id.")
         if self.start_ms < 0:
             raise ValueError("Thời điểm bắt đầu audio không được âm.")
+        if self.end_ms and self.end_ms <= self.start_ms:
+            raise ValueError("Thời điểm kết thúc audio phải sau thời điểm bắt đầu.")
         if not self.text.strip():
             raise ValueError(f"Câu {self.cue_id} chưa có nội dung.")
 
@@ -59,6 +73,7 @@ class EditorSpeechSpec:
     language: str = "vi"
     speed: float = 1.0
     max_workers: int = DEFAULT_SPEECH_WORKERS
+    voice_revision: int = 1
     voice: StudioVoiceSelection = field(default_factory=StudioVoiceSelection)
     engine_options: dict[str, Any] = field(default_factory=dict)
     cues: tuple[EditorSpeechCueSpec, ...] = ()
@@ -161,8 +176,12 @@ class EditorSpeechService:
         self,
         *,
         checkpoint_interval_seconds: float = DEFAULT_PERSIST_INTERVAL_SECONDS,
+        render_cache: SpeechRenderCache | None = None,
+        short_cue_limits: ShortCueLimits | None = None,
     ) -> None:
         self.checkpoint_interval_seconds = checkpoint_interval_seconds
+        self.render_cache = render_cache
+        self.short_cue_limits = short_cue_limits or ShortCueLimits()
 
     def execute(
         self,
@@ -220,15 +239,29 @@ class EditorSpeechService:
                     len(results) / total,
                 )
 
-        worker_count = speech_worker_count(engine, spec.max_workers, total)
+        groups = plan_short_cues(spec.cues, self.short_cue_limits)
+        positions = {cue.item_id: index for index, cue in enumerate(spec.cues)}
+        worker_count = speech_worker_count(engine, spec.max_workers, len(groups))
         try:
             if worker_count == 1:
-                for index, cue in enumerate(spec.cues):
+                for group in groups:
                     self._check_control(control, stop_event)
-                    finish(self._generate_item(spec, cue, index, total, root, engine, progress, stop_event))
+                    for item in self._generate_group(
+                        spec,
+                        group,
+                        positions,
+                        total,
+                        root,
+                        engine,
+                        progress,
+                        stop_event,
+                    ):
+                        finish(item)
             else:
                 self._execute_parallel(
                     spec,
+                    groups,
+                    positions,
                     root,
                     engine,
                     worker_count,
@@ -254,6 +287,8 @@ class EditorSpeechService:
     def _execute_parallel(
         self,
         spec: EditorSpeechSpec,
+        groups: tuple[SpeechCueGroup[EditorSpeechCueSpec], ...],
+        positions: dict[str, int],
         root: Path,
         engine: StudioEngine,
         worker_count: int,
@@ -263,28 +298,28 @@ class EditorSpeechService:
         stop_event: threading.Event | None,
     ) -> None:
         total = len(spec.cues)
-        pending = iter(enumerate(spec.cues))
-        futures: dict[Future[EditorSpeechItemResult], int] = {}
+        pending = iter(enumerate(groups))
+        futures: dict[Future[tuple[EditorSpeechItemResult, ...]], int] = {}
 
         with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="editor-speech") as executor:
             def submit_next() -> bool:
                 self._check_control(control, stop_event)
                 try:
-                    index, cue = next(pending)
+                    group_index, group = next(pending)
                 except StopIteration:
                     return False
                 future = executor.submit(
-                    self._generate_item,
+                    self._generate_group,
                     spec,
-                    cue,
-                    index,
+                    group,
+                    positions,
                     total,
                     root,
                     engine,
                     progress,
                     stop_event,
                 )
-                futures[future] = index
+                futures[future] = group_index
                 return True
 
             for _ in range(worker_count):
@@ -296,8 +331,162 @@ class EditorSpeechService:
                 done, _ = wait(futures, timeout=0.1, return_when=FIRST_COMPLETED)
                 for future in sorted(done, key=lambda item: futures[item]):
                     futures.pop(future)
-                    finish(future.result())
+                    for item in future.result():
+                        finish(item)
                     submit_next()
+
+    def _generate_group(
+        self,
+        spec: EditorSpeechSpec,
+        group: SpeechCueGroup[EditorSpeechCueSpec],
+        positions: dict[str, int],
+        total: int,
+        root: Path,
+        engine: StudioEngine,
+        progress: EditorSpeechProgress | None,
+        stop_event: threading.Event | None,
+    ) -> tuple[EditorSpeechItemResult, ...]:
+        if not group.clustered:
+            cue = group.cues[0]
+            return (
+                self._generate_item(
+                    spec,
+                    cue,
+                    positions[cue.item_id],
+                    total,
+                    root,
+                    engine,
+                    progress,
+                    stop_event,
+                ),
+            )
+
+        context_text = "\n\n".join(normalize_text(cue.text) for cue in group.cues)
+        cluster_name = f"context-{group.cues[0].item_id}-{len(group.cues)}"
+        cluster_options = {
+            **spec.engine_options,
+            "_galaxy_cluster_pause_ms": _CLUSTER_PAUSE_MS,
+        }
+        generation_specs = tuple(
+            replace(
+                spec.generation_spec(cue, root),
+                engine_options=cluster_options,
+            )
+            for cue in group.cues
+        )
+        cache_keys = tuple(
+            self._cache_key(item_spec, spec.voice_revision, context_text, index)
+            for index, item_spec in enumerate(generation_specs)
+        )
+        if self._restore_cluster_cache(group, generation_specs, cache_keys, root):
+            if progress:
+                progress(
+                    f"Đã dùng cache cho {len(group.cues)} câu phụ đề.",
+                    positions[group.cues[-1].item_id] / total,
+                )
+            return tuple(
+                self._successful_item(cue, self._cache_destination(root, cue))
+                for cue in group.cues
+            )
+
+        cluster_artifact: StudioArtifact | None = None
+        try:
+            if stop_event is not None and stop_event.is_set():
+                raise TaskCancelledError()
+            first_position = positions[group.cues[0].item_id]
+            if progress:
+                progress(
+                    f"Đang tạo cụm {len(group.cues)} câu phụ đề...",
+                    first_position / total,
+                )
+            cluster_spec = replace(
+                generation_specs[0],
+                title=cluster_name,
+                text=context_text,
+                output_name=cluster_name,
+            )
+            cluster_spec.validate()
+            cluster_artifact = engine.generate(
+                cluster_spec,
+                lambda message: progress(message, first_position / total) if progress else None,
+            )
+            cluster_wav = self._validated_wav(cluster_artifact, root)
+            output_paths = [self._cache_destination(root, cue) for cue in group.cues]
+            split = split_wav_on_silence(
+                cluster_wav,
+                output_paths,
+                weights=[max(1, len(normalize_text(cue.text))) for cue in group.cues],
+            )
+            if not split:
+                raise _UnprovenClusterAlignment()
+
+            results: list[EditorSpeechItemResult] = []
+            for cue, output_path, key in zip(group.cues, output_paths, cache_keys):
+                self._write_item_manifest(output_path, key, context_text)
+                if self.render_cache is not None:
+                    self.render_cache.store(key, output_path)
+                results.append(self._successful_item(cue, output_path, cluster_artifact.warnings))
+            return tuple(results)
+        except TaskCancelledError:
+            raise
+        except Exception:
+            if progress:
+                progress(
+                    "Không xác minh được ranh giới cụm; đang tạo riêng từng câu.",
+                    positions[group.cues[0].item_id] / total,
+                )
+            self._clear_materialized_group(root, group)
+            return tuple(
+                self._generate_item(
+                    spec,
+                    cue,
+                    positions[cue.item_id],
+                    total,
+                    root,
+                    engine,
+                    progress,
+                    stop_event,
+                )
+                for cue in group.cues
+            )
+        finally:
+            if cluster_artifact is not None:
+                cluster_dir = cluster_artifact.project_dir.resolve()
+                resolved_root = root.resolve()
+                if cluster_dir != resolved_root and cluster_dir.is_relative_to(resolved_root):
+                    shutil.rmtree(cluster_dir, ignore_errors=True)
+
+    def _restore_cluster_cache(
+        self,
+        group: SpeechCueGroup[EditorSpeechCueSpec],
+        generation_specs: tuple[StudioGenerationSpec, ...],
+        cache_keys: tuple[str, ...],
+        root: Path,
+    ) -> bool:
+        if self.render_cache is None or not all(self.render_cache.contains(key) for key in cache_keys):
+            return False
+        restored = all(
+            self.render_cache.restore(key, self._cache_destination(root, cue))
+            for cue, key in zip(group.cues, cache_keys)
+        )
+        if not restored:
+            self._clear_materialized_group(root, group)
+            return False
+        for item_spec, cue, key in zip(generation_specs, group.cues, cache_keys):
+            self._write_item_manifest(
+                self._cache_destination(root, cue),
+                key,
+                normalize_text(item_spec.text),
+            )
+        return True
+
+    @staticmethod
+    def _clear_materialized_group(
+        root: Path,
+        group: SpeechCueGroup[EditorSpeechCueSpec],
+    ) -> None:
+        for cue in group.cues:
+            shutil.rmtree(root / cue.item_id, ignore_errors=True)
 
     @staticmethod
     def _check_control(
@@ -309,8 +498,8 @@ class EditorSpeechService:
         if stop_event is not None and stop_event.is_set():
             raise TaskCancelledError()
 
-    @staticmethod
     def _generate_item(
+        self,
         spec: EditorSpeechSpec,
         cue: EditorSpeechCueSpec,
         index: int,
@@ -328,22 +517,21 @@ class EditorSpeechService:
         try:
             generation_spec = spec.generation_spec(cue, root)
             generation_spec.validate()
+            cache_key = self._cache_key(generation_spec, spec.voice_revision)
+            cache_path = self._cache_destination(root, cue)
+            if self.render_cache is not None and self.render_cache.restore(cache_key, cache_path):
+                self._write_item_manifest(cache_path, cache_key, "")
+                if progress:
+                    progress(f"Đã dùng cache cho câu {index + 1}/{total}.", index / total)
+                return self._successful_item(cue, cache_path)
             artifact = engine.generate(
                 generation_spec,
                 lambda message: progress(message, index / total) if progress else None,
             )
-            wav_path = artifact.wav_path.resolve()
-            if not wav_path.is_relative_to(root.resolve()) or not wav_path.is_file():
-                raise ValueError("Engine trả về audio nằm ngoài thư mục của editor speech job.")
-            return EditorSpeechItemResult(
-                item_id=cue.item_id,
-                track_id=cue.track_id,
-                cue_id=cue.cue_id,
-                start_ms=cue.start_ms,
-                status="done",
-                wav_path=str(wav_path),
-                warnings=artifact.warnings,
-            )
+            wav_path = self._validated_wav(artifact, root)
+            if self.render_cache is not None:
+                self.render_cache.store(cache_key, wav_path)
+            return self._successful_item(cue, wav_path, artifact.warnings)
         except TaskCancelledError:
             raise
         except Exception as error:
@@ -357,3 +545,58 @@ class EditorSpeechService:
                 status="failed",
                 error=str(error),
             )
+
+    def _cache_key(
+        self,
+        generation_spec: StudioGenerationSpec,
+        voice_revision: int,
+        context_text: str = "",
+        context_index: int = 0,
+    ) -> str:
+        if self.render_cache is None:
+            return ""
+        return self.render_cache.key_for(
+            generation_spec,
+            voice_revision=voice_revision,
+            context_text=context_text,
+            context_index=context_index,
+        )
+
+    @staticmethod
+    def _cache_destination(root: Path, cue: EditorSpeechCueSpec) -> Path:
+        return root / cue.item_id / "voice.wav"
+
+    @staticmethod
+    def _validated_wav(artifact: StudioArtifact, root: Path) -> Path:
+        wav_path = artifact.wav_path.resolve()
+        if not wav_path.is_relative_to(root.resolve()) or not wav_path.is_file():
+            raise ValueError("Engine trả về audio nằm ngoài thư mục của editor speech job.")
+        return wav_path
+
+    @staticmethod
+    def _write_item_manifest(wav_path: Path, cache_key: str, context_text: str) -> None:
+        write_json_atomic(
+            wav_path.parent / "manifest.json",
+            {
+                "version": 1,
+                "wav_path": str(wav_path),
+                "cache_key": cache_key,
+                "context": bool(context_text),
+            },
+        )
+
+    @staticmethod
+    def _successful_item(
+        cue: EditorSpeechCueSpec,
+        wav_path: Path,
+        warnings: tuple[str, ...] = (),
+    ) -> EditorSpeechItemResult:
+        return EditorSpeechItemResult(
+            item_id=cue.item_id,
+            track_id=cue.track_id,
+            cue_id=cue.cue_id,
+            start_ms=cue.start_ms,
+            status="done",
+            wav_path=str(wav_path.resolve()),
+            warnings=warnings,
+        )

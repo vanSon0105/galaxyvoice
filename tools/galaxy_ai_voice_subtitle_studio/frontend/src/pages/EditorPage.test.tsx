@@ -138,9 +138,10 @@ describe('EditorPage', () => {
     expect(startSpeech).toHaveBeenCalledWith(expect.objectContaining({
       engine_id: 'sapi',
       device: 'cpu',
+      voice_revision: 1,
       engine_options: { voice_name: 'Microsoft David Desktop' },
       voice: expect.objectContaining({ source: 'auto' }),
-      cues: [expect.objectContaining({ text: 'Hello' })],
+      cues: [expect.objectContaining({ text: 'Hello', end_ms: 1_000 })],
     }))
   })
 

@@ -125,3 +125,18 @@ replace clips only through an explicit editor action.
    interval, with a forced write for terminal and cancellation states.
 5. Batch retry semantics, editor cue identity, incremental item events, and
    deterministic result ordering remain unchanged.
+
+## Phase 4 Acceptance
+
+1. Adjacent short cues are clustered only while character count, cue count,
+   time span, join gap, track, and language boundaries remain valid.
+2. A clustered render keeps shared text context but returns one WAV and the
+   original editor identity for every source cue.
+3. Cluster output is split only when the expected silence boundaries can be
+   proven; missing or ambiguous boundaries fall back to individual renders.
+4. Reusable WAV renders are cached outside the repository by normalized text,
+   voice revision, engine, model, voice selection, and synthesis settings.
+5. Cache hits are materialized inside the current editor job, and changing the
+   voice revision or synthesis context invalidates the prior entry.
+6. Phase 4 does not alter subtitle text, fit audio to cue duration, or introduce
+   the Phase 5 shortening and timing-fit behavior.

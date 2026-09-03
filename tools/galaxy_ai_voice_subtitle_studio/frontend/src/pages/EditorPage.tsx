@@ -360,6 +360,7 @@ export function EditorPage() {
         language: selectedVoice.language || 'vi',
         speed: 1,
         max_workers: 3,
+        voice_revision: selectedVoice.revision,
         voice,
         engine_options: systemVoice ? { voice_name: selectedVoice.selection.system_voice } : {},
         cues: targets.map(({ track, cue }, index) => ({
@@ -367,6 +368,7 @@ export function EditorPage() {
           track_id: track.id,
           cue_id: cue.id,
           start_ms: cue.start_ms,
+          end_ms: cue.end_ms,
           text: cue.text,
           language: selectedVoice.language || 'vi',
         })),

@@ -40,7 +40,7 @@ class SystemVoiceBatchAdapter:
                 voice_name=self.voice_name,
                 rate=rate,
                 volume=int(spec.engine_options.get("volume", 100)),
-                pause_ms=0,
+                pause_ms=max(0, int(spec.engine_options.get("_galaxy_cluster_pause_ms", 0))),
                 max_chars=max(20, int(spec.engine_options.get("max_chars", 160))),
                 export_mp3="mp3" in spec.formats,
                 keep_segments=False,

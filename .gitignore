@@ -59,6 +59,7 @@ tools/galaxy_ai_voice_subtitle_studio/audio_presets.json*
 tools/galaxy_ai_voice_subtitle_studio/transcriptions.json*
 tools/galaxy_ai_voice_subtitle_studio/omnivoice_workspaces.json*
 tools/galaxy_ai_voice_subtitle_studio/studio_takes.json*
+tools/galaxy_ai_voice_subtitle_studio/batch_runs.json*
 
 # OMNIVOICE
 /omnivoice/

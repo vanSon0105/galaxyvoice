@@ -8,6 +8,8 @@ import { fetchSettings, fetchSettingsMeta, updateSettings } from '../api/setting
 import { openPath } from '../api/voice'
 import { fetchLibraryVoices, libraryVoiceRequest } from '../api/voiceLibrary'
 import type { LibraryVoice } from '../api/voiceLibrary'
+import type { RemovalResult } from '../api/removal'
+import { SubtitleRemovalPanel } from '../components/editor/SubtitleRemovalPanel'
 import { Timeline } from '../components/timeline/Timeline'
 import { clamp, formatClock, parseClock } from '../components/timeline/geometry'
 import {
@@ -36,6 +38,7 @@ import { isTaskActive } from '../ws/types'
 type EditorMediaAsset<K extends 'video' | 'audio'> = Omit<EditorMedia, 'kind'> & { id: string; kind: K }
 type EditorAsset = EditorMediaAsset<'video'> | EditorMediaAsset<'audio'> | ({ id: string; kind: 'subtitle' } & EditorSubtitleAsset)
 type TtsScope = 'selected' | 'track' | 'all'
+type InspectorMode = 'subtitles' | 'removal'
 
 interface PendingSpeech {
   itemId: string
@@ -100,6 +103,7 @@ export function EditorPage() {
   const [ttsScope, setTtsScope] = useState<TtsScope>('selected')
   const [ttsTaskId, setTtsTaskId] = useState('')
   const [pendingSpeech, setPendingSpeech] = useState<PendingSpeech[]>([])
+  const [inspectorMode, setInspectorMode] = useState<InspectorMode>('subtitles')
 
   const exportTask = taskId ? tasks.find((item) => item.taskId === taskId) : undefined
   const speechTask = ttsTaskId ? tasks.find((item) => item.taskId === ttsTaskId) : undefined
@@ -126,6 +130,9 @@ export function EditorPage() {
     : null
   const selectedClip = selectedTrack && selectedTrack.kind !== 'subtitle' && selection
     ? selectedTrack.clips.find((clip) => clip.id === selection.itemId) ?? null
+    : null
+  const removalSource = selectedTrack?.kind === 'video' && selectedClip
+    ? selectedClip.media
     : null
   const selectedVoice = (voicesQuery.data ?? []).find((voice) => voice.voice_id === voiceId)
   const subtitleAtPlayhead = useMemo(() => tracks
@@ -220,6 +227,11 @@ export function EditorPage() {
       addAsset({ ...subtitle, id: `subtitle:${crypto.randomUUID()}`, kind: 'subtitle' })
       setManualPath('')
     } catch (cause) { setMessage(cause instanceof Error ? cause.message : String(cause)) }
+  }
+
+  const importRemovalResult = async (removalResult: RemovalResult) => {
+    const media = await loadEditorMedia(removalResult.video_path, 'video')
+    addAsset({ ...media, id: `video:${media.source_id}` })
   }
 
   const activateAsset = (assetId: string, dropMs = playheadMs, targetTrackId?: string) => {
@@ -434,27 +446,38 @@ export function EditorPage() {
         </section>
 
         <aside className="section-card editor-inspector">
-          <div className="section-header compact"><h2 className="section-title">Phụ đề & giọng nói</h2><span className="field-hint">{activeSubtitleTrack?.name ?? 'Chưa có track'}</span></div>
-          <CueList cues={activeSubtitleTrack?.cues ?? []} selectedId={activeCue?.id ?? ''} onSelect={(cue) => { if (!activeSubtitleTrack) return; setSelection({ trackId: activeSubtitleTrack.id, itemId: cue.id }); seek(cue.start_ms) }} />
-          {activeCue && activeSubtitleTrack ? <div className="cue-editor">
-            <div className="field-grid"><div className="field"><label>Bắt đầu</label><ClockInput value={activeCue.start_ms} onCommit={(value) => updateActiveTime('start_ms', value)} /></div><div className="field"><label>Kết thúc</label><ClockInput value={activeCue.end_ms} onCommit={(value) => updateActiveTime('end_ms', value)} /></div></div>
-            <textarea className="srt-editor" rows={3} value={activeCue.text} onChange={(event) => updateCue(activeSubtitleTrack.id, activeCue.id, { ...activeCue, text: event.target.value })} />
-          </div> : <p className="field-hint">Chọn một câu phụ đề để sửa hoặc chuyển riêng câu đó thành giọng nói.</p>}
-          <div className="editor-tts-panel">
-            <div className="field"><label>Giọng từ Thư viện</label><select aria-label="Giọng từ Thư viện" value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">Chọn giọng</option>{(voicesQuery.data ?? []).map((voice) => <VoiceOption key={voice.voice_id} voice={voice} />)}</select></div>
-            <div className="seg-control editor-tts-scope" aria-label="Phạm vi chuyển giọng">
-              <button className={`seg-item${ttsScope === 'selected' ? ' active' : ''}`} onClick={() => setTtsScope('selected')}>Câu chọn</button>
-              <button className={`seg-item${ttsScope === 'track' ? ' active' : ''}`} onClick={() => setTtsScope('track')}>Cả line</button>
-              <button className={`seg-item${ttsScope === 'all' ? ' active' : ''}`} onClick={() => setTtsScope('all')}>Tất cả SRT</button>
-            </div>
-            <button className="btn accent" disabled={speechRunning || !voiceId} onClick={() => void generateSpeech()}>{speechRunning ? 'Đang chuyển...' : 'Chuyển thành audio'}</button>
+          <div className="seg-control editor-inspector-tabs" aria-label="Công cụ dựng video">
+            <button className={`seg-item${inspectorMode === 'subtitles' ? ' active' : ''}`} onClick={() => setInspectorMode('subtitles')}>Phụ đề & giọng nói</button>
+            <button className={`seg-item${inspectorMode === 'removal' ? ' active' : ''}`} onClick={() => setInspectorMode('removal')}>Xóa chữ cứng</button>
           </div>
-          <div className="toolbar-row editor-cue-tools"><button className="btn" disabled={!activeSubtitleTrack} onClick={() => {
-            if (!activeSubtitleTrack) return
-            const cue = cueWithId({ index: activeSubtitleTrack.cues.length + 1, start_ms: playheadMs, end_ms: playheadMs + 2_000, text: 'Phụ đề mới' })
-            setTracks((current) => current.map((track) => track.id === activeSubtitleTrack.id && track.kind === 'subtitle' ? { ...track, cues: reindexTrackCues([...track.cues, cue]) } : track))
-            setSelection({ trackId: activeSubtitleTrack.id, itemId: cue.id })
-          }}>Thêm câu</button><button className="btn" disabled={!activeSubtitleTrack?.cues.length} onClick={() => activeSubtitleTrack && setTracks((current) => current.map((track) => track.id === activeSubtitleTrack.id && track.kind === 'subtitle' ? { ...track, cues: fitCues(track.cues, Math.max(...videoTrackClips.map(({ clip }) => clipEnd(clip)), 1)) } : track))}>Căn theo video</button><button className="btn danger" disabled={!selection} onClick={deleteSelection}>Xóa mục chọn</button></div>
+          {inspectorMode === 'subtitles' ? <>
+            <div className="section-header compact"><h2 className="section-title">Phụ đề & giọng nói</h2><span className="field-hint">{activeSubtitleTrack?.name ?? 'Chưa có track'}</span></div>
+            <CueList cues={activeSubtitleTrack?.cues ?? []} selectedId={activeCue?.id ?? ''} onSelect={(cue) => { if (!activeSubtitleTrack) return; setSelection({ trackId: activeSubtitleTrack.id, itemId: cue.id }); seek(cue.start_ms) }} />
+            {activeCue && activeSubtitleTrack ? <div className="cue-editor">
+              <div className="field-grid"><div className="field"><label>Bắt đầu</label><ClockInput value={activeCue.start_ms} onCommit={(value) => updateActiveTime('start_ms', value)} /></div><div className="field"><label>Kết thúc</label><ClockInput value={activeCue.end_ms} onCommit={(value) => updateActiveTime('end_ms', value)} /></div></div>
+              <textarea className="srt-editor" rows={3} value={activeCue.text} onChange={(event) => updateCue(activeSubtitleTrack.id, activeCue.id, { ...activeCue, text: event.target.value })} />
+            </div> : <p className="field-hint">Chọn một câu phụ đề để sửa hoặc chuyển riêng câu đó thành giọng nói.</p>}
+            <div className="editor-tts-panel">
+              <div className="field"><label>Giọng từ Thư viện</label><select aria-label="Giọng từ Thư viện" value={voiceId} onChange={(event) => setVoiceId(event.target.value)}><option value="">Chọn giọng</option>{(voicesQuery.data ?? []).map((voice) => <VoiceOption key={voice.voice_id} voice={voice} />)}</select></div>
+              <div className="seg-control editor-tts-scope" aria-label="Phạm vi chuyển giọng">
+                <button className={`seg-item${ttsScope === 'selected' ? ' active' : ''}`} onClick={() => setTtsScope('selected')}>Câu chọn</button>
+                <button className={`seg-item${ttsScope === 'track' ? ' active' : ''}`} onClick={() => setTtsScope('track')}>Cả line</button>
+                <button className={`seg-item${ttsScope === 'all' ? ' active' : ''}`} onClick={() => setTtsScope('all')}>Tất cả SRT</button>
+              </div>
+              <button className="btn accent" disabled={speechRunning || !voiceId} onClick={() => void generateSpeech()}>{speechRunning ? 'Đang chuyển...' : 'Chuyển thành audio'}</button>
+            </div>
+            <div className="toolbar-row editor-cue-tools"><button className="btn" disabled={!activeSubtitleTrack} onClick={() => {
+              if (!activeSubtitleTrack) return
+              const cue = cueWithId({ index: activeSubtitleTrack.cues.length + 1, start_ms: playheadMs, end_ms: playheadMs + 2_000, text: 'Phụ đề mới' })
+              setTracks((current) => current.map((track) => track.id === activeSubtitleTrack.id && track.kind === 'subtitle' ? { ...track, cues: reindexTrackCues([...track.cues, cue]) } : track))
+              setSelection({ trackId: activeSubtitleTrack.id, itemId: cue.id })
+            }}>Thêm câu</button><button className="btn" disabled={!activeSubtitleTrack?.cues.length} onClick={() => activeSubtitleTrack && setTracks((current) => current.map((track) => track.id === activeSubtitleTrack.id && track.kind === 'subtitle' ? { ...track, cues: fitCues(track.cues, Math.max(...videoTrackClips.map(({ clip }) => clipEnd(clip)), 1)) } : track))}>Căn theo video</button><button className="btn danger" disabled={!selection} onClick={deleteSelection}>Xóa mục chọn</button></div>
+          </> : <SubtitleRemovalPanel
+            galaxyProjectId={galaxyProjectId}
+            source={removalSource}
+            outputDir={outputDir}
+            onCompleted={importRemovalResult}
+          />}
         </aside>
       </div>
 

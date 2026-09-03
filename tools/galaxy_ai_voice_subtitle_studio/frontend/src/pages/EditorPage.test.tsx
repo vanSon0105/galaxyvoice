@@ -1,16 +1,19 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import * as editorApi from '../api/editor'
 import * as batchApi from '../api/batch'
+import * as removalApi from '../api/removal'
 import * as settingsApi from '../api/settings'
 import * as voiceLibraryApi from '../api/voiceLibrary'
 import type { SettingsMeta } from '../api/settings'
 import * as dialogs from '../lib/dialogs'
 import { EditorPage } from './EditorPage'
 
-vi.mock('../ws/useTasks', () => ({ useTasks: () => ({ tasks: [], cancelTask: vi.fn() }) }))
+const taskState = vi.hoisted(() => ({ tasks: [] as Array<Record<string, unknown>>, cancelTask: vi.fn() }))
+
+vi.mock('../ws/useTasks', () => ({ useTasks: () => taskState }))
 
 const SETTINGS_META: SettingsMeta = {
   tts_engines: [], default_tts_engine: '', whisper_models: [], translation_providers: [],
@@ -22,7 +25,12 @@ const SETTINGS_META: SettingsMeta = {
   editor_audio_modes: [{ code: 'mix', label: 'Trộn âm thanh' }], omnivoice_devices: [],
 }
 
-afterEach(() => { cleanup(); vi.restoreAllMocks() })
+afterEach(() => {
+  cleanup()
+  taskState.tasks = []
+  taskState.cancelTask.mockReset()
+  vi.restoreAllMocks()
+})
 
 describe('EditorPage', () => {
   it('keeps imported media in the bin until it is added to the timeline', async () => {
@@ -174,5 +182,71 @@ describe('EditorPage', () => {
     expect(screen.queryAllByText('Câu một')).toHaveLength(0)
     expect(screen.queryAllByText('Câu hai')).toHaveLength(0)
     expect(screen.queryByText('Phụ đề 1')).not.toBeInTheDocument()
+  })
+
+  it('removes hard subtitles from the selected video and imports the result without replacing the source clip', async () => {
+    vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({
+      editor_output_dir: 'D:/result',
+      subtitle_removal_mode: 'blur',
+      subtitle_region_x: 5,
+      subtitle_region_y: 75,
+      subtitle_region_width: 90,
+      subtitle_region_height: 20,
+    })
+    vi.spyOn(settingsApi, 'fetchSettingsMeta').mockResolvedValue(SETTINGS_META)
+    vi.spyOn(settingsApi, 'updateSettings').mockResolvedValue({})
+    vi.spyOn(voiceLibraryApi, 'fetchLibraryVoices').mockResolvedValue([])
+    vi.spyOn(removalApi, 'fetchRemovalMeta').mockResolvedValue({
+      modes: [{ code: 'blur', label: 'Làm mờ', uses_ai: false }],
+      propainter_ready: false,
+      runtime_path: '',
+      installer_available: false,
+    })
+    vi.spyOn(editorApi, 'loadEditorMedia').mockImplementation(async (path) => path.includes('clean') ? {
+      source_id: 'video-clean', url: '/api/editor/source/video-clean', name: 'clip-clean.mp4', path,
+      kind: 'video', duration_seconds: 30, width: 1920, height: 1080, fps: 30, has_audio: true,
+    } : {
+      source_id: 'video-1', url: '/api/editor/source/video-1', name: 'clip.mp4', path,
+      kind: 'video', duration_seconds: 30, width: 1920, height: 1080, fps: 30, has_audio: true,
+    })
+    const startRemoval = vi.spyOn(removalApi, 'startSubtitleRemoval').mockResolvedValue({ task_id: 'removal-task' })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(<QueryClientProvider client={client}><EditorPage /></QueryClientProvider>)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Xóa chữ cứng' }))
+    expect(screen.getByText('Chọn một clip video trên timeline')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Phụ đề & giọng nói' }))
+
+    fireEvent.change(await screen.findByPlaceholderText('Đường dẫn tệp'), { target: { value: 'D:/clip.mp4' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Nạp' }))
+    const sourceAsset = (await screen.findByText('clip.mp4')).closest('.editor-asset') as HTMLElement
+    fireEvent.click(within(sourceAsset).getByTitle('Đưa vào timeline'))
+    fireEvent.click(screen.getByRole('button', { name: 'Xóa chữ cứng' }))
+
+    await screen.findByRole('option', { name: 'Làm mờ' })
+    await waitFor(() => expect(screen.getByLabelText('Chế độ')).toHaveValue('blur'))
+    fireEvent.click(screen.getByRole('button', { name: 'Xóa phụ đề' }))
+    await waitFor(() => expect(startRemoval).toHaveBeenCalledWith(expect.objectContaining({
+      video_path: 'D:/clip.mp4',
+      output_dir: 'D:/result',
+      mode: 'blur',
+    })))
+
+    taskState.tasks = [{
+      taskId: 'removal-task',
+      status: 'done',
+      result: {
+        project_dir: 'D:/result/clip-clean',
+        video_path: 'D:/result/clip-clean/clip-clean.mp4',
+        video_url: '/api/removal/result/video-clean',
+        manifest_path: 'D:/result/clip-clean/manifest.json',
+        mode: 'blur',
+        warnings: [],
+      },
+    }]
+    view.rerender(<QueryClientProvider client={client}><EditorPage /></QueryClientProvider>)
+
+    expect(await screen.findByText('clip-clean.mp4')).toBeInTheDocument()
+    expect(document.querySelector('.editor-video-stage video')).toHaveAttribute('src', '/api/editor/source/video-1')
   })
 })

@@ -4,12 +4,12 @@ import { useT } from '../i18n/useT'
 import { useTasks } from '../ws/useTasks'
 import { taskRecoveryRoute } from './taskRecovery'
 
-export function ProgressPanel() {
+export function ProgressPanel({ open }: { open: boolean }) {
   const { tasks, pauseTask, resumeTask, cancelTask } = useTasks()
   const t = useT()
-  if (tasks.length === 0) return null
+  if (!open || tasks.length === 0) return null
   return (
-    <footer className="progress-panel" aria-label="Tác vụ và tiến trình">
+    <footer id="task-progress-panel" className="progress-panel" aria-label="Tác vụ và tiến trình">
       {tasks.map((task) => (
         <details
           className="task-row"

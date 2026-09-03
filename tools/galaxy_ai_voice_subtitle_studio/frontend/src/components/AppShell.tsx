@@ -20,6 +20,7 @@ export function AppShell({ wsState, children }: AppShellProps) {
   const location = useLocation()
   const diagnosticsTriggerRef = useRef<HTMLButtonElement>(null)
   const [diagnosticsOpen, setDiagnosticsOpen] = useState(false)
+  const [progressOpen, setProgressOpen] = useState(false)
   const [setupSeen, setSetupSeen] = useState(() => {
     try {
       return window.localStorage.getItem('galaxy.setup.seen') === '1'
@@ -73,6 +74,14 @@ export function AppShell({ wsState, children }: AppShellProps) {
             {setupSeen ? 'Chẩn đoán' : 'Thiết lập máy'}
           </button>
           <ProjectGraphPanel projectId={projectId} />
+          <button
+            className="diagnostics-trigger"
+            aria-controls="task-progress-panel"
+            aria-expanded={progressOpen}
+            onClick={() => setProgressOpen((value) => !value)}
+          >
+            {progressOpen ? 'Ẩn log' : 'Hiện log'}
+          </button>
           <span className={`status-dot ${wsState === 'open' ? 'open' : wsState === 'closed' ? 'closed' : ''}`} />
           <span>
             {wsState === 'open'
@@ -85,7 +94,7 @@ export function AppShell({ wsState, children }: AppShellProps) {
       </header>
       <main className="content" id="main-content" tabIndex={-1}>{children}</main>
       <DiagnosticsPanel open={diagnosticsOpen} onClose={closeDiagnostics} onSetupComplete={completeSetup} />
-      <ProgressPanel />
+      <ProgressPanel open={progressOpen} />
     </div>
   )
 }

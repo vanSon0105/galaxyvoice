@@ -25,6 +25,7 @@ describe('Timeline playhead', () => {
         onToggleTrackEnabled={vi.fn()}
         onToggleTrackLocked={vi.fn()}
         onAddTrack={vi.fn()}
+        onRemoveTrack={vi.fn()}
       />,
     )
     const svg = container.querySelector('svg') as SVGSVGElement
@@ -43,10 +44,12 @@ describe('Timeline playhead', () => {
 
   it('offers all three track types from the add button', () => {
     const onAddTrack = vi.fn()
+    const onRemoveTrack = vi.fn()
+    const tracks = createDefaultTracks()
     const { container, getByRole } = render(
       <Timeline
         durationMs={10_000}
-        tracks={createDefaultTracks()}
+        tracks={tracks}
         selection={null}
         playheadMs={0}
         zoom={10}
@@ -58,10 +61,14 @@ describe('Timeline playhead', () => {
         onToggleTrackEnabled={vi.fn()}
         onToggleTrackLocked={vi.fn()}
         onAddTrack={onAddTrack}
+        onRemoveTrack={onRemoveTrack}
       />,
     )
     fireEvent.click(container.querySelector('[title="Thêm track"]') as HTMLButtonElement)
     fireEvent.click(getByRole('menuitem', { name: 'Thêm line audio' }))
     expect(onAddTrack).toHaveBeenCalledWith('audio')
+
+    fireEvent.click(getByRole('button', { name: 'Xóa Audio 1' }))
+    expect(onRemoveTrack).toHaveBeenCalledWith(tracks[2].id)
   })
 })

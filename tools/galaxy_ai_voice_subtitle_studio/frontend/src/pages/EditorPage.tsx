@@ -364,6 +364,15 @@ export function EditorPage() {
   }
 
   const addTrack = (kind: EditorTrackKind) => setTracks((current) => [...current, createTrack(kind, current.filter((track) => track.kind === kind).length + 1)])
+  const removeTrack = (trackId: string) => {
+    const track = tracks.find((candidate) => candidate.id === trackId)
+    if (!track) return
+    const itemCount = track.kind === 'subtitle' ? track.cues.length : track.clips.length
+    if (itemCount > 0 && !window.confirm(`Xóa ${track.name} và ${itemCount} mục đang có trên track?`)) return
+    setTracks((current) => current.filter((candidate) => candidate.id !== trackId))
+    if (selection?.trackId === trackId) setSelection(null)
+    setMessage(`Đã xóa ${track.name}.`)
+  }
   const toggleTrack = (trackId: string, field: 'enabled' | 'locked') => setTracks((current) => current.map((track) => track.id === trackId ? { ...track, [field]: !track[field] } : track))
 
   return (
@@ -448,7 +457,7 @@ export function EditorPage() {
           <div className="editor-cut-tools"><button className="btn" disabled={!selectedClip} onClick={splitAtPlayhead}>Tách tại playhead</button><button className="btn danger" disabled={!selection} onClick={deleteSelection}>Xóa mục chọn</button></div>
           <label>Thu phóng <input type="range" min="0.1" max="120" step="0.1" value={zoom} onChange={(event) => setZoom(Number(event.target.value))} /><output>{zoom.toFixed(1)} px/s</output></label>
         </div>
-        <Timeline durationMs={durationMs} tracks={tracks} selection={selection} playheadMs={playheadMs} zoom={zoom} onSeek={seek} onSelect={setSelection} onChangeCue={updateCue} onChangeClip={updateClip} onDropAsset={activateAsset} onToggleTrackEnabled={(id) => toggleTrack(id, 'enabled')} onToggleTrackLocked={(id) => toggleTrack(id, 'locked')} onAddTrack={addTrack} />
+        <Timeline durationMs={durationMs} tracks={tracks} selection={selection} playheadMs={playheadMs} zoom={zoom} onSeek={seek} onSelect={setSelection} onChangeCue={updateCue} onChangeClip={updateClip} onDropAsset={activateAsset} onToggleTrackEnabled={(id) => toggleTrack(id, 'enabled')} onToggleTrackLocked={(id) => toggleTrack(id, 'locked')} onAddTrack={addTrack} onRemoveTrack={removeTrack} />
       </section>
 
       <section className="section-card editor-export-panel">

@@ -81,4 +81,31 @@ describe('EditorPage', () => {
       items: [expect.objectContaining({ text: 'Xin chào' })],
     }))
   })
+
+  it('removes a populated subtitle track from its inline delete button', async () => {
+    vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({ output_dir: 'D:/result' })
+    vi.spyOn(settingsApi, 'fetchSettingsMeta').mockResolvedValue(SETTINGS_META)
+    vi.spyOn(voiceLibraryApi, 'fetchLibraryVoices').mockResolvedValue([])
+    vi.spyOn(dialogs, 'pickSrtFile').mockResolvedValue('D:/captions.srt')
+    vi.spyOn(editorApi, 'loadEditorCues').mockResolvedValue({
+      name: 'captions.srt', path: 'D:/captions.srt', cues: [
+        { index: 1, start_ms: 0, end_ms: 1_000, text: 'Câu một' },
+        { index: 2, start_ms: 1_000, end_ms: 2_000, text: 'Câu hai' },
+      ],
+    })
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><EditorPage /></QueryClientProvider>)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Thêm SRT' }))
+    expect(await screen.findByText('captions.srt')).toBeInTheDocument()
+    fireEvent.click(screen.getByTitle('Đưa vào timeline'))
+    expect((await screen.findAllByText('Câu một')).length).toBeGreaterThan(0)
+    fireEvent.click(screen.getByRole('button', { name: 'Xóa Phụ đề 1' }))
+
+    expect(window.confirm).toHaveBeenCalledWith('Xóa Phụ đề 1 và 2 mục đang có trên track?')
+    expect(screen.queryAllByText('Câu một')).toHaveLength(0)
+    expect(screen.queryAllByText('Câu hai')).toHaveLength(0)
+    expect(screen.queryByText('Phụ đề 1')).not.toBeInTheDocument()
+  })
 })

@@ -36,6 +36,7 @@ interface TimelineProps {
   onToggleTrackEnabled: (trackId: string) => void
   onToggleTrackLocked: (trackId: string) => void
   onAddTrack: (kind: EditorTrackKind) => void
+  onRemoveTrack: (trackId: string) => void
 }
 
 interface DragState {
@@ -67,6 +68,7 @@ export function Timeline({
   onToggleTrackEnabled,
   onToggleTrackLocked,
   onAddTrack,
+  onRemoveTrack,
 }: TimelineProps) {
   const viewportRef = useRef<HTMLDivElement>(null)
   const dragRef = useRef<DragState | null>(null)
@@ -207,7 +209,7 @@ export function Timeline({
         <div className="timeline-labels" style={{ left: viewport.left, height: svgHeight }}>
           <div className="timeline-label-spacer" />
           {tracks.map((track) => (
-            <TrackLabel key={track.id} track={track} onToggleEnabled={() => onToggleTrackEnabled(track.id)} onToggleLocked={() => onToggleTrackLocked(track.id)} />
+            <TrackLabel key={track.id} track={track} onToggleEnabled={() => onToggleTrackEnabled(track.id)} onToggleLocked={() => onToggleTrackLocked(track.id)} onRemove={() => onRemoveTrack(track.id)} />
           ))}
         </div>
       </div>
@@ -276,9 +278,9 @@ function TrackItems({ track, trackIndex, selection, visibleStart, visibleEnd, pi
   })}</>
 }
 
-function TrackLabel({ track, onToggleEnabled, onToggleLocked }: { track: EditorTrack; onToggleEnabled: () => void; onToggleLocked: () => void }) {
+function TrackLabel({ track, onToggleEnabled, onToggleLocked, onRemove }: { track: EditorTrack; onToggleEnabled: () => void; onToggleLocked: () => void; onRemove: () => void }) {
   const enabledLabel = track.kind === 'audio' ? (track.enabled ? 'Bật' : 'Tắt') : (track.enabled ? 'Hiện' : 'Ẩn')
-  return <div className="timeline-track-label"><strong>{track.name}</strong><button type="button" aria-pressed={track.enabled} title={track.enabled ? 'Track đang bật' : 'Track đang tắt'} onClick={onToggleEnabled}>{enabledLabel}</button><button type="button" aria-pressed={track.locked} title={track.locked ? 'Track đang khóa' : 'Track đang mở'} onClick={onToggleLocked}>{track.locked ? 'Khóa' : 'Mở'}</button></div>
+  return <div className="timeline-track-label"><strong>{track.name}</strong><button type="button" aria-pressed={track.enabled} title={track.enabled ? 'Track đang bật' : 'Track đang tắt'} onClick={onToggleEnabled}>{enabledLabel}</button><button type="button" aria-pressed={track.locked} title={track.locked ? 'Track đang khóa' : 'Track đang mở'} onClick={onToggleLocked}>{track.locked ? 'Khóa' : 'Mở'}</button><button type="button" className="timeline-remove-track" aria-label={`Xóa ${track.name}`} title="Xóa track" onClick={onRemove}>×</button></div>
 }
 
 function Clip({ x, y, width, label, kind, onPointerDown, onPointerMove, onPointerUp }: {

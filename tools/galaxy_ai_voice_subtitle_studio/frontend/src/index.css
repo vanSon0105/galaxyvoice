@@ -2177,7 +2177,7 @@ body {
 .timeline-label-spacer { height: 28px; border-bottom: 1px solid var(--border-soft); }
 .timeline-track-label {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 38px 38px;
+  grid-template-columns: minmax(0, 1fr) 38px 38px 26px;
   align-items: center;
   gap: 3px;
   height: 52px;
@@ -2210,6 +2210,18 @@ body {
 .timeline-track-label button:hover {
   border-color: var(--color-accent);
   color: var(--color-fg);
+}
+
+.timeline-track-label .timeline-remove-track {
+  width: 26px;
+  color: var(--color-fg-muted);
+  font-size: 15px;
+}
+
+.timeline-track-label .timeline-remove-track:hover {
+  border-color: var(--color-danger);
+  background: color-mix(in srgb, var(--color-danger) 12%, transparent);
+  color: var(--color-danger);
 }
 
 .editor-export-panel {

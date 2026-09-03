@@ -99,3 +99,16 @@ replace clips only through an explicit editor action.
 4. The existing timeline clip still references its original media.
 5. No video selection produces a clear disabled state.
 6. Existing standalone removal behavior and tests remain intact.
+
+## Phase 2 Acceptance
+
+1. Editor speech requests carry a client job ID plus each cue's item, track,
+   cue, and timeline-start identity.
+2. The backend emits one item event as soon as each cue succeeds or fails,
+   while the task result retains all item outcomes for reconnect recovery.
+3. Successful audio enters the media bin immediately and is placed after its
+   source subtitle track in the first lane where it does not overlap.
+4. Duplicate item and terminal events cannot insert the same audio twice.
+5. Task cancellation remains cooperative for system voices and interrupts the
+   shared OmniVoice worker through its coordinator.
+6. The public Batch create, resume, and retry workflow remains unchanged.

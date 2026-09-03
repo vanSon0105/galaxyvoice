@@ -12,9 +12,17 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from ...batch.omnivoice_adapter import OmniVoiceBatchAdapter
+from ...batch.system_voice_adapter import SystemVoiceBatchAdapter
 from ...common.processes import managed_media_processes
+from ...omnivoice.client import OmniVoiceWorkerClient
+from ...omnivoice.runtime import OmniVoiceRuntime
+from ...omnivoice.task_runner import shared_omnivoice_task_coordinator
+from ...omnivoice.worker_pool import get_shared_worker_client
 from ...project_graph.integrations import register_media_result
 from ...project_graph.runtime import project_graph_service
+from ...runtime.jobs import TaskContext
+from ...studio.models import StudioVoiceSelection
 from ...video_editor.service import (
     EDITOR_AUDIO_MODES,
     EDITOR_ENCODERS,
@@ -27,8 +35,17 @@ from ...video_editor.service import (
     probe_audio_duration,
     probe_editor_media,
 )
+from ...video_editor.speech import (
+    EditorSpeechCueSpec,
+    EditorSpeechItemResult,
+    EditorSpeechResult,
+    EditorSpeechService,
+    EditorSpeechSpec,
+)
 from ...voice.srt import SubtitleCue
 from ...runtime.resources import resource_keys_for_device
+from ...voice.tts import EDGE_ENGINE_CODE, create_tts_engine, tts_engine_codes
+from ..event_bus import event_bus
 from ..tasks import TaskRecord, run_task, task_registry
 
 router = APIRouter(prefix="/api/editor", tags=["video-editor"])
@@ -37,6 +54,7 @@ _sources: dict[str, Path] = {}
 _source_order: deque[str] = deque()
 _sources_lock = threading.Lock()
 _MAX_REGISTERED_SOURCES = 48
+_speech_task_coordinator = shared_omnivoice_task_coordinator
 
 
 class LoadRequest(BaseModel):
@@ -59,6 +77,38 @@ class CuePayload(BaseModel):
         if self.end_ms <= self.start_ms:
             raise ValueError("Thời điểm kết thúc phụ đề phải sau thời điểm bắt đầu.")
         return SubtitleCue(self.index, self.start_ms, self.end_ms, self.text)
+
+
+class EditorSpeechVoiceRequest(BaseModel):
+    source: str = "auto"
+    profile_id: str = ""
+    reference_audio: str = ""
+    reference_text: str = ""
+    instruction: str = ""
+
+
+class EditorSpeechCueRequest(BaseModel):
+    item_id: str
+    track_id: str
+    cue_id: str
+    start_ms: int = Field(ge=0)
+    text: str
+    language: str = ""
+
+
+class EditorSpeechRequest(BaseModel):
+    job_id: str
+    project_id: str
+    title: str = "Editor speech"
+    output_dir: str
+    engine_id: str = "omnivoice"
+    model_id: str = "k2-fsa/OmniVoice"
+    device: str = "auto"
+    language: str = "vi"
+    speed: float = 1.0
+    voice: EditorSpeechVoiceRequest = Field(default_factory=EditorSpeechVoiceRequest)
+    engine_options: dict[str, Any] = Field(default_factory=dict)
+    cues: list[EditorSpeechCueRequest] = Field(default_factory=list)
 
 
 class VideoSegmentPayload(BaseModel):
@@ -138,6 +188,147 @@ def _progress(record: TaskRecord):
         task_registry.report(record.task_id, message)
 
     return report
+
+
+def _omnivoice_runtime() -> OmniVoiceRuntime:
+    return OmniVoiceRuntime.default()
+
+
+def _omnivoice_worker_client() -> OmniVoiceWorkerClient:
+    worker_path = Path(__file__).resolve().parents[2] / "omnivoice" / "worker.py"
+    return get_shared_worker_client(_omnivoice_runtime(), worker_path)
+
+
+def _editor_speech_spec(body: EditorSpeechRequest) -> EditorSpeechSpec:
+    return EditorSpeechSpec(
+        job_id=body.job_id.strip(),
+        project_id=body.project_id.strip(),
+        title=body.title.strip() or "Editor speech",
+        output_dir=body.output_dir.strip(),
+        engine_id=body.engine_id.strip() or "omnivoice",
+        model_id=body.model_id.strip() or "k2-fsa/OmniVoice",
+        device=body.device.strip() or "auto",
+        language=body.language.strip() or "vi",
+        speed=body.speed,
+        voice=StudioVoiceSelection(**body.voice.model_dump()),
+        engine_options=dict(body.engine_options),
+        cues=tuple(
+            EditorSpeechCueSpec(
+                item_id=cue.item_id.strip(),
+                track_id=cue.track_id.strip(),
+                cue_id=cue.cue_id.strip(),
+                start_ms=cue.start_ms,
+                text=cue.text,
+                language=cue.language.strip(),
+            )
+            for cue in body.cues
+        ),
+    )
+
+
+@router.post("/speech")
+def start_speech(body: EditorSpeechRequest, request: Request) -> dict[str, str]:
+    spec = _editor_speech_spec(body)
+    try:
+        spec.validate()
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    is_omnivoice = spec.engine_id == "omnivoice"
+    is_system_voice = spec.engine_id in tts_engine_codes()
+    if not is_omnivoice and not is_system_voice:
+        raise HTTPException(status_code=422, detail=f"Engine chưa được cài: {spec.engine_id}")
+    resource_keys = (
+        resource_keys_for_device(spec.device)
+        if is_omnivoice
+        else (("network",) if spec.engine_id == EDGE_ENGINE_CODE else ())
+    )
+    record = task_registry.create(
+        "editor-speech",
+        capability_id=f"tts.{spec.engine_id}",
+        pausable=True,
+        project_id=spec.project_id,
+        workflow_id=spec.job_id,
+        resource_keys=resource_keys,
+        recovery_route="/editor",
+        recovery_hint="Mở Dựng video và tạo lại audio từ phụ đề.",
+    )
+    if is_omnivoice:
+        record.on_cancel = lambda: _speech_task_coordinator.cancel(record.task_id)
+
+    completed = 0
+    failed = 0
+
+    def item_finished(item: EditorSpeechItemResult) -> None:
+        nonlocal completed, failed
+        completed += int(item.status == "done")
+        failed += int(item.status == "failed")
+        event_bus.emit(
+            {
+                "type": "event",
+                "kind": "editor_speech_item",
+                "payload": {
+                    "job_id": spec.job_id,
+                    "task_id": record.task_id,
+                    **item.to_payload(),
+                    "completed": completed,
+                    "failed": failed,
+                    "total": len(spec.cues),
+                },
+            }
+        )
+
+    def execute(context: TaskContext) -> EditorSpeechResult:
+        service = EditorSpeechService()
+        callbacks = {
+            "progress": lambda message, value: context.report(message, progress=value),
+            "checkpoint": context.save_checkpoint,
+            "control": context.wait_if_paused,
+            "stop_event": record.stop_event,
+            "item_finished": item_finished,
+        }
+        if is_omnivoice:
+            return _speech_task_coordinator.run(
+                record.task_id,
+                record.stop_event,
+                lambda client: service.execute(
+                    spec,
+                    OmniVoiceBatchAdapter(client, _omnivoice_runtime().profiles_dir),
+                    **callbacks,
+                ),
+                client_factory=_omnivoice_worker_client,
+            )
+        return service.execute(
+            spec,
+            SystemVoiceBatchAdapter(
+                create_tts_engine(spec.engine_id),
+                str(spec.engine_options.get("voice_name") or ""),
+            ),
+            **callbacks,
+        )
+
+    configured = getattr(request.app.state, "settings_path", None)
+    graph_service = project_graph_service(Path(configured) if configured is not None else None)
+
+    def serialize(result: EditorSpeechResult) -> dict[str, Any]:
+        register_media_result(
+            graph_service,
+            project_id=spec.project_id,
+            workspace="editor",
+            owner_id=spec.job_id,
+            label=spec.title,
+            sources=(),
+            outputs=tuple(
+                (f"generated_voice:{item.item_id}", item.wav_path)
+                for item in result.items
+                if item.status == "done" and item.wav_path
+            ),
+            metadata={"workflow": "subtitle-speech", "cue_count": len(spec.cues)},
+        )
+        return result.to_payload()
+
+    task_registry.submit(record, execute, serialize)
+    return {"job_id": spec.job_id, "task_id": record.task_id}
 
 
 @router.post("/load")

@@ -1,9 +1,8 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery } from '@tanstack/react-query'
 
-import { startBatchRun, type BatchRun } from '../api/batch'
-import { loadEditorCues, loadEditorMedia, startEditorExport } from '../api/editor'
-import type { EditorExportResult, EditorMedia, EditorSubtitleAsset } from '../api/editor'
+import { loadEditorCues, loadEditorMedia, startEditorExport, startEditorSpeech } from '../api/editor'
+import type { EditorExportResult, EditorMedia, EditorSpeechItemEvent, EditorSpeechResult, EditorSubtitleAsset } from '../api/editor'
 import { fetchSettings, fetchSettingsMeta, updateSettings } from '../api/settings'
 import { openPath } from '../api/voice'
 import { fetchLibraryVoices, libraryVoiceRequest } from '../api/voiceLibrary'
@@ -33,19 +32,13 @@ import type {
 import { useActiveProjectId } from '../hooks/useActiveProjectId'
 import { hasNativeDialogs, pickAudioFile, pickFolder, pickSrtFile, pickVideoFile } from '../lib/dialogs'
 import { useTasks } from '../ws/useTasks'
+import { subscribeEvents } from '../ws/hub'
 import { isTaskActive } from '../ws/types'
 
 type EditorMediaAsset<K extends 'video' | 'audio'> = Omit<EditorMedia, 'kind'> & { id: string; kind: K }
 type EditorAsset = EditorMediaAsset<'video'> | EditorMediaAsset<'audio'> | ({ id: string; kind: 'subtitle' } & EditorSubtitleAsset)
 type TtsScope = 'selected' | 'track' | 'all'
 type InspectorMode = 'subtitles' | 'removal'
-
-interface PendingSpeech {
-  itemId: string
-  trackId: string
-  cueId: string
-  startMs: number
-}
 
 function numberSetting(value: unknown, fallback: number): number {
   return typeof value === 'number' && Number.isFinite(value) ? value : fallback
@@ -67,6 +60,21 @@ function fitCues(cues: TimelineCue[], durationMs: number): TimelineCue[] {
   }))
 }
 
+function isEditorSpeechItemEvent(value: unknown): value is EditorSpeechItemEvent {
+  if (!value || typeof value !== 'object') return false
+  const item = value as Partial<EditorSpeechItemEvent>
+  return typeof item.job_id === 'string'
+    && typeof item.item_id === 'string'
+    && typeof item.track_id === 'string'
+    && typeof item.cue_id === 'string'
+    && typeof item.start_ms === 'number'
+    && typeof item.completed === 'number'
+    && typeof item.failed === 'number'
+    && typeof item.total === 'number'
+    && (typeof item.wav_path === 'string' || item.wav_path === null)
+    && (item.status === 'done' || item.status === 'failed')
+}
+
 export function EditorPage() {
   const galaxyProjectId = useActiveProjectId()
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
@@ -76,6 +84,8 @@ export function EditorPage() {
   const videoRef = useRef<HTMLVideoElement>(null)
   const seeded = useRef(false)
   const handledSpeechTask = useRef('')
+  const activeSpeechJob = useRef('')
+  const speechItemDeliveries = useRef(new Map<string, Promise<void>>())
 
   const [assets, setAssets] = useState<EditorAsset[]>([])
   const [tracks, setTracks] = useState<EditorTrack[]>(createDefaultTracks)
@@ -102,7 +112,6 @@ export function EditorPage() {
   const [voiceId, setVoiceId] = useState('')
   const [ttsScope, setTtsScope] = useState<TtsScope>('selected')
   const [ttsTaskId, setTtsTaskId] = useState('')
-  const [pendingSpeech, setPendingSpeech] = useState<PendingSpeech[]>([])
   const [inspectorMode, setInspectorMode] = useState<InspectorMode>('subtitles')
 
   const exportTask = taskId ? tasks.find((item) => item.taskId === taskId) : undefined
@@ -140,6 +149,29 @@ export function EditorPage() {
     .flatMap((track) => track.cues)
     .find((cue) => cue.start_ms <= playheadMs && cue.end_ms >= playheadMs)?.text ?? '', [tracks, playheadMs])
 
+  const deliverSpeechItem = useCallback(async (item: EditorSpeechItemEvent) => {
+    if (item.status !== 'done' || !item.wav_path) return
+    const deliveryKey = `${item.job_id}:${item.item_id}`
+    const existing = speechItemDeliveries.current.get(deliveryKey)
+    if (existing) return existing
+    const delivery = loadEditorMedia(item.wav_path, 'audio').then((media) => {
+      const asset = { ...media, id: `audio:${media.source_id}` } as EditorMediaAsset<'audio'>
+      setAssets((current) => current.some((candidate) => candidate.path === asset.path)
+        ? current
+        : [...current, asset])
+      setTracks((current) => {
+        const sourceTrackExists = current.some((track) => track.id === item.track_id && track.kind === 'subtitle')
+        if (!sourceTrackExists) return current
+        return placeAudioClips(current, [mediaClip(media, item.start_ms)], item.track_id).tracks
+      })
+    }).catch((cause) => {
+      speechItemDeliveries.current.delete(deliveryKey)
+      setMessage(cause instanceof Error ? cause.message : String(cause))
+    })
+    speechItemDeliveries.current.set(deliveryKey, delivery)
+    return delivery
+  }, [])
+
   useEffect(() => {
     const settings = settingsQuery.data
     if (!settings || seeded.current) return
@@ -163,36 +195,36 @@ export function EditorPage() {
     else if (exportTask.status === 'failed') setMessage(exportTask.error ?? 'Xuất video thất bại.')
   }, [exportTask])
 
+  useEffect(() => subscribeEvents((event) => {
+    if (event.type !== 'event' || event.kind !== 'editor_speech_item' || !isEditorSpeechItemEvent(event.payload)) return
+    if (event.payload.job_id !== activeSpeechJob.current) return
+    if (event.payload.status === 'done') void deliverSpeechItem(event.payload)
+    setMessage(`Đang tạo giọng: ${event.payload.completed}/${event.payload.total} xong${event.payload.failed ? `, ${event.payload.failed} câu lỗi` : ''}.`)
+  }), [deliverSpeechItem])
+
   useEffect(() => {
     if (!speechTask || isTaskActive(speechTask.status) || handledSpeechTask.current === speechTask.taskId) return
     handledSpeechTask.current = speechTask.taskId
+    if (speechTask.status === 'cancelled') {
+      setMessage('Đã dừng chuyển phụ đề thành giọng nói.')
+      return
+    }
     if (speechTask.status !== 'done' || !speechTask.result) {
       setMessage(speechTask.error ?? 'Chuyển phụ đề thành giọng nói thất bại.')
       return
     }
-    const run = speechTask.result as BatchRun
-    const pendingByItem = new Map(pendingSpeech.map((item) => [item.itemId, item]))
-    void Promise.all(run.items.filter((item) => item.status === 'done' && item.wav_path).map(async (item) => {
-      const pending = pendingByItem.get(item.item_id)
-      if (!pending || !item.wav_path) return null
-      const path = `${run.root_dir}/${item.wav_path}`.replaceAll('/', '\\')
-      const media = await loadEditorMedia(path, 'audio')
-      return { pending, media, clip: mediaClip(media, pending.startMs) }
-    })).then((generated) => {
-      const ready = generated.filter((item): item is NonNullable<typeof item> => item !== null)
-      setAssets((current) => [...current, ...ready.map(({ media }) => ({ ...media, id: `audio:${media.source_id}` } as EditorMediaAsset<'audio'>))])
-      setTracks((current) => {
-        let next = current
-        for (const trackId of [...new Set(ready.map(({ pending }) => pending.trackId))]) {
-          const clips = ready.filter(({ pending }) => pending.trackId === trackId).map(({ clip }) => clip)
-          next = placeAudioClips(next, clips, trackId).tracks
-        }
-        return next
-      })
-      const failed = run.items.filter((item) => item.status !== 'done').length
-      setMessage(`Đã tạo ${ready.length} audio từ phụ đề${failed ? `, ${failed} câu lỗi` : ''}. Audio chồng nhau đã tự xuống lane dưới.`)
-    }).catch((cause) => setMessage(cause instanceof Error ? cause.message : String(cause)))
-  }, [pendingSpeech, speechTask])
+    const result = speechTask.result as EditorSpeechResult
+    void Promise.all(result.items.map((item) => deliverSpeechItem({
+      ...item,
+      job_id: result.job_id,
+      task_id: speechTask.taskId,
+      completed: result.completed_count,
+      failed: result.failed_count,
+      total: result.total_count,
+    }))).then(() => {
+      setMessage(`Đã tạo ${result.completed_count} audio từ phụ đề${result.failed_count ? `, ${result.failed_count} câu lỗi` : ''}. Audio chồng nhau đã tự xuống lane dưới.`)
+    })
+  }, [deliverSpeechItem, speechTask])
 
   useEffect(() => {
     const player = videoRef.current
@@ -307,15 +339,19 @@ export function EditorPage() {
     if (!targets.length) { setMessage('Không có câu phụ đề phù hợp với phạm vi đã chọn.'); return }
     const speechOutput = stringSetting(settingsQuery.data?.omnivoice_output_dir, outputDir)
     if (!speechOutput) { setMessage('Chọn thư mục xuất trước khi tạo giọng.'); return }
-    const pending = targets.map(({ track, cue }, index) => ({ itemId: `editor-${String(index + 1).padStart(4, '0')}`, trackId: track.id, cueId: cue.id, startMs: cue.start_ms }))
     const voice = libraryVoiceRequest(selectedVoice)
     const systemVoice = selectedVoice.selection.source === 'system'
     if (systemVoice && (!selectedVoice.selection.system_engine || !selectedVoice.selection.system_voice)) {
       setMessage('Giọng hệ thống thiếu thông tin engine hoặc tên giọng.')
       return
     }
+    const jobId = crypto.randomUUID()
+    activeSpeechJob.current = jobId
+    speechItemDeliveries.current.clear()
+    handledSpeechTask.current = ''
     try {
-      const response = await startBatchRun({
+      const response = await startEditorSpeech({
+        job_id: jobId,
         project_id: galaxyProjectId,
         title: `Editor TTS ${new Date().toLocaleString('vi-VN')}`,
         output_dir: speechOutput,
@@ -323,27 +359,23 @@ export function EditorPage() {
         device: systemVoice ? (selectedVoice.selection.system_engine === 'edge' ? 'remote' : 'cpu') : stringSetting(settingsQuery.data?.omnivoice_device, 'auto'),
         language: selectedVoice.language || 'vi',
         speed: 1,
-        formats: ['wav'],
         voice,
         engine_options: systemVoice ? { voice_name: selectedVoice.selection.system_voice } : {},
-        combine: false,
-        gap_ms: 0,
-        items: targets.map(({ cue }, index) => ({
-          item_id: pending[index].itemId,
+        cues: targets.map(({ track, cue }, index) => ({
+          item_id: `editor-${String(index + 1).padStart(4, '0')}`,
+          track_id: track.id,
+          cue_id: cue.id,
+          start_ms: cue.start_ms,
           text: cue.text,
           language: selectedVoice.language || 'vi',
-          speed: null,
-          duration: null,
-          voice_source: '',
-          profile_id: '',
-          instruction: '',
-          formats: ['wav'],
         })),
       })
-      setPendingSpeech(pending)
       setTtsTaskId(response.task_id)
       setMessage(`Đang tạo giọng cho ${targets.length} câu phụ đề...`)
-    } catch (cause) { setMessage(cause instanceof Error ? cause.message : String(cause)) }
+    } catch (cause) {
+      activeSpeechJob.current = ''
+      setMessage(cause instanceof Error ? cause.message : String(cause))
+    }
   }
 
   const startExport = async () => {

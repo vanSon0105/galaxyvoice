@@ -9,10 +9,12 @@ from unittest import mock
 from fastapi.testclient import TestClient
 
 from app.common.errors import TaskCancelledError
+from app.server.event_bus import event_bus
 from app.server.main import create_app
 from app.server.routers import video_editor as editor_router
 from app.server.tasks import CANCELLED, DONE, task_registry
 from app.video_editor.service import EditorExportResult, EditorMediaInfo
+from app.video_editor.speech import EditorSpeechItemResult, EditorSpeechResult, EditorSpeechService
 
 
 def _wait_status(task_id: str, timeout: float = 3.0) -> str:
@@ -166,6 +168,64 @@ class VideoEditorApiTests(unittest.TestCase):
         self.assertEqual(options.video_clips[0].timeline_start_ms, 0)
         self.assertEqual(options.audio_clips[0].timeline_start_ms, 500)
         self.assertEqual(options.audio_clips[0].volume, 80)
+
+    def test_speech_job_emits_each_completed_cue_with_editor_identity(self) -> None:
+        audio = self.root / "generated.wav"
+        audio.write_bytes(b"wav")
+
+        def fake_execute(_service, spec, _engine, **callbacks):
+            item = EditorSpeechItemResult(
+                item_id="item-1",
+                track_id="subtitle-2",
+                cue_id="cue-7",
+                start_ms=1_250,
+                status="done",
+                wav_path=str(audio),
+            )
+            callbacks["item_finished"](item)
+            return EditorSpeechResult(spec.job_id, spec.project_id, str(self.root), (item,))
+
+        engine = mock.Mock(code="sapi")
+        with (
+            mock.patch.object(EditorSpeechService, "execute", autospec=True, side_effect=fake_execute),
+            mock.patch.object(editor_router, "create_tts_engine", return_value=engine, create=True),
+            mock.patch.object(event_bus, "emit") as emit,
+        ):
+            response = self.client.post(
+                "/api/editor/speech",
+                json={
+                    "job_id": "editor-job-1",
+                    "project_id": "project-1",
+                    "title": "Editor speech",
+                    "output_dir": str(self.root),
+                    "engine_id": "sapi",
+                    "device": "cpu",
+                    "voice": {"source": "auto"},
+                    "engine_options": {"voice_name": "Microsoft David Desktop"},
+                    "cues": [{
+                        "item_id": "item-1",
+                        "track_id": "subtitle-2",
+                        "cue_id": "cue-7",
+                        "start_ms": 1_250,
+                        "text": "Xin chao",
+                    }],
+                },
+            )
+            self.assertEqual(response.status_code, 200, response.text)
+            self.assertEqual(response.json()["job_id"], "editor-job-1")
+            task_id = response.json()["task_id"]
+            self.assertEqual(_wait_status(task_id), DONE)
+
+        record = task_registry.get(task_id)
+        self.assertEqual(record.workflow_id, "editor-job-1")
+        self.assertEqual(record.result_payload["items"][0]["cue_id"], "cue-7")
+        emitted = [
+            call.args[0]
+            for call in emit.call_args_list
+            if call.args[0].get("kind") == "editor_speech_item"
+        ]
+        self.assertEqual(emitted[0]["payload"]["task_id"], task_id)
+        self.assertEqual(emitted[0]["payload"]["track_id"], "subtitle-2")
 
 
 if __name__ == "__main__":

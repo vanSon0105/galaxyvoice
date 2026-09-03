@@ -3,12 +3,12 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import * as editorApi from '../api/editor'
-import * as batchApi from '../api/batch'
 import * as removalApi from '../api/removal'
 import * as settingsApi from '../api/settings'
 import * as voiceLibraryApi from '../api/voiceLibrary'
 import type { SettingsMeta } from '../api/settings'
 import * as dialogs from '../lib/dialogs'
+import { publishEvent } from '../ws/hub'
 import { EditorPage } from './EditorPage'
 
 const taskState = vi.hoisted(() => ({ tasks: [] as Array<Record<string, unknown>>, cancelTask: vi.fn() }))
@@ -73,7 +73,7 @@ describe('EditorPage', () => {
       stable_sample: true, created_at: '', updated_at: '', capabilities: [], preview_available: false, preview_url: '', usage_count: 0,
       editable: true, identity_editable: true, deletable: true, compatibility: { studio: true, batch: true, editor: true, longform: true, dubbing: true },
     }])
-    const startBatch = vi.spyOn(batchApi, 'startBatchRun').mockResolvedValue({ batch_id: 'batch-1', task_id: 'task-1' })
+    const startSpeech = vi.spyOn(editorApi, 'startEditorSpeech').mockResolvedValue({ job_id: 'editor-job-1', task_id: 'task-1' })
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(<QueryClientProvider client={client}><EditorPage /></QueryClientProvider>)
 
@@ -83,11 +83,30 @@ describe('EditorPage', () => {
     fireEvent.change(await screen.findByLabelText('Giọng từ Thư viện'), { target: { value: 'son' } })
     fireEvent.click(screen.getByRole('button', { name: 'Chuyển thành audio' }))
 
-    expect(startBatch).toHaveBeenCalledWith(expect.objectContaining({
-      combine: false,
+    expect(startSpeech).toHaveBeenCalledWith(expect.objectContaining({
       voice: expect.objectContaining({ profile_id: 'son-profile' }),
-      items: [expect.objectContaining({ text: 'Xin chào' })],
+      cues: [expect.objectContaining({ text: 'Xin chào' })],
     }))
+
+    vi.spyOn(editorApi, 'loadEditorMedia').mockResolvedValue({
+      source_id: 'audio-1', url: '/api/editor/source/audio-1', name: 'voice.wav', path: 'D:/voice.wav',
+      kind: 'audio', duration_seconds: 1.4, width: 0, height: 0, fps: 0, has_audio: true,
+    })
+    const request = startSpeech.mock.calls[0][0]
+    const cue = request.cues[0]
+    publishEvent({
+      type: 'event',
+      kind: 'editor_speech_item',
+      payload: {
+        job_id: request.job_id, task_id: 'task-1', item_id: cue.item_id,
+        track_id: cue.track_id, cue_id: cue.cue_id, start_ms: cue.start_ms,
+        status: 'done', wav_path: 'D:/voice.wav', error: null, warnings: [],
+        completed: 1, failed: 0, total: 1,
+      },
+    })
+
+    await waitFor(() => expect(editorApi.loadEditorMedia).toHaveBeenCalledWith('D:/voice.wav', 'audio'))
+    expect(await screen.findByText('voice.wav')).toBeInTheDocument()
   })
 
   it('generates subtitle audio with a selected Windows system voice', async () => {
@@ -104,7 +123,7 @@ describe('EditorPage', () => {
       stable_sample: false, created_at: '', updated_at: '', capabilities: ['sapi.tts'], preview_available: false, preview_url: '', usage_count: 0,
       editable: true, identity_editable: false, deletable: false, compatibility: { studio: false, batch: false, editor: true, longform: false, dubbing: false },
     }])
-    const startBatch = vi.spyOn(batchApi, 'startBatchRun').mockResolvedValue({ batch_id: 'batch-1', task_id: 'task-1' })
+    const startSpeech = vi.spyOn(editorApi, 'startEditorSpeech').mockResolvedValue({ job_id: 'editor-job-1', task_id: 'task-1' })
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(<QueryClientProvider client={client}><EditorPage /></QueryClientProvider>)
 
@@ -116,12 +135,12 @@ describe('EditorPage', () => {
     fireEvent.change(screen.getByLabelText('Giọng từ Thư viện'), { target: { value: 'system:sapi:Microsoft David Desktop' } })
     fireEvent.click(screen.getByRole('button', { name: 'Chuyển thành audio' }))
 
-    expect(startBatch).toHaveBeenCalledWith(expect.objectContaining({
+    expect(startSpeech).toHaveBeenCalledWith(expect.objectContaining({
       engine_id: 'sapi',
       device: 'cpu',
       engine_options: { voice_name: 'Microsoft David Desktop' },
       voice: expect.objectContaining({ source: 'auto' }),
-      items: [expect.objectContaining({ text: 'Hello' })],
+      cues: [expect.objectContaining({ text: 'Hello' })],
     }))
   })
 

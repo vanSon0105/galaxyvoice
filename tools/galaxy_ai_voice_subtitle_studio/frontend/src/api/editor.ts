@@ -70,6 +70,66 @@ export interface EditorExportResult {
   warnings: string[]
 }
 
+export interface EditorSpeechCueRequest {
+  item_id: string
+  track_id: string
+  cue_id: string
+  start_ms: number
+  text: string
+  language: string
+}
+
+export interface EditorSpeechRequest {
+  job_id: string
+  project_id: string
+  title: string
+  output_dir: string
+  engine_id: string
+  model_id?: string
+  device: string
+  language: string
+  speed: number
+  voice: {
+    source: string
+    profile_id: string
+    reference_audio: string
+    reference_text: string
+    instruction: string
+  }
+  engine_options: Record<string, unknown>
+  cues: EditorSpeechCueRequest[]
+}
+
+export interface EditorSpeechItemResult {
+  item_id: string
+  track_id: string
+  cue_id: string
+  start_ms: number
+  status: 'done' | 'failed'
+  wav_path: string | null
+  error: string | null
+  warnings: string[]
+}
+
+export interface EditorSpeechResult {
+  job_id: string
+  project_id: string
+  root_dir: string
+  status: 'completed' | 'partial' | 'failed'
+  completed_count: number
+  failed_count: number
+  total_count: number
+  items: EditorSpeechItemResult[]
+}
+
+export interface EditorSpeechItemEvent extends EditorSpeechItemResult {
+  job_id: string
+  task_id: string
+  completed: number
+  failed: number
+  total: number
+}
+
 export function loadEditorMedia(path: string, kind: 'video' | 'audio'): Promise<EditorMedia> {
   return apiJson<EditorMedia>('/api/editor/load', {
     method: 'POST',
@@ -93,4 +153,12 @@ export async function startEditorExport(request: EditorExportRequest): Promise<s
     body: JSON.stringify(request),
   })
   return response.task_id
+}
+
+export function startEditorSpeech(request: EditorSpeechRequest): Promise<{ job_id: string; task_id: string }> {
+  return apiJson<{ job_id: string; task_id: string }>('/api/editor/speech', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(request),
+  })
 }

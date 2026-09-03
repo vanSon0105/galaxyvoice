@@ -34,6 +34,7 @@ export interface BatchRun {
   formats: string[]
   combine: boolean
   gap_ms: number
+  max_workers: number
   root_dir: string
   manifest_path: string
   combined_wav_path: string | null
@@ -68,6 +69,7 @@ export interface CreateBatchRunRequest {
   engine_options?: Record<string, unknown>
   combine: boolean
   gap_ms: number
+  max_workers?: number
   items: BatchItemInput[]
 }
 

@@ -112,3 +112,16 @@ replace clips only through an explicit editor action.
 5. Task cancellation remains cooperative for system voices and interrupts the
    shared OmniVoice worker through its coordinator.
 6. The public Batch create, resume, and retry workflow remains unchanged.
+
+## Phase 3 Acceptance
+
+1. Edge and SAPI jobs use three workers by default and clamp requested worker
+   counts to the supported range of one through eight.
+2. Engines that do not declare parallel safety, including OmniVoice, continue
+   to run with one worker.
+3. Jobs with at least three pending items prewarm the selected engine once
+   before synthesis begins.
+4. Batch manifests, checkpoints, and task progress are persisted at a bounded
+   interval, with a forced write for terminal and cancellation states.
+5. Batch retry semantics, editor cue identity, incremental item events, and
+   deterministic result ordering remain unchanged.

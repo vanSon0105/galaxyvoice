@@ -33,6 +33,19 @@ class PersistentJobRunnerTests(unittest.TestCase):
                 self.assertEqual(save.call_count - before, 1)
                 registry.finish(record.task_id, status=DONE)
 
+    def test_repeated_zero_progress_is_throttled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            store = JobStore(Path(temp_dir) / "jobs.json")
+            with mock.patch.object(store, "save", wraps=store.save) as save:
+                registry = TaskRegistry(store=store)
+                record = registry.create("warming-up")
+                before = save.call_count
+                for index in range(20):
+                    registry.report(record.task_id, f"prewarm {index}", progress=0.0)
+
+                self.assertEqual(save.call_count - before, 1)
+                registry.finish(record.task_id, status=DONE)
+
     def test_throttled_progress_gets_a_trailing_persistence_flush(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             store = JobStore(Path(temp_dir) / "jobs.json")

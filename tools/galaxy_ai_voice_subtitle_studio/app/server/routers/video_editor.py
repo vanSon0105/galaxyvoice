@@ -22,6 +22,7 @@ from ...omnivoice.worker_pool import get_shared_worker_client
 from ...project_graph.integrations import register_media_result
 from ...project_graph.runtime import project_graph_service
 from ...runtime.jobs import TaskContext
+from ...studio.execution import clamp_speech_workers
 from ...studio.models import StudioVoiceSelection
 from ...video_editor.service import (
     EDITOR_AUDIO_MODES,
@@ -106,6 +107,7 @@ class EditorSpeechRequest(BaseModel):
     device: str = "auto"
     language: str = "vi"
     speed: float = 1.0
+    max_workers: int = 3
     voice: EditorSpeechVoiceRequest = Field(default_factory=EditorSpeechVoiceRequest)
     engine_options: dict[str, Any] = Field(default_factory=dict)
     cues: list[EditorSpeechCueRequest] = Field(default_factory=list)
@@ -210,6 +212,7 @@ def _editor_speech_spec(body: EditorSpeechRequest) -> EditorSpeechSpec:
         device=body.device.strip() or "auto",
         language=body.language.strip() or "vi",
         speed=body.speed,
+        max_workers=clamp_speech_workers(body.max_workers),
         voice=StudioVoiceSelection(**body.voice.model_dump()),
         engine_options=dict(body.engine_options),
         cues=tuple(

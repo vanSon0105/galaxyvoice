@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import re
 import threading
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
 from ..common.errors import TaskCancelledError
 from ..common.paths import unique_project_dir
+from ..studio.execution import (
+    DEFAULT_PERSIST_INTERVAL_SECONDS,
+    DEFAULT_SPEECH_WORKERS,
+    IntervalGate,
+    prewarm_engine,
+    speech_worker_count,
+)
 from ..studio.models import StudioGenerationSpec, StudioVoiceSelection
 from ..studio.service import StudioEngine
 
@@ -50,6 +58,7 @@ class EditorSpeechSpec:
     device: str = "auto"
     language: str = "vi"
     speed: float = 1.0
+    max_workers: int = DEFAULT_SPEECH_WORKERS
     voice: StudioVoiceSelection = field(default_factory=StudioVoiceSelection)
     engine_options: dict[str, Any] = field(default_factory=dict)
     cues: tuple[EditorSpeechCueSpec, ...] = ()
@@ -148,6 +157,13 @@ class EditorSpeechResult:
 
 
 class EditorSpeechService:
+    def __init__(
+        self,
+        *,
+        checkpoint_interval_seconds: float = DEFAULT_PERSIST_INTERVAL_SECONDS,
+    ) -> None:
+        self.checkpoint_interval_seconds = checkpoint_interval_seconds
+
     def execute(
         self,
         spec: EditorSpeechSpec,
@@ -164,70 +180,180 @@ class EditorSpeechService:
             raise ValueError(f"Adapter {engine.engine_id} không xử lý được {spec.engine_id}.")
 
         root = unique_project_dir(Path(spec.output_dir).expanduser(), spec.title, "editor-speech")
-        results: list[EditorSpeechItemResult] = []
         total = len(spec.cues)
+        self._check_control(control, stop_event)
+        first_spec = spec.generation_spec(spec.cues[0], root)
+        first_spec.validate()
+        if progress and total >= 3:
+            progress("Đang chuẩn bị engine tạo giọng...", 0.0)
+        prewarm_engine(
+            engine,
+            first_spec,
+            total,
+            lambda message: progress(message, 0.0) if progress else None,
+        )
 
-        for index, cue in enumerate(spec.cues):
-            if control:
-                control()
-            if stop_event is not None and stop_event.is_set():
-                raise TaskCancelledError()
-            if progress:
-                progress(f"Đang tạo giọng {index + 1}/{total}", index / total)
+        results: dict[str, EditorSpeechItemResult] = {}
+        checkpoint_gate = IntervalGate(self.checkpoint_interval_seconds)
 
-            try:
-                generation_spec = spec.generation_spec(cue, root)
-                generation_spec.validate()
-                artifact = engine.generate(
-                    generation_spec,
-                    lambda message: progress(message, index / total) if progress else None,
-                )
-                wav_path = artifact.wav_path.resolve()
-                if not wav_path.is_relative_to(root.resolve()) or not wav_path.is_file():
-                    raise ValueError("Engine trả về audio nằm ngoài thư mục của editor speech job.")
-                item = EditorSpeechItemResult(
-                    item_id=cue.item_id,
-                    track_id=cue.track_id,
-                    cue_id=cue.cue_id,
-                    start_ms=cue.start_ms,
-                    status="done",
-                    wav_path=str(wav_path),
-                    warnings=artifact.warnings,
-                )
-            except TaskCancelledError:
-                raise
-            except Exception as error:
-                if stop_event is not None and stop_event.is_set():
-                    raise TaskCancelledError() from error
-                item = EditorSpeechItemResult(
-                    item_id=cue.item_id,
-                    track_id=cue.track_id,
-                    cue_id=cue.cue_id,
-                    start_ms=cue.start_ms,
-                    status="failed",
-                    error=str(error),
-                )
+        def save_checkpoint(last_item_id: str, *, force: bool = False) -> None:
+            if not checkpoint or not checkpoint_gate.ready(force=force):
+                return
+            checkpoint(
+                {
+                    "job_id": spec.job_id,
+                    "last_item_id": last_item_id,
+                    "completed": sum(item.status == "done" for item in results.values()),
+                    "failed": sum(item.status == "failed" for item in results.values()),
+                    "total": total,
+                }
+            )
 
-            results.append(item)
+        def finish(item: EditorSpeechItemResult) -> None:
+            results[item.item_id] = item
             if item_finished:
                 item_finished(item)
-            completed = sum(result.status == "done" for result in results)
-            failed = sum(result.status == "failed" for result in results)
-            if checkpoint:
-                checkpoint(
-                    {
-                        "job_id": spec.job_id,
-                        "last_item_id": cue.item_id,
-                        "completed": completed,
-                        "failed": failed,
-                        "total": total,
-                    }
+            save_checkpoint(item.item_id)
+            if progress:
+                progress(
+                    f"Đã xử lý {len(results)}/{total} câu phụ đề.",
+                    len(results) / total,
                 )
 
-        result = EditorSpeechResult(spec.job_id, spec.project_id, str(root.resolve()), tuple(results))
+        worker_count = speech_worker_count(engine, spec.max_workers, total)
+        try:
+            if worker_count == 1:
+                for index, cue in enumerate(spec.cues):
+                    self._check_control(control, stop_event)
+                    finish(self._generate_item(spec, cue, index, total, root, engine, progress, stop_event))
+            else:
+                self._execute_parallel(
+                    spec,
+                    root,
+                    engine,
+                    worker_count,
+                    finish,
+                    progress,
+                    control,
+                    stop_event,
+                )
+        except TaskCancelledError:
+            save_checkpoint(next(reversed(results), ""), force=True)
+            raise
+
+        save_checkpoint(next(reversed(results), ""), force=True)
+        ordered = tuple(results[cue.item_id] for cue in spec.cues)
+        result = EditorSpeechResult(spec.job_id, spec.project_id, str(root.resolve()), ordered)
         if progress:
             progress(
                 f"Tạo giọng hoàn tất: {result.completed_count} thành công, {result.failed_count} lỗi.",
                 1.0,
             )
         return result
+
+    def _execute_parallel(
+        self,
+        spec: EditorSpeechSpec,
+        root: Path,
+        engine: StudioEngine,
+        worker_count: int,
+        finish: EditorSpeechItemCallback,
+        progress: EditorSpeechProgress | None,
+        control: EditorSpeechControl | None,
+        stop_event: threading.Event | None,
+    ) -> None:
+        total = len(spec.cues)
+        pending = iter(enumerate(spec.cues))
+        futures: dict[Future[EditorSpeechItemResult], int] = {}
+
+        with ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="editor-speech") as executor:
+            def submit_next() -> bool:
+                self._check_control(control, stop_event)
+                try:
+                    index, cue = next(pending)
+                except StopIteration:
+                    return False
+                future = executor.submit(
+                    self._generate_item,
+                    spec,
+                    cue,
+                    index,
+                    total,
+                    root,
+                    engine,
+                    progress,
+                    stop_event,
+                )
+                futures[future] = index
+                return True
+
+            for _ in range(worker_count):
+                if not submit_next():
+                    break
+
+            while futures:
+                self._check_control(control, stop_event)
+                done, _ = wait(futures, timeout=0.1, return_when=FIRST_COMPLETED)
+                for future in sorted(done, key=lambda item: futures[item]):
+                    futures.pop(future)
+                    finish(future.result())
+                    submit_next()
+
+    @staticmethod
+    def _check_control(
+        control: EditorSpeechControl | None,
+        stop_event: threading.Event | None,
+    ) -> None:
+        if control:
+            control()
+        if stop_event is not None and stop_event.is_set():
+            raise TaskCancelledError()
+
+    @staticmethod
+    def _generate_item(
+        spec: EditorSpeechSpec,
+        cue: EditorSpeechCueSpec,
+        index: int,
+        total: int,
+        root: Path,
+        engine: StudioEngine,
+        progress: EditorSpeechProgress | None,
+        stop_event: threading.Event | None,
+    ) -> EditorSpeechItemResult:
+        if stop_event is not None and stop_event.is_set():
+            raise TaskCancelledError()
+        if progress:
+            progress(f"Đang tạo giọng {index + 1}/{total}", index / total)
+
+        try:
+            generation_spec = spec.generation_spec(cue, root)
+            generation_spec.validate()
+            artifact = engine.generate(
+                generation_spec,
+                lambda message: progress(message, index / total) if progress else None,
+            )
+            wav_path = artifact.wav_path.resolve()
+            if not wav_path.is_relative_to(root.resolve()) or not wav_path.is_file():
+                raise ValueError("Engine trả về audio nằm ngoài thư mục của editor speech job.")
+            return EditorSpeechItemResult(
+                item_id=cue.item_id,
+                track_id=cue.track_id,
+                cue_id=cue.cue_id,
+                start_ms=cue.start_ms,
+                status="done",
+                wav_path=str(wav_path),
+                warnings=artifact.warnings,
+            )
+        except TaskCancelledError:
+            raise
+        except Exception as error:
+            if stop_event is not None and stop_event.is_set():
+                raise TaskCancelledError() from error
+            return EditorSpeechItemResult(
+                item_id=cue.item_id,
+                track_id=cue.track_id,
+                cue_id=cue.cue_id,
+                start_ms=cue.start_ms,
+                status="failed",
+                error=str(error),
+            )

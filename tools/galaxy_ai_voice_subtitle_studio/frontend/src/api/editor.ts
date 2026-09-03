@@ -89,6 +89,7 @@ export interface EditorSpeechRequest {
   device: string
   language: string
   speed: number
+  max_workers?: number
   voice: {
     source: string
     profile_id: string

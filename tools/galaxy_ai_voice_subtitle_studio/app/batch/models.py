@@ -4,6 +4,7 @@ from dataclasses import asdict, dataclass, field
 import re
 from typing import Any
 
+from ..studio.execution import DEFAULT_SPEECH_WORKERS, clamp_speech_workers
 from ..studio.models import (
     OUTPUT_FORMATS,
     VOICE_SOURCES,
@@ -99,6 +100,7 @@ class BatchSpec:
     engine_options: dict[str, Any] = field(default_factory=dict)
     combine: bool = False
     gap_ms: int = 250
+    max_workers: int = DEFAULT_SPEECH_WORKERS
 
     def validate(self) -> None:
         if not self.project_id.strip():
@@ -184,6 +186,9 @@ class BatchSpec:
             engine_options=dict(payload.get("engine_options") or {}),
             combine=bool(payload.get("combine", False)),
             gap_ms=int(payload.get("gap_ms", 250)),
+            max_workers=clamp_speech_workers(
+                int(payload.get("max_workers", DEFAULT_SPEECH_WORKERS))
+            ),
         )
 
 

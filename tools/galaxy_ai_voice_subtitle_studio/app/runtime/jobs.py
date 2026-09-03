@@ -470,7 +470,7 @@ class TaskRegistry:
             record.updated_at = time.time()
             monotonic_now = time.monotonic()
             last_persisted = self._last_progress_persist_at.get(task_id, 0.0)
-            terminal_progress = progress is not None and record.progress in {0.0, 1.0}
+            terminal_progress = progress is not None and record.progress == 1.0
             if terminal_progress or monotonic_now - last_persisted >= PROGRESS_PERSIST_INTERVAL_SECONDS:
                 timer = self._progress_flush_timers.pop(task_id, None)
                 if timer is not None:

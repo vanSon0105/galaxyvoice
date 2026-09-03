@@ -9,10 +9,22 @@ from ..voice.tts import TTSEngine
 
 
 class SystemVoiceBatchAdapter:
+    max_parallelism = 8
+
     def __init__(self, engine: TTSEngine, voice_name: str) -> None:
         self.engine = engine
         self.engine_id = engine.code
         self.voice_name = voice_name
+
+    def prewarm(
+        self,
+        _spec: StudioGenerationSpec,
+        progress: ProgressCallback | None = None,
+    ) -> None:
+        if progress:
+            progress(f"Đang kiểm tra {self.engine.label}...")
+        if not self.engine.available():
+            raise RuntimeError(self.engine.unavailable_reason() or f"{self.engine.label} chưa sẵn sàng.")
 
     def generate(
         self,

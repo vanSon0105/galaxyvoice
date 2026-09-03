@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import tempfile
 import threading
+import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from app.common.errors import TaskCancelledError
@@ -29,6 +31,38 @@ class _FakeEngine:
         manifest_path = project_dir / "manifest.json"
         manifest_path.write_text("{}", encoding="utf-8")
         return StudioArtifact(project_dir, wav_path, None, manifest_path)
+
+
+class _ParallelEngine(_FakeEngine):
+    max_parallelism = 8
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.active = 0
+        self.max_active = 0
+        self.prewarm_calls = 0
+        self.lock = threading.Lock()
+
+    def prewarm(self, _spec: StudioGenerationSpec, _progress=None) -> None:
+        self.prewarm_calls += 1
+
+    def generate(self, spec: StudioGenerationSpec, progress=None) -> StudioArtifact:
+        with self.lock:
+            self.generated.append(spec)
+            self.active += 1
+            self.max_active = max(self.max_active, self.active)
+        try:
+            time.sleep(0.04)
+            project_dir = Path(spec.output_dir) / spec.output_name
+            project_dir.mkdir(parents=True)
+            wav_path = project_dir / "voice.wav"
+            wav_path.write_bytes(b"wav")
+            manifest_path = project_dir / "manifest.json"
+            manifest_path.write_text("{}", encoding="utf-8")
+            return StudioArtifact(project_dir, wav_path, None, manifest_path)
+        finally:
+            with self.lock:
+                self.active -= 1
 
 
 class EditorSpeechServiceTests(unittest.TestCase):
@@ -95,6 +129,21 @@ class EditorSpeechServiceTests(unittest.TestCase):
             )
 
         self.assertEqual([spec.output_name for spec in engine.generated], ["item-1"])
+
+    def test_parallel_safe_engine_uses_default_bound_and_prewarms_once(self) -> None:
+        cues = tuple(
+            EditorSpeechCueSpec(
+                f"item-{index}", "subtitle-1", f"cue-{index}", index * 1_000, f"Line {index}"
+            )
+            for index in range(1, 7)
+        )
+        engine = _ParallelEngine()
+
+        result = EditorSpeechService().execute(replace(self._spec(), cues=cues), engine)
+
+        self.assertEqual(result.completed_count, 6)
+        self.assertEqual(engine.max_active, 3)
+        self.assertEqual(engine.prewarm_calls, 1)
 
 
 if __name__ == "__main__":

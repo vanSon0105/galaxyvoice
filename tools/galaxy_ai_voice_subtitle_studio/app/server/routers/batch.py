@@ -23,6 +23,7 @@ from ...project_graph.integrations import register_batch_run
 from ...project_graph.runtime import project_graph_service
 from ...runtime.jobs import ACTIVE_STATUSES, TaskContext
 from ...runtime.resources import resource_keys_for_device
+from ...studio.execution import clamp_speech_workers
 from ...studio.models import StudioVoiceSelection
 from ...voice.tts import EDGE_ENGINE_CODE, create_tts_engine, tts_engine_codes
 from ..event_bus import event_bus
@@ -73,6 +74,7 @@ class CreateBatchRequest(BaseModel):
     engine_options: dict[str, Any] = Field(default_factory=dict)
     combine: bool = False
     gap_ms: int = 250
+    max_workers: int = 3
     items: list[BatchItemRequest] = Field(default_factory=list)
 
 
@@ -121,6 +123,7 @@ def _batch_spec(body: CreateBatchRequest, request: Request) -> BatchSpec:
         engine_options=dict(body.engine_options),
         combine=body.combine,
         gap_ms=body.gap_ms,
+        max_workers=clamp_speech_workers(body.max_workers),
     )
 
 
@@ -329,6 +332,7 @@ def _run_dict(run: BatchRun) -> dict[str, Any]:
         "formats": list(run.spec.formats),
         "combine": run.spec.combine,
         "gap_ms": run.spec.gap_ms,
+        "max_workers": run.spec.max_workers,
         "root_dir": run.root_dir,
         "manifest_path": run.manifest_path,
         "combined_wav_path": run.combined_wav_path or None,

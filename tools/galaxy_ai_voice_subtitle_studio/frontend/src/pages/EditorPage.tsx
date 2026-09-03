@@ -359,6 +359,7 @@ export function EditorPage() {
         device: systemVoice ? (selectedVoice.selection.system_engine === 'edge' ? 'remote' : 'cpu') : stringSetting(settingsQuery.data?.omnivoice_device, 'auto'),
         language: selectedVoice.language || 'vi',
         speed: 1,
+        max_workers: 3,
         voice,
         engine_options: systemVoice ? { voice_name: selectedVoice.selection.system_voice } : {},
         cues: targets.map(({ track, cue }, index) => ({

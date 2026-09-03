@@ -235,9 +235,9 @@ export function EditorPage() {
     }
     const targetId = target.id
     if (asset.kind === 'subtitle') {
-      const shifted = asset.cues.map((cue) => cueWithId({ ...cue, start_ms: cue.start_ms + dropMs, end_ms: cue.end_ms + dropMs }))
-      setTracks((current) => current.map((track) => track.id === targetId && track.kind === 'subtitle' ? { ...track, cues: reindexTrackCues([...track.cues, ...shifted]) } : track))
-      if (shifted[0]) setSelection({ trackId: targetId, itemId: shifted[0].id })
+      const importedCues = asset.cues.map(cueWithId)
+      setTracks((current) => current.map((track) => track.id === targetId && track.kind === 'subtitle' ? { ...track, cues: reindexTrackCues([...track.cues, ...importedCues]) } : track))
+      if (importedCues[0]) setSelection({ trackId: targetId, itemId: importedCues[0].id })
     } else {
       const clip = mediaClip(asset, dropMs)
       setTracks((current) => current.map((track) => track.id === targetId && track.kind === asset.kind ? { ...track, clips: [...track.clips, clip] } : track))

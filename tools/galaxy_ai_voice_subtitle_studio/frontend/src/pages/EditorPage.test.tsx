@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -80,6 +80,38 @@ describe('EditorPage', () => {
       voice: expect.objectContaining({ profile_id: 'son-profile' }),
       items: [expect.objectContaining({ text: 'Xin chào' })],
     }))
+  })
+
+  it('keeps SRT timestamps aligned to the video instead of offsetting them by the playhead', async () => {
+    vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({ editor_output_dir: 'D:/result', editor_timeline_zoom: 10 })
+    vi.spyOn(settingsApi, 'fetchSettingsMeta').mockResolvedValue(SETTINGS_META)
+    vi.spyOn(voiceLibraryApi, 'fetchLibraryVoices').mockResolvedValue([])
+    vi.spyOn(editorApi, 'loadEditorMedia').mockResolvedValue({
+      source_id: 'video-1', url: '/api/editor/source/video-1', name: 'clip.mp4', path: 'D:/clip.mp4',
+      kind: 'video', duration_seconds: 30, width: 1920, height: 1080, fps: 30, has_audio: true,
+    })
+    vi.spyOn(dialogs, 'pickSrtFile').mockResolvedValue('D:/captions.srt')
+    vi.spyOn(editorApi, 'loadEditorCues').mockResolvedValue({
+      name: 'captions.srt', path: 'D:/captions.srt',
+      cues: [{ index: 1, start_ms: 1_000, end_ms: 2_000, text: 'Khớp video' }],
+    })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const { container } = render(<QueryClientProvider client={client}><EditorPage /></QueryClientProvider>)
+
+    fireEvent.change(await screen.findByPlaceholderText('Đường dẫn tệp'), { target: { value: 'D:/clip.mp4' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Nạp' }))
+    const videoAsset = (await screen.findByText('clip.mp4')).closest('.editor-asset') as HTMLElement
+    fireEvent.click(within(videoAsset).getByTitle('Đưa vào timeline'))
+
+    const timeline = container.querySelector('.editor-timeline-svg') as SVGSVGElement
+    fireEvent.pointerDown(timeline, { button: 0, pointerId: 1, clientX: 330 })
+    fireEvent.pointerUp(timeline, { pointerId: 1, clientX: 330 })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Thêm SRT' }))
+    const subtitleAsset = (await screen.findByText('captions.srt')).closest('.editor-asset') as HTMLElement
+    fireEvent.click(within(subtitleAsset).getByTitle('Đưa vào timeline'))
+
+    expect(await screen.findByDisplayValue('00:01.000')).toBeInTheDocument()
   })
 
   it('removes a populated subtitle track from its inline delete button', async () => {

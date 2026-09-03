@@ -297,16 +297,23 @@ export function EditorPage() {
     if (!speechOutput) { setMessage('Chọn thư mục xuất trước khi tạo giọng.'); return }
     const pending = targets.map(({ track, cue }, index) => ({ itemId: `editor-${String(index + 1).padStart(4, '0')}`, trackId: track.id, cueId: cue.id, startMs: cue.start_ms }))
     const voice = libraryVoiceRequest(selectedVoice)
+    const systemVoice = selectedVoice.selection.source === 'system'
+    if (systemVoice && (!selectedVoice.selection.system_engine || !selectedVoice.selection.system_voice)) {
+      setMessage('Giọng hệ thống thiếu thông tin engine hoặc tên giọng.')
+      return
+    }
     try {
       const response = await startBatchRun({
         project_id: galaxyProjectId,
         title: `Editor TTS ${new Date().toLocaleString('vi-VN')}`,
         output_dir: speechOutput,
-        device: stringSetting(settingsQuery.data?.omnivoice_device, 'auto'),
+        engine_id: systemVoice ? selectedVoice.selection.system_engine : 'omnivoice',
+        device: systemVoice ? (selectedVoice.selection.system_engine === 'edge' ? 'remote' : 'cpu') : stringSetting(settingsQuery.data?.omnivoice_device, 'auto'),
         language: selectedVoice.language || 'vi',
         speed: 1,
         formats: ['wav'],
         voice,
+        engine_options: systemVoice ? { voice_name: selectedVoice.selection.system_voice } : {},
         combine: false,
         gap_ms: 0,
         items: targets.map(({ cue }, index) => ({
@@ -490,7 +497,7 @@ function AudioPreview({ clip, playheadMs, playing, volume }: { clip: TimelineMed
 }
 
 function VoiceOption({ voice }: { voice: LibraryVoice }) {
-  return <option value={voice.voice_id} disabled={!voice.compatibility.batch}>{voice.name} · {voice.language}{voice.compatibility.batch ? '' : ' · không hỗ trợ Batch'}</option>
+  return <option value={voice.voice_id} disabled={!voice.compatibility.editor}>{voice.name} · {voice.language}{voice.compatibility.editor ? '' : ' · không hỗ trợ Dựng video'}</option>
 }
 
 function OptionField({ label, value, onChange, options }: { label: string; value: string; onChange: (value: string) => void; options?: { code: string; label: string }[] }) {

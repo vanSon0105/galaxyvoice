@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from app.omnivoice.profiles import finalize_voice_profile, prepare_voice_profile
 from app.server.main import create_app
 from app.server.routers import voice_library as library_router
+from app.voice_library.models import VoiceProfileRecord, VoiceSelection
 
 
 class VoiceLibraryApiTests(unittest.TestCase):
@@ -66,6 +67,26 @@ class VoiceLibraryApiTests(unittest.TestCase):
         self.assertEqual(updated.status_code, 200, updated.text)
         self.assertEqual(updated.json()["tags"], ["review", "nam"])
         self.assertTrue(updated.json()["favorite"])
+
+    def test_system_voice_is_available_to_the_video_editor(self) -> None:
+        system_voice = VoiceProfileRecord(
+            voice_id="system:sapi:Microsoft David Desktop",
+            revision=1,
+            name="Microsoft David Desktop",
+            source="system",
+            language="en-US",
+            engine_id="sapi",
+            selection=VoiceSelection(
+                source="system",
+                system_engine="sapi",
+                system_voice="Microsoft David Desktop",
+            ),
+        )
+        with mock.patch.object(library_router, "_system_voices", return_value=[system_voice]):
+            voice = self.client.get("/api/voice-library/voices").json()[0]
+
+        self.assertTrue(voice["compatibility"]["editor"])
+        self.assertFalse(voice["compatibility"]["batch"])
 
     def test_clone_import_requires_consent_and_copies_reference(self) -> None:
         audio = self.root / "sample.wav"

@@ -63,7 +63,7 @@ describe('EditorPage', () => {
       selection: { source: 'profile', profile_id: 'son-profile', reference_audio: '', reference_text: '', instruction: '', system_engine: '', system_voice: '' },
       tags: [], notes: '', favorite: false, consent: { confirmed: true, basis: '', statement: '', recorded_at: '', provenance: '' },
       stable_sample: true, created_at: '', updated_at: '', capabilities: [], preview_available: false, preview_url: '', usage_count: 0,
-      editable: true, identity_editable: true, deletable: true, compatibility: { studio: true, batch: true, longform: true, dubbing: true },
+      editable: true, identity_editable: true, deletable: true, compatibility: { studio: true, batch: true, editor: true, longform: true, dubbing: true },
     }])
     const startBatch = vi.spyOn(batchApi, 'startBatchRun').mockResolvedValue({ batch_id: 'batch-1', task_id: 'task-1' })
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
@@ -79,6 +79,41 @@ describe('EditorPage', () => {
       combine: false,
       voice: expect.objectContaining({ profile_id: 'son-profile' }),
       items: [expect.objectContaining({ text: 'Xin chào' })],
+    }))
+  })
+
+  it('generates subtitle audio with a selected Windows system voice', async () => {
+    vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({ output_dir: 'D:/result', omnivoice_device: 'auto' })
+    vi.spyOn(settingsApi, 'fetchSettingsMeta').mockResolvedValue(SETTINGS_META)
+    vi.spyOn(dialogs, 'pickSrtFile').mockResolvedValue('D:/captions.srt')
+    vi.spyOn(editorApi, 'loadEditorCues').mockResolvedValue({
+      name: 'captions.srt', path: 'D:/captions.srt', cues: [{ index: 1, start_ms: 0, end_ms: 1_000, text: 'Hello' }],
+    })
+    vi.spyOn(voiceLibraryApi, 'fetchLibraryVoices').mockResolvedValue([{
+      voice_id: 'system:sapi:Microsoft David Desktop', revision: 1, name: 'Microsoft David Desktop', source: 'system', language: 'en-US', engine_id: 'sapi',
+      selection: { source: 'system', profile_id: '', reference_audio: '', reference_text: '', instruction: '', system_engine: 'sapi', system_voice: 'Microsoft David Desktop' },
+      tags: [], notes: '', favorite: false, consent: { confirmed: false, basis: '', statement: '', recorded_at: '', provenance: '' },
+      stable_sample: false, created_at: '', updated_at: '', capabilities: ['sapi.tts'], preview_available: false, preview_url: '', usage_count: 0,
+      editable: true, identity_editable: false, deletable: false, compatibility: { studio: false, batch: false, editor: true, longform: false, dubbing: false },
+    }])
+    const startBatch = vi.spyOn(batchApi, 'startBatchRun').mockResolvedValue({ batch_id: 'batch-1', task_id: 'task-1' })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    render(<QueryClientProvider client={client}><EditorPage /></QueryClientProvider>)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Thêm SRT' }))
+    expect(await screen.findByText('captions.srt')).toBeInTheDocument()
+    fireEvent.click(screen.getByTitle('Đưa vào timeline'))
+    const option = await screen.findByRole('option', { name: 'Microsoft David Desktop · en-US' })
+    expect(option).not.toBeDisabled()
+    fireEvent.change(screen.getByLabelText('Giọng từ Thư viện'), { target: { value: 'system:sapi:Microsoft David Desktop' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Chuyển thành audio' }))
+
+    expect(startBatch).toHaveBeenCalledWith(expect.objectContaining({
+      engine_id: 'sapi',
+      device: 'cpu',
+      engine_options: { voice_name: 'Microsoft David Desktop' },
+      voice: expect.objectContaining({ source: 'auto' }),
+      items: [expect.objectContaining({ text: 'Hello' })],
     }))
   })
 

@@ -96,6 +96,12 @@ def _voice_dict(record: VoiceProfileRecord, request: Request) -> dict[str, Any]:
             "compatibility": {
                 "studio": record.selection.source in {"profile", "reference", "design"},
                 "batch": record.selection.source in {"profile", "reference", "design"},
+                "editor": record.selection.source in {"profile", "reference", "design"}
+                or (
+                    record.selection.source == "system"
+                    and bool(record.selection.system_engine)
+                    and bool(record.selection.system_voice)
+                ),
                 "longform": record.selection.source == "profile",
                 "dubbing": record.selection.source == "profile",
             },

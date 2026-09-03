@@ -13,6 +13,7 @@ from ...batch.omnivoice_adapter import OmniVoiceBatchAdapter
 from ...batch.parser import parse_batch_source, validate_batch_items
 from ...batch.repository import BatchRepository
 from ...batch.service import BatchService
+from ...batch.system_voice_adapter import SystemVoiceBatchAdapter
 from ...common.config import default_config_path, load_app_config
 from ...omnivoice.client import OmniVoiceWorkerClient
 from ...omnivoice.runtime import OmniVoiceRuntime
@@ -23,6 +24,7 @@ from ...project_graph.runtime import project_graph_service
 from ...runtime.jobs import ACTIVE_STATUSES, TaskContext
 from ...runtime.resources import resource_keys_for_device
 from ...studio.models import StudioVoiceSelection
+from ...voice.tts import EDGE_ENGINE_CODE, create_tts_engine, tts_engine_codes
 from ..event_bus import event_bus
 from ..tasks import task_registry
 
@@ -142,36 +144,53 @@ def _batch_items(body: CreateBatchRequest) -> tuple[BatchItemSpec, ...]:
 
 
 def _start(request: Request, run: BatchRun) -> dict[str, str]:
+    is_omnivoice = run.spec.engine_id == "omnivoice"
+    is_system_voice = run.spec.engine_id in tts_engine_codes()
+    resource_keys = resource_keys_for_device(run.spec.device) if is_omnivoice else (("network",) if run.spec.engine_id == EDGE_ENGINE_CODE else ())
     record = task_registry.create(
         "voice-batch",
-        capability_id="tts.omnivoice",
+        capability_id=f"tts.{run.spec.engine_id}",
         pausable=True,
         project_id=run.spec.project_id,
         workflow_id=run.batch_id,
-        resource_keys=resource_keys_for_device(run.spec.device),
+        resource_keys=resource_keys,
     )
-    record.on_cancel = lambda: _task_coordinator.cancel(record.task_id)
+    if is_omnivoice:
+        record.on_cancel = lambda: _task_coordinator.cancel(record.task_id)
     repository = _repository(request)
     graph_service = project_graph_service(_settings_path(request))
     repository.set_task(run.batch_id, record.task_id)
 
     def operation(context: TaskContext) -> BatchRun:
-        if run.spec.engine_id != "omnivoice":
-            raise ValueError(f"Engine Batch chưa được cài: {run.spec.engine_id}")
-        return _task_coordinator.run(
-            record.task_id,
-            record.stop_event,
-            lambda client: BatchService(repository).execute(
+        if is_omnivoice:
+            return _task_coordinator.run(
+                record.task_id,
+                record.stop_event,
+                lambda client: BatchService(repository).execute(
+                    run.batch_id,
+                    OmniVoiceBatchAdapter(client, _runtime().profiles_dir),
+                    task_id=record.task_id,
+                    progress=lambda message, value: context.report(message, progress=value),
+                    checkpoint=context.save_checkpoint,
+                    control=context.wait_if_paused,
+                    stop_event=record.stop_event,
+                ),
+                client_factory=_worker_client,
+            )
+        if is_system_voice:
+            return BatchService(repository).execute(
                 run.batch_id,
-                OmniVoiceBatchAdapter(client, _runtime().profiles_dir),
+                SystemVoiceBatchAdapter(
+                    create_tts_engine(run.spec.engine_id),
+                    str(run.spec.engine_options.get("voice_name") or ""),
+                ),
                 task_id=record.task_id,
                 progress=lambda message, value: context.report(message, progress=value),
                 checkpoint=context.save_checkpoint,
                 control=context.wait_if_paused,
                 stop_event=record.stop_event,
-            ),
-            client_factory=_worker_client,
-        )
+            )
+        raise ValueError(f"Engine Batch chưa được cài: {run.spec.engine_id}")
 
     def serialize(completed: BatchRun) -> dict[str, Any]:
         register_batch_run(graph_service, completed)

@@ -144,6 +144,34 @@ class BatchApiTests(unittest.TestCase):
         self.assertNotIn("output_dir", manifest["spec"])
         self.assertNotIn(str(self.root), manifest_text)
 
+    def test_system_voice_batch_uses_selected_engine_and_voice(self) -> None:
+        engine = mock.Mock()
+        engine.code = "sapi"
+        engine.label = "Windows SAPI"
+        engine.available.return_value = True
+        engine.unavailable_reason.return_value = ""
+        engine.synthesize_to_wav.side_effect = (
+            lambda _text, output_path, **_options: _wave(output_path)
+        )
+
+        with mock.patch.object(batch_router, "create_tts_engine", return_value=engine):
+            started = self._create(
+                [{"item_id": "one", "text": "Xin chao"}],
+                engine_id="sapi",
+                engine_options={"voice_name": "Microsoft David Desktop"},
+            )
+            self.assertEqual(_wait_terminal(started["task_id"]), DONE)
+
+        engine.synthesize_to_wav.assert_called_once()
+        finished = self.client.get(f"/api/batch/runs/{started['batch_id']}").json()
+        self.assertEqual(finished["status"], "completed")
+        output_path = Path(finished["root_dir"]) / finished["items"][0]["wav_path"]
+        self.assertTrue(output_path.is_file())
+        self.assertEqual(
+            engine.synthesize_to_wav.call_args.kwargs["voice_name"],
+            "Microsoft David Desktop",
+        )
+
     def test_combined_output_and_item_audio_are_served_by_ids(self) -> None:
         started = self._create(
             [

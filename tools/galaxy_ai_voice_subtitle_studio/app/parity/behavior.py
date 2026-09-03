@@ -4,13 +4,19 @@ from __future__ import annotations
 
 import shutil
 import tempfile
+import wave
 from dataclasses import asdict, replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
 from ..common.errors import TaskCancelledError
-from ..omnivoice.workspaces.longform_project import LongformProject, LongformProjectRepository
+from ..omnivoice.models import AUTO_MODE, OmniVoiceGenerationOptions
+from ..omnivoice.workspaces.longform import LongformPlan, LongformSpan, SPEECH_SPAN
+from ..omnivoice.workspaces.renderer import (
+    find_resumable_workspace_jobs,
+    render_longform_plan,
+)
 from ..project_graph.models import AssetReference, HandoffRequest, NodeRequest
 from ..project_graph.repository import ProjectGraphRepository
 from ..project_graph.service import ProjectGraphService, workspace_catalog
@@ -278,7 +284,7 @@ def _run_handoff_check(
 
 
 def _run_longform_checkpoint_check(
-    case_id: str,
+    _case_id: str,
     check_id: str,
     source: Path,
     *,
@@ -290,53 +296,95 @@ def _run_longform_checkpoint_check(
         check_cancelled=check_cancelled,
     )
     source_text = source_bytes.decode("utf-8", errors="replace")
-    kind = "audiobook" if case_id.endswith("audiobook") else "stories"
+    first_text = source_text[:512].strip() or "Parity checkpoint first span."
+    second_text = source_text[512:1024].strip() or "Parity checkpoint resumed span."
+    plan = LongformPlan(
+        spans=(
+            LongformSpan(kind=SPEECH_SPAN, text=first_text, source_index=1),
+            LongformSpan(kind=SPEECH_SPAN, text=second_text, source_index=2),
+        ),
+        chapters=("Parity checkpoint",),
+    )
     with tempfile.TemporaryDirectory(prefix="galaxy-parity-longform-") as temporary:
-        index = Path(temporary) / "longform.json"
-        repository = LongformProjectRepository(index)
-        project = LongformProject.create(
-            name="Parity checkpoint",
-            kind=kind,
-            source=source_text,
-            document={
-                "items": [
-                    {"item_id": "1", "text": source_text[:512]},
-                    {"item_id": "2", "text": source_text[512:1024] or source_text[:512]},
-                ]
-            },
-            metadata={"source_sha256": sha256(source_bytes).hexdigest()},
+        output_dir = Path(temporary)
+        options = OmniVoiceGenerationOptions(
+            mode=AUTO_MODE,
+            text="unused",
+            output_dir=output_dir,
+            project_name="parity-checkpoint",
         )
-        saved = repository.save(project, expected_revision=0)
-        checkpointed = repository.save(
-            saved.evolved(stage="render", last_result={"completed_item_ids": ["1"]}),
-            expected_revision=saved.revision,
+        interrupted_client = _CheckpointProbeClient(
+            fail_on_request=2,
+            check_cancelled=check_cancelled,
         )
-        check_cancelled()
-        resumed_repository = LongformProjectRepository(index)
-        resumed = resumed_repository.get(saved.project_id)
-        if resumed is None or resumed.last_result.get("completed_item_ids") != ["1"]:
-            return _failed(check_id, "Longform checkpoint could not be reopened")
-        completed = resumed_repository.resume(
-            resumed.project_id,
-            completed_item_ids=("1", "2"),
-            expected_revision=resumed.revision,
+        try:
+            render_longform_plan(
+                options,
+                plan,
+                interrupted_client,  # type: ignore[arg-type]
+                export_mp3=False,
+            )
+        except RuntimeError as error:
+            if str(error) != "simulated parity interruption":
+                return _failed(check_id, "Longform renderer failed before checkpointing")
+        else:
+            return _failed(check_id, "Longform renderer did not create an interrupted job")
+        jobs = find_resumable_workspace_jobs(output_dir)
+        if len(jobs) != 1 or jobs[0].completed_spans != 1:
+            return _failed(check_id, "Longform renderer checkpoint could not be reopened")
+        resumed_client = _CheckpointProbeClient(check_cancelled=check_cancelled)
+        result = render_longform_plan(
+            options,
+            plan,
+            resumed_client,  # type: ignore[arg-type]
+            export_mp3=False,
+            resume_project_dir=jobs[0].project_dir,
         )
-        reopened = LongformProjectRepository(index).get(saved.project_id)
         if (
-            reopened is None
-            or reopened.source != source_text
-            or reopened.revision <= checkpointed.revision
-            or reopened.last_result.get("completed_item_ids") != ["1", "2"]
+            resumed_client.request_count != 1
+            or not result.wav_path.is_file()
+            or find_resumable_workspace_jobs(output_dir)
         ):
-            return _failed(check_id, "Longform resume did not preserve checkpoint progress")
+            return _failed(check_id, "Longform renderer did not reuse checkpointed spans")
         return _passed(
             check_id,
-            "Longform checkpoint reopened and resumed through LongformProjectRepository",
-            repository="longform_project",
-            checkpoint_revision=checkpointed.revision,
-            completed_revision=completed.revision,
+            "Interrupted longform render resumed through the production workspace job",
+            repository="longform_workspace_job",
             source_sha256=sha256(source_bytes).hexdigest(),
+            checkpointed_spans=1,
+            generated_on_resume=resumed_client.request_count,
         )
+
+
+class _CheckpointProbeClient:
+    def __init__(
+        self,
+        *,
+        check_cancelled: Callable[[], None],
+        fail_on_request: int = 0,
+    ) -> None:
+        self.fail_on_request = fail_on_request
+        self.check_cancelled = check_cancelled
+        self.request_count = 0
+
+    def request(
+        self,
+        _command: str,
+        payload: dict[str, object],
+        **_kwargs: object,
+    ) -> dict[str, object]:
+        self.check_cancelled()
+        self.request_count += 1
+        if self.request_count == self.fail_on_request:
+            raise RuntimeError("simulated parity interruption")
+        output = Path(str(payload["output_path"]))
+        output.parent.mkdir(parents=True, exist_ok=True)
+        with wave.open(str(output), "wb") as target:
+            target.setnchannels(1)
+            target.setsampwidth(2)
+            target.setframerate(24_000)
+            target.writeframes(b"\x01\x00" * 2_400)
+        return {"output_path": str(output)}
 
 
 def _graph_payload(value: object) -> object:

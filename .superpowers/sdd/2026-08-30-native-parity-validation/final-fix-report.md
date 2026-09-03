@@ -100,8 +100,14 @@ internal repository-pass record, and fingerprint map keys could retain path
 text. The final closure keeps source selection memory-only but revalidates the
 manifest and every declared asset in the guarded commit, requires explicit
 source reselection after restart, rejects caller-authored repository results,
-executes checkpoint advancement through `LongformProjectRepository.resume()`,
+interrupts and resumes the production longform renderer workspace job,
 and restricts fingerprint keys to opaque identifiers before persistence.
+
+The final spec re-review rejected an intermediate repository-only checkpoint
+simulation because it did not exercise the renderer used by users. That helper
+was removed. The behavioral probe now interrupts the production longform
+renderer after one span, discovers its persisted workspace job, resumes through
+`resume_project_dir`, and verifies the completed span is reused.
 
 ## Verification Commands And Outcomes
 
@@ -113,7 +119,7 @@ Working directory unless stated otherwise:
 - `python -m pytest tests/parity -q`
   - Latest residual-closure run: Exit 0, `230 passed in 52.26s`.
 - `python -m pytest tests -q`
-  - Final closure run: Exit 0, `760 passed, 1 warning, 60 subtests passed in 118.91s`.
+  - Post-review closure run: Exit 0, `759 passed, 1 warning, 60 subtests passed in 62.65s`.
 - `python -m pytest tests/parity/test_migration.py tests/parity/test_security.py tests/parity/test_final_fix_wave.py -q -rs`
   - Exit 0: `85 passed in 12.29s`; no security test in this focused set skipped.
 - `python -m compileall -q app tests`

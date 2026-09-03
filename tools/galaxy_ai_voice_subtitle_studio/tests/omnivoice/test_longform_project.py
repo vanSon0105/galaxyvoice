@@ -44,38 +44,5 @@ class LongformProjectTests(unittest.TestCase):
             with self.assertRaises(LongformRevisionConflict):
                 repository.save(saved.evolved(name="stale"), expected_revision=1)
 
-    def test_resume_advances_checkpoint_without_discarding_completed_items(self) -> None:
-        with tempfile.TemporaryDirectory() as directory:
-            repository = LongformProjectRepository(Path(directory) / "longform_projects.json")
-            project = LongformProject.create(
-                name="Resume test",
-                kind="stories",
-                source="One. Two.",
-                document={"items": [{"item_id": "one"}, {"item_id": "two"}]},
-            )
-            saved = repository.save(project, expected_revision=0)
-            checkpointed = repository.save(
-                saved.evolved(
-                    stage="render",
-                    last_result={"completed_item_ids": ["one"]},
-                ),
-                expected_revision=saved.revision,
-            )
-
-            resumed = repository.resume(
-                saved.project_id,
-                completed_item_ids=("one", "two"),
-                expected_revision=checkpointed.revision,
-            )
-
-            self.assertEqual(resumed.last_result["completed_item_ids"], ["one", "two"])
-            with self.assertRaisesRegex(ValueError, "discard"):
-                repository.resume(
-                    saved.project_id,
-                    completed_item_ids=("two", "three"),
-                    expected_revision=resumed.revision,
-                )
-
-
 if __name__ == "__main__":
     unittest.main()

@@ -161,7 +161,7 @@ def test_behavioral_checks_run_through_project_graph_repositories(
     assert result.checks[0].measurements["repository"] == "project_graph"
 
 
-def test_checkpoint_resume_runs_through_longform_repository(tmp_path: Path) -> None:
+def test_checkpoint_resume_runs_through_production_renderer(tmp_path: Path) -> None:
     source = tmp_path / "story.txt"
     source.write_text("First paragraph. Second paragraph.", encoding="utf-8")
 
@@ -178,7 +178,9 @@ def test_checkpoint_resume_runs_through_longform_repository(tmp_path: Path) -> N
     )
 
     assert evidence.status == "pass"
-    assert evidence.measurements["repository"] == "longform_project"
+    assert evidence.measurements["repository"] == "longform_workspace_job"
+    assert evidence.measurements["checkpointed_spans"] == 1
+    assert evidence.measurements["generated_on_resume"] == 1
 
 
 def test_caller_cannot_inject_repository_pass_evidence(tmp_path: Path) -> None:

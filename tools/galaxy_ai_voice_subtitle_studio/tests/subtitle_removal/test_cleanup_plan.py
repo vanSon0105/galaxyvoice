@@ -40,7 +40,7 @@ class CleanupPlanTests(unittest.TestCase):
             RemovalMask("two", "Overlap", (10, 60, 80, 30), 5, 15),
         )
 
-        warnings = quality_warnings("blur", masks, processing_device="cpu")
+        warnings = quality_warnings("blur", masks)
 
         self.assertTrue(any("blur" in warning.lower() for warning in warnings))
         self.assertTrue(any("large" in warning.lower() for warning in warnings))

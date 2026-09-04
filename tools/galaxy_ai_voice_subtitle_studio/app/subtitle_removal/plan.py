@@ -77,8 +77,6 @@ def mask_union_region(masks: tuple[RemovalMask, ...]) -> Region:
 def quality_warnings(
     mode: str,
     masks: tuple[RemovalMask, ...],
-    *,
-    processing_device: str,
 ) -> list[str]:
     warnings: list[str] = []
     if mode == "blur":
@@ -89,17 +87,6 @@ def quality_warnings(
         warnings.append(
             "Smart fill estimates pixels from mask edges and may leave artifacts on moving backgrounds."
         )
-    elif mode in {"ai_inpaint", "fast_ai_inpaint"}:
-        warnings.append(
-            "ProPainter code and models are licensed for non-commercial use only under the NTU S-Lab License 1.0."
-        )
-        if mode == "fast_ai_inpaint":
-            warnings.append(
-                "Fast AI favors speed over detail and may miss stylized or low-contrast subtitle glyphs."
-            )
-        if processing_device == "cpu":
-            warnings.append("ProPainter on CPU can be extremely slow for long videos.")
-
     if mode != "strip" and masks:
         if any(mask.region[2] * mask.region[3] >= 3_500 for mask in masks):
             warnings.append(

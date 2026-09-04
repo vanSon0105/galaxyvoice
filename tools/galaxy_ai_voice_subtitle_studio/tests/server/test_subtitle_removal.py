@@ -39,21 +39,19 @@ class SubtitleRemovalApiTests(unittest.TestCase):
         self.client.close()
         self._temp.cleanup()
 
-    def test_modes_expose_all_five_backends(self) -> None:
-        with mock.patch.object(removal_router, "resolve_propainter_runtime", side_effect=RuntimeError()):
-            response = self.client.get("/api/removal/modes")
+    def test_modes_expose_supported_backends(self) -> None:
+        response = self.client.get("/api/removal/modes")
 
         self.assertEqual(response.status_code, 200)
         payload = response.json()
-        self.assertEqual(len(payload["modes"]), 5)
+        self.assertEqual(len(payload["modes"]), 3)
         self.assertEqual({item["code"] for item in payload["modes"]}, {
-            "strip", "blur", "fill", "ai_inpaint", "fast_ai_inpaint",
+            "strip", "blur", "fill",
         })
         self.assertEqual(
             {item["code"] for item in payload["region_presets"]},
             {"bottom", "lower_third", "top"},
         )
-        self.assertFalse(payload["propainter_ready"])
 
     def test_registered_video_is_seekable_from_opaque_source_url(self) -> None:
         with (
@@ -86,38 +84,17 @@ class SubtitleRemovalApiTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.content, b"jpeg")
 
-    def test_ai_mode_requires_license_acceptance(self) -> None:
+    def test_retired_ai_mode_is_rejected(self) -> None:
         response = self.client.post(
             "/api/removal/remove",
             json={
                 "video_path": str(self.video),
                 "output_dir": str(self.root),
-                "mode": "fast_ai_inpaint",
+                "mode": "retired_mode",
             },
         )
         self.assertEqual(response.status_code, 422)
-        self.assertIn("license", response.json()["detail"].lower())
-
-    def test_propainter_install_runs_as_a_managed_task(self) -> None:
-        installer = self.root / "install_propainter.ps1"
-        installer.write_text("# installer", encoding="utf-8")
-        with (
-            mock.patch.object(removal_router, "studio_root", return_value=self.root),
-            mock.patch.object(
-                removal_router,
-                "install_propainter_runtime",
-                return_value={"python_path": "python.exe", "log_path": "install.log"},
-            ) as install,
-        ):
-            response = self.client.post("/api/removal/install", json={"device": "cpu"})
-            task_id = response.json()["task_id"]
-            self.assertEqual(_wait_status(task_id), DONE)
-
-        record = task_registry.get(task_id)
-        self.assertEqual(record.kind, "propainter-install")
-        self.assertEqual(record.capability_id, "video.inpainting.propainter")
-        self.assertEqual(record.resource_keys, ("network", "disk"))
-        self.assertEqual(install.call_args.kwargs["task_id"], task_id)
+        self.assertIn("không hợp lệ", response.json()["detail"])
 
     def test_removal_task_returns_playable_video_and_passes_task_context(self) -> None:
         captured: dict[str, object] = {}

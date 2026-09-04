@@ -4,13 +4,12 @@ import { useQuery } from '@tanstack/react-query'
 import {
   fetchRemovalMeta,
   fetchRemovalPreview,
-  installProPainter,
   startSubtitleRemoval,
 } from '../../api/removal'
 import type { RemovalMask, RemovalRegion, RemovalResult } from '../../api/removal'
 import type { EditorMedia } from '../../api/editor'
 import type { VideoOcrResult } from '../../api/videoOcr'
-import { fetchSettings, fetchSettingsMeta, updateSettings } from '../../api/settings'
+import { fetchSettings, updateSettings } from '../../api/settings'
 import { openPath } from '../../api/voice'
 import { TaskButton } from '../TaskButton'
 import type { TaskState } from '../../ws/useTasks'
@@ -83,7 +82,6 @@ export function SubtitleRemovalPanel({
   onRestore,
 }: SubtitleRemovalPanelProps) {
   const settingsQuery = useQuery({ queryKey: ['settings'], queryFn: fetchSettings })
-  const settingsMetaQuery = useQuery({ queryKey: ['settings-meta'], queryFn: fetchSettingsMeta })
   const metaQuery = useQuery({ queryKey: ['removal-meta'], queryFn: fetchRemovalMeta })
   const videoRef = useRef<HTMLVideoElement>(null)
   const seeded = useRef(false)
@@ -106,8 +104,6 @@ export function SubtitleRemovalPanel({
   }])
   const [activeMaskId, setActiveMaskId] = useState(masks[0].id)
   const [blurStrength, setBlurStrength] = useState(18)
-  const [device, setDevice] = useState('auto')
-  const [licenseAccepted, setLicenseAccepted] = useState(false)
   const [projectName, setProjectName] = useState('')
   const [beforeSnapshotUrl, setBeforeSnapshotUrl] = useState('')
   const [afterSnapshotUrl, setAfterSnapshotUrl] = useState('')
@@ -135,8 +131,6 @@ export function SubtitleRemovalPanel({
       ? { ...mask, region: configuredRegion }
       : mask))
     setBlurStrength(numberSetting(settings.subtitle_blur_strength, 18))
-    setDevice(stringSetting(settings.removal_processing_device, 'auto'))
-    setLicenseAccepted(settings.propainter_license_accepted === true)
   }, [settingsQuery.data])
 
   useEffect(() => {
@@ -156,18 +150,12 @@ export function SubtitleRemovalPanel({
     if (afterSnapshotUrlRef.current) URL.revokeObjectURL(afterSnapshotUrlRef.current)
   }, [])
 
-  const selectedMode = useMemo(
-    () => metaQuery.data?.modes.find((item) => item.code === mode),
-    [metaQuery.data, mode],
-  )
-  const usesAi = selectedMode?.uses_ai ?? false
   const usesRegion = mode !== 'strip'
   const qualityWarnings = useMemo(() => {
     if (!usesRegion) return []
     const warnings: string[] = []
     if (mode === 'blur') warnings.push('Làm mờ che chữ nhưng cũng làm mềm chi tiết nền trong vùng xóa.')
     if (mode === 'fill') warnings.push('Smart Fill có thể để lại vệt trên nền chuyển động.')
-    if (usesAi) warnings.push('AI có thể tạo chi tiết giả; hãy kiểm tra khung trước và sau khi xử lý.')
     if (masks.some((mask) => mask.region.width * mask.region.height >= 3_500)) {
       warnings.push('Có vùng xóa lớn chiếm ít nhất 35% khung hình, chất lượng có thể giảm rõ rệt.')
     }
@@ -175,7 +163,7 @@ export function SubtitleRemovalPanel({
       warnings.push('Có các vùng xóa chồng nhau trong cùng thời gian; hiệu ứng xử lý có thể bị cộng dồn.')
     }
     return warnings
-  }, [masks, mode, usesAi, usesRegion])
+  }, [masks, mode, usesRegion])
 
   const updateActiveMask = (update: (mask: EditableRemovalMask) => EditableRemovalMask) => {
     setMasks((current) => current.map((mask) => mask.id === activeMaskId ? update(mask) : mask))
@@ -308,8 +296,6 @@ export function SubtitleRemovalPanel({
   const start = async (): Promise<string> => {
     if (!source) throw new Error('Chọn một clip video trên timeline.')
     if (!outputDir.trim()) throw new Error('Chọn thư mục xuất trong phần Xuất video.')
-    if (usesAi && !licenseAccepted) throw new Error('Cần xác nhận license phi thương mại của ProPainter.')
-    if (usesAi && !metaQuery.data?.propainter_ready) throw new Error('ProPainter chưa được cài đầy đủ.')
     for (const mask of masks) {
       if (!mask.name.trim()) throw new Error('Mỗi vùng xóa cần có tên.')
       if (!mask.whole_video && (mask.end_seconds === null || mask.end_seconds <= mask.start_seconds)) {
@@ -328,8 +314,6 @@ export function SubtitleRemovalPanel({
       subtitle_region_width: region.width,
       subtitle_region_height: region.height,
       subtitle_blur_strength: blurStrength,
-      removal_processing_device: device,
-      propainter_license_accepted: licenseAccepted,
     })
     const response = await startSubtitleRemoval({
       galaxy_project_id: galaxyProjectId,
@@ -339,8 +323,6 @@ export function SubtitleRemovalPanel({
       mode,
       region,
       blur_strength: blurStrength,
-      processing_device: device,
-      license_accepted: licenseAccepted,
       masks: masks.map((mask) => ({
         id: mask.id,
         name: mask.name.trim(),
@@ -497,33 +479,6 @@ export function SubtitleRemovalPanel({
           <label>Độ mờ: {blurStrength}</label>
           <input type="range" min="1" max="100" value={blurStrength} onChange={(event) => setBlurStrength(Number(event.target.value))} />
         </div>
-      )}
-
-      {usesAi && (
-        <>
-          <div className="field">
-            <label htmlFor="editor-removal-device">Thiết bị xử lý</label>
-            <select id="editor-removal-device" value={device} onChange={(event) => setDevice(event.target.value)}>
-              {(settingsMetaQuery.data?.processing_devices ?? []).map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
-            </select>
-          </div>
-          <div className="field-check license-check">
-            <input id="editor-propainter-license" type="checkbox" checked={licenseAccepted} onChange={(event) => setLicenseAccepted(event.target.checked)} />
-            <label htmlFor="editor-propainter-license">Chấp nhận license phi thương mại của ProPainter.</label>
-          </div>
-          {!metaQuery.data?.propainter_ready && (
-            <TaskButton
-              label="Cài ProPainter"
-              disabled={!metaQuery.data?.installer_available}
-              onStart={async () => (await installProPainter(device)).task_id}
-              onFinish={(task) => {
-                if (task.status !== 'done') return
-                setMessage('ProPainter đã sẵn sàng.')
-                void metaQuery.refetch()
-              }}
-            />
-          )}
-        </>
       )}
 
       {qualityWarnings.length > 0 && <div className="editor-removal-warnings">

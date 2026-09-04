@@ -14,7 +14,6 @@ from fastapi.background import BackgroundTasks
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
-from ...common.paths import studio_root
 from ...common.processes import managed_media_processes
 from ...project_graph.integrations import register_media_result
 from ...project_graph.runtime import project_graph_service
@@ -25,9 +24,7 @@ from ...subtitle_removal.plan import (
     RemovalMask,
     validate_masks,
 )
-from ...subtitle_removal.propainter import install_propainter_runtime, resolve_propainter_runtime
 from ...subtitle_removal.service import (
-    AI_INPAINT_MODES,
     BLUR_MODE,
     SUBTITLE_REMOVAL_MODES,
     SubtitleRemovalOptions,
@@ -35,7 +32,6 @@ from ...subtitle_removal.service import (
     probe_video_duration,
     probe_video_size,
 )
-from ...runtime.resources import resource_keys_for_device
 from ..tasks import TaskRecord, run_task, task_registry
 
 router = APIRouter(prefix="/api/removal", tags=["subtitle-removal"])
@@ -93,8 +89,6 @@ class RemoveRequest(BaseModel):
     mode: str = BLUR_MODE
     region: RegionRequest = Field(default_factory=RegionRequest)
     blur_strength: int = Field(18, ge=1, le=100)
-    processing_device: str = "auto"
-    license_accepted: bool = False
     masks: list[MaskRequest] = Field(default_factory=list, max_length=MAX_REMOVAL_MASKS)
 
 
@@ -114,19 +108,11 @@ def _progress(record: TaskRecord):
 
 @router.get("/modes")
 def get_modes() -> dict[str, Any]:
-    try:
-        runtime = resolve_propainter_runtime()
-        propainter_ready = True
-        runtime_path = str(runtime.python_executable)
-    except RuntimeError:
-        propainter_ready = False
-        runtime_path = ""
     return {
         "modes": [
             {
                 "code": code,
                 "label": REMOVAL_MODE_LABELS[code],
-                "uses_ai": code in AI_INPAINT_MODES,
             }
             for code in SUBTITLE_REMOVAL_MODES
         ],
@@ -143,9 +129,6 @@ def get_modes() -> dict[str, Any]:
             }
             for preset in REGION_PRESETS
         ],
-        "propainter_ready": propainter_ready,
-        "runtime_path": runtime_path,
-        "installer_available": (studio_root() / "install_propainter.ps1").is_file(),
     }
 
 
@@ -200,32 +183,6 @@ def preview_frame(body: PreviewRequest, background_tasks: BackgroundTasks) -> Fi
     return FileResponse(preview_path, media_type="image/jpeg", background=background_tasks)
 
 
-@router.post("/install")
-def install_propainter(body: dict[str, Any]) -> dict[str, str]:
-    installer = studio_root() / "install_propainter.ps1"
-    if not installer.is_file():
-        raise HTTPException(status_code=404, detail=f"Không tìm thấy bộ cài: {installer}")
-    device = str(body.get("device") or "auto")
-    record = task_registry.create(
-        "propainter-install",
-        capability_id="video.inpainting.propainter",
-        resource_keys=("network", "disk"),
-    )
-    record.on_cancel = lambda: managed_media_processes.terminate_task(record.task_id)
-
-    def operation() -> dict[str, str]:
-        return install_propainter_runtime(
-            installer,
-            device=device,
-            progress=_progress(record),
-            stop_event=record.stop_event,
-            task_id=record.task_id,
-        )
-
-    run_task(record, operation, lambda result: result)
-    return {"task_id": record.task_id}
-
-
 @router.post("/remove")
 def start_removal(body: RemoveRequest, request: Request) -> dict[str, str]:
     video_path = _video_path(body.video_path)
@@ -240,12 +197,6 @@ def start_removal(body: RemoveRequest, request: Request) -> dict[str, str]:
         raise HTTPException(status_code=422, detail=str(error)) from error
     if not body.output_dir.strip():
         raise HTTPException(status_code=422, detail="Chọn thư mục xuất trước khi xử lý.")
-    if body.mode in AI_INPAINT_MODES and not body.license_accepted:
-        raise HTTPException(
-            status_code=422,
-            detail="Cần xác nhận license phi thương mại của ProPainter trước khi chạy AI.",
-        )
-
     options = SubtitleRemovalOptions(
         video_path=video_path,
         output_dir=Path(body.output_dir).expanduser(),
@@ -256,19 +207,11 @@ def start_removal(body: RemoveRequest, request: Request) -> dict[str, str]:
         region_width=region[2],
         region_height=region[3],
         blur_strength=body.blur_strength,
-        processing_device=body.processing_device,
         masks=masks,
     )
     record = task_registry.create(
         "subtitle-removal",
-        capability_id=(
-            "video.inpainting.propainter" if body.mode in AI_INPAINT_MODES else "media.ffmpeg"
-        ),
-        resource_keys=(
-            resource_keys_for_device(body.processing_device)
-            if body.mode in AI_INPAINT_MODES
-            else ()
-        ),
+        capability_id="media.ffmpeg",
     )
     record.on_cancel = lambda: managed_media_processes.terminate_task(record.task_id)
     configured = getattr(request.app.state, "settings_path", None)

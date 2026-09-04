@@ -192,22 +192,6 @@ def _audio_separation_preflight(request: PreflightRequest) -> PreflightResult:
     )
 
 
-def _propainter_preflight(request: PreflightRequest) -> PreflightResult:
-    from ..subtitle_removal.propainter import (
-        resolve_propainter_device,
-        resolve_propainter_runtime,
-    )
-
-    runtime = resolve_propainter_runtime()
-    device = resolve_propainter_device(runtime, request.device)
-    return _simple_result(
-        request,
-        ready=True,
-        message="ProPainter is ready.",
-        resolved_device=device,
-    )
-
-
 def _ffmpeg_preflight(request: PreflightRequest) -> PreflightResult:
     from ..common.ffmpeg import find_ffmpeg
 
@@ -279,17 +263,6 @@ def create_default_capability_registry() -> CapabilityRegistry:
                 installable=True,
             ),
             _audio_separation_preflight,
-        ),
-        (
-            CapabilityDescriptor(
-                "video.inpainting.propainter",
-                "video",
-                "ProPainter",
-                "propainter",
-                ("auto", "cuda", "cpu"),
-                installable=True,
-            ),
-            _propainter_preflight,
         ),
         (
             CapabilityDescriptor(

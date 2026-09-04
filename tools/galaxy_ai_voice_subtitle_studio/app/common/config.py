@@ -67,8 +67,6 @@ class AppConfig:
     subtitle_region_width: int = 90
     subtitle_region_height: int = 20
     subtitle_blur_strength: int = 18
-    removal_processing_device: str = AUTO_DEVICE
-    propainter_license_accepted: bool = False
     audio_output_dir: str = ""
     audio_process_method: str = MDX_METHOD
     audio_model_name: str = "Kim_Vocal_2.onnx"
@@ -236,12 +234,6 @@ def config_from_payload(payload: dict[str, Any]) -> AppConfig:
         subtitle_region_height=subtitle_region_height,
         subtitle_blur_strength=_integer(
             payload.get("subtitle_blur_strength"), defaults.subtitle_blur_strength, 1, 100
-        ),
-        removal_processing_device=normalize_processing_device(
-            _string(payload.get("removal_processing_device"), defaults.removal_processing_device)
-        ),
-        propainter_license_accepted=_boolean(
-            payload.get("propainter_license_accepted"), defaults.propainter_license_accepted
         ),
         audio_output_dir=_string(payload.get("audio_output_dir"), defaults.audio_output_dir),
         audio_process_method=normalize_audio_method(

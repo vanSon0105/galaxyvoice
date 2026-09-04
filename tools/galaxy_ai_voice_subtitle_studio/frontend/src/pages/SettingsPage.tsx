@@ -58,8 +58,6 @@ function buildSchema(meta: SettingsMeta): FieldSchema[] {
     { key: 'subtitle_region_width', label: 'Vùng phụ đề rộng (%)', type: 'int', section: 'removal', min: 1, max: 100 },
     { key: 'subtitle_region_height', label: 'Vùng phụ đề cao (%)', type: 'int', section: 'removal', min: 1, max: 100 },
     { key: 'subtitle_blur_strength', label: 'Độ mờ', type: 'int', section: 'removal', min: 1, max: 100 },
-    optionField('removal_processing_device', 'Thiết bị xử lý', 'removal', meta.processing_devices),
-    { key: 'propainter_license_accepted', label: 'Đã chấp nhận license ProPainter', type: 'bool', section: 'removal' },
     { key: 'audio_output_dir', label: 'Thư mục xuất', type: 'text', section: 'audio' },
     optionField('audio_process_method', 'Phương pháp tách', 'audio', meta.audio_methods),
     { key: 'audio_model_name', label: 'Model', type: 'text', section: 'audio' },

@@ -40,8 +40,6 @@ class ConfigTests(unittest.TestCase):
             subtitle_region_width=84,
             subtitle_region_height=22,
             subtitle_blur_strength=24,
-            removal_processing_device="cuda",
-            propainter_license_accepted=True,
             audio_output_dir=r"D:\Videos\Separated",
             audio_process_method="vr",
             audio_model_name="1_HP-UVR.pth",
@@ -114,7 +112,6 @@ class ConfigTests(unittest.TestCase):
             "subtitle_region_height": 500,
             "subtitle_blur_strength": 999,
             "voice_processing_device": "intel",
-            "removal_processing_device": "amd",
             "audio_process_method": "unknown",
             "audio_output_format": "AAC",
             "audio_processing_device": "metal",
@@ -148,7 +145,6 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.subtitle_region_height, 1)
         self.assertEqual(config.subtitle_blur_strength, 100)
         self.assertEqual(config.voice_processing_device, "auto")
-        self.assertEqual(config.removal_processing_device, "auto")
         self.assertEqual(config.audio_process_method, "mdx")
         self.assertEqual(config.audio_output_format, "WAV")
         self.assertEqual(config.audio_processing_device, "auto")
@@ -163,17 +159,17 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(config.omnivoice_guidance_scale, 0.0)
         self.assertEqual(config.omnivoice_speed, 1.5)
 
-    def test_fast_ai_removal_mode_is_restored(self) -> None:
+    def test_retired_ai_removal_mode_falls_back_to_blur(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             path = Path(temp_dir) / "config.json"
             path.write_text(
-                json.dumps({"subtitle_removal_mode": "fast_ai_inpaint"}),
+                json.dumps({"subtitle_removal_mode": "retired_mode"}),
                 encoding="utf-8",
             )
 
             config = load_app_config(path)
 
-        self.assertEqual(config.subtitle_removal_mode, "fast_ai_inpaint")
+        self.assertEqual(config.subtitle_removal_mode, "blur")
 
     def test_broken_json_returns_defaults(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

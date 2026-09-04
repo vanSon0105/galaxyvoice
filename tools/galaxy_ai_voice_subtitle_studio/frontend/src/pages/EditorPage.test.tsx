@@ -47,8 +47,8 @@ describe('EditorPage', () => {
       modes: [{ code: 'fast', label: 'Nhanh', sample_fps: 2 }],
     })
     vi.spyOn(removalApi, 'fetchRemovalMeta').mockResolvedValue({
-      modes: [{ code: 'blur', label: 'Làm mờ', uses_ai: false }],
-      region_presets: [], propainter_ready: false, runtime_path: '', installer_available: false,
+      modes: [{ code: 'blur', label: 'Làm mờ' }],
+      region_presets: [],
     })
     vi.spyOn(settingsApi, 'updateSettings').mockResolvedValue({})
     const startRemoval = vi.spyOn(removalApi, 'startSubtitleRemoval').mockResolvedValue({ task_id: 'cleanup-task' })
@@ -316,14 +316,11 @@ describe('EditorPage', () => {
     vi.spyOn(settingsApi, 'updateSettings').mockResolvedValue({})
     vi.spyOn(voiceLibraryApi, 'fetchLibraryVoices').mockResolvedValue([])
     vi.spyOn(removalApi, 'fetchRemovalMeta').mockResolvedValue({
-      modes: [{ code: 'blur', label: 'Làm mờ', uses_ai: false }],
+      modes: [{ code: 'blur', label: 'Làm mờ' }],
       region_presets: [
         { code: 'bottom', name: 'Phụ đề dưới', region: { x: 5, y: 75, width: 90, height: 20 } },
         { code: 'top', name: 'Phụ đề trên', region: { x: 5, y: 5, width: 90, height: 20 } },
       ],
-      propainter_ready: false,
-      runtime_path: '',
-      installer_available: false,
     })
     vi.spyOn(editorApi, 'loadEditorMedia').mockImplementation(async (path) => path.includes('clean') ? {
       source_id: 'video-clean', url: '/api/editor/source/video-clean', name: 'clip-clean.mp4', path,

@@ -3,15 +3,11 @@ import { apiFetch, apiJson } from './client'
 export interface RemovalMode {
   code: string
   label: string
-  uses_ai: boolean
 }
 
 export interface RemovalMeta {
   modes: RemovalMode[]
   region_presets: RemovalRegionPreset[]
-  propainter_ready: boolean
-  runtime_path: string
-  installer_available: boolean
 }
 
 export interface RemovalSource {
@@ -52,8 +48,6 @@ export interface RemovalRequest {
   mode: string
   region: RemovalRegion
   blur_strength: number
-  processing_device: string
-  license_accepted: boolean
   masks?: RemovalMask[]
 }
 
@@ -103,11 +97,4 @@ export const startSubtitleRemoval = (
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
-  })
-
-export const installProPainter = (device: string): Promise<{ task_id: string }> =>
-  apiJson<{ task_id: string }>('/api/removal/install', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ device }),
   })

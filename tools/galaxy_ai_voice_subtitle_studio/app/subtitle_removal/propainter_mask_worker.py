@@ -9,8 +9,19 @@ def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Build frame-wise subtitle masks for ProPainter.")
     parser.add_argument("--video", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--roi", required=True, nargs=4, type=int, metavar=("X", "Y", "W", "H"))
-    return parser.parse_args()
+    parser.add_argument("--roi", nargs=4, type=int, metavar=("X", "Y", "W", "H"))
+    parser.add_argument(
+        "--mask",
+        action="append",
+        nargs=6,
+        type=float,
+        metavar=("X", "Y", "W", "H", "START", "END"),
+    )
+    parser.add_argument("--time-offset", type=float, default=0.0)
+    args = parser.parse_args()
+    if args.roi is None and not args.mask:
+        parser.error("one --roi or at least one --mask is required")
+    return args
 
 
 def _load_cv_dependencies():
@@ -126,7 +137,10 @@ def _detect_subtitle_mask(frame, roi, cv2, np):
 def generate_masks(
     video_path: Path,
     output_dir: Path,
-    roi: tuple[int, int, int, int],
+    roi: tuple[int, int, int, int] | None = None,
+    *,
+    masks: tuple[tuple[tuple[int, int, int, int], float, float | None], ...] = (),
+    time_offset: float = 0.0,
 ) -> tuple[int, float]:
     cv2, np = _load_cv_dependencies()
     if output_dir.exists() and any(output_dir.iterdir()):
@@ -137,6 +151,9 @@ def generate_masks(
     if not capture.isOpened():
         raise RuntimeError(f"Could not open the ProPainter input video: {video_path}")
     expected_frame_count = max(0, round(capture.get(cv2.CAP_PROP_FRAME_COUNT)))
+    fps = float(capture.get(cv2.CAP_PROP_FPS))
+    if fps <= 0:
+        fps = 30.0
 
     frame_count = 0
     coverage_total = 0.0
@@ -145,7 +162,25 @@ def generate_masks(
             received, frame = capture.read()
             if not received:
                 break
-            mask, coverage = _detect_subtitle_mask(frame, roi, cv2, np)
+            timestamp = max(0.0, time_offset) + frame_count / fps
+            active_masks = [
+                item
+                for item in masks
+                if item[1] <= timestamp and (item[2] is None or timestamp <= item[2])
+            ]
+            if masks:
+                mask = np.zeros(frame.shape[:2], dtype=np.uint8)
+                coverage = 0.0
+                for active_roi, _start, _end in active_masks:
+                    detected, selected_coverage = _detect_subtitle_mask(
+                        frame, active_roi, cv2, np
+                    )
+                    mask = cv2.bitwise_or(mask, detected)
+                    coverage += selected_coverage
+            elif roi is not None:
+                mask, coverage = _detect_subtitle_mask(frame, roi, cv2, np)
+            else:
+                raise RuntimeError("No subtitle mask regions were configured.")
             mask_path = output_dir / f"{frame_count:08d}.png"
             if not cv2.imwrite(str(mask_path), mask, [cv2.IMWRITE_PNG_COMPRESSION, 1]):
                 raise RuntimeError(f"Could not write subtitle mask: {mask_path}")
@@ -181,11 +216,21 @@ def _validate_frame_count(decoded_frame_count: int, expected_frame_count: int) -
 
 def main() -> int:
     args = _parse_args()
+    masks = tuple(
+        (
+            tuple(round(value) for value in raw[:4]),
+            float(raw[4]),
+            None if raw[5] < 0 else float(raw[5]),
+        )
+        for raw in (args.mask or [])
+    )
     try:
         frame_count, average_coverage = generate_masks(
             args.video,
             args.output,
-            tuple(args.roi),
+            tuple(args.roi) if args.roi is not None else None,
+            masks=masks,
+            time_offset=args.time_offset,
         )
     except Exception as exc:
         print(f"Dynamic subtitle mask generation failed: {exc}", file=sys.stderr)

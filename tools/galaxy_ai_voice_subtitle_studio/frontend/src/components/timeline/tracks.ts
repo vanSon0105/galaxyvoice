@@ -12,6 +12,12 @@ export interface TimelineMediaClip {
   timeline_start_ms: number
   source_start_ms: number
   source_end_ms: number
+  replacement?: {
+    original_media: EditorMedia
+    original_source_start_ms: number
+    original_source_end_ms: number
+    manifest_path: string
+  }
 }
 
 interface TimelineTrackBase {
@@ -72,6 +78,41 @@ export function mediaClip(media: EditorMedia, timelineStartMs = 0): TimelineMedi
     timeline_start_ms: Math.max(0, Math.round(timelineStartMs)),
     source_start_ms: 0,
     source_end_ms: Math.round(media.duration_seconds * 1000),
+  }
+}
+
+export function replaceClipMedia(
+  clip: TimelineMediaClip,
+  media: EditorMedia,
+  manifestPath: string,
+): TimelineMediaClip {
+  const original = clip.replacement ?? {
+    original_media: clip.media,
+    original_source_start_ms: clip.source_start_ms,
+    original_source_end_ms: clip.source_end_ms,
+    manifest_path: manifestPath,
+  }
+  const maximumEnd = Math.round(media.duration_seconds * 1000)
+  return {
+    ...clip,
+    media,
+    source_end_ms: Math.max(clip.source_start_ms, Math.min(clip.source_end_ms, maximumEnd)),
+    replacement: {
+      ...original,
+      manifest_path: manifestPath,
+    },
+  }
+}
+
+export function restoreClipMedia(clip: TimelineMediaClip): TimelineMediaClip {
+  if (!clip.replacement) return clip
+  const { replacement, ...current } = clip
+  const maximumEnd = Math.round(replacement.original_media.duration_seconds * 1000)
+  return {
+    ...current,
+    media: replacement.original_media,
+    source_start_ms: Math.min(replacement.original_source_start_ms, maximumEnd),
+    source_end_ms: Math.min(replacement.original_source_end_ms, maximumEnd),
   }
 }
 

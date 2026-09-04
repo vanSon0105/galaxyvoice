@@ -41,6 +41,7 @@ describe('RemovalPage', () => {
         { code: 'blur', label: 'Làm mờ', uses_ai: false },
         { code: 'fast_ai_inpaint', label: 'Fast AI', uses_ai: true },
       ],
+      region_presets: [],
       propainter_ready: true,
       runtime_path: 'python.exe',
       installer_available: true,

@@ -15,6 +15,7 @@ from ..common.errors import TaskCancelledError
 from ..common.paths import unique_project_dir
 from ..common.processes import managed_media_processes
 from ..reliability.service import guard_output_space
+from .plan import RemovalMask, mask_union_region, quality_warnings, validate_masks
 from .propainter import (
     FAST_CHUNK_SECONDS,
     FAST_AI_PROFILE,
@@ -26,6 +27,7 @@ from .propainter import (
     build_inpainting_input_command,
     build_inpainting_mask_command,
     build_inpainting_merge_command,
+    map_timed_masks_to_processing,
     plan_inpainting_crop,
     plan_video_chunks,
     write_concat_file,
@@ -43,7 +45,10 @@ ProgressCallback = Callable[[str], None]
 Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 Region = tuple[int, int, int, int]
 AIInpainter = Callable[[Path, Path, Path, str, ProgressCallback], Path]
-AIMaskGenerator = Callable[[Path, Path, InpaintingCropPlan, ProgressCallback], Path]
+AIMaskGenerator = Callable[
+    [Path, Path, InpaintingCropPlan, tuple[RemovalMask, ...], float, ProgressCallback],
+    Path,
+]
 
 
 @dataclass(frozen=True)
@@ -58,6 +63,7 @@ class SubtitleRemovalOptions:
     region_height: int = 20
     blur_strength: int = 18
     processing_device: str = "auto"
+    masks: tuple[RemovalMask, ...] = ()
 
     @property
     def region(self) -> Region:
@@ -67,6 +73,12 @@ class SubtitleRemovalOptions:
             self.region_width,
             self.region_height,
         )
+
+    @property
+    def resolved_masks(self) -> tuple[RemovalMask, ...]:
+        if self.masks:
+            return self.masks
+        return (RemovalMask("default", "Subtitle area", self.region),)
 
 
 @dataclass(frozen=True)
@@ -102,8 +114,9 @@ def remove_subtitles_from_video(
     )
     if options.mode not in SUBTITLE_REMOVAL_MODES:
         raise ValueError(f"Unknown subtitle removal mode: {options.mode}")
+    masks = options.resolved_masks
     if options.mode != STRIP_MODE:
-        _validate_region(options.region)
+        validate_masks(masks)
     if not 1 <= options.blur_strength <= 100:
         raise ValueError("Blur strength must be between 1 and 100.")
     prepared_ai_inpainter = ai_inpainter
@@ -124,14 +137,25 @@ def remove_subtitles_from_video(
             video_path: Path,
             output_dir: Path,
             crop_plan: InpaintingCropPlan,
+            planned_masks: tuple[RemovalMask, ...],
+            time_offset: float,
             callback: ProgressCallback,
         ) -> Path:
+            processing_masks = map_timed_masks_to_processing(
+                crop_plan,
+                tuple(
+                    (mask.region, mask.start_seconds, mask.end_seconds)
+                    for mask in planned_masks
+                ),
+            )
             return propainter.generate_dynamic_subtitle_masks(
                 prepared_ai_session.runtime,
                 video_path,
                 output_dir,
                 crop_plan,
                 callback,
+                regions=processing_masks,
+                time_offset=time_offset,
                 stop_event=stop_event,
                 task_id=task_id,
             )
@@ -153,16 +177,26 @@ def remove_subtitles_from_video(
         lambda command: _run_command(command, stop_event=stop_event, task_id=task_id)
     )
 
+    if options.mode != STRIP_MODE and any(
+        mask.start_seconds > 0 or mask.end_seconds is not None for mask in masks
+    ):
+        duration_seconds = probe_video_duration(
+            source_path,
+            ffprobe_path=ffprobe_path,
+            runner=probe_runner,
+        )
+        validate_masks(masks, duration_seconds)
+
     if options.mode == STRIP_MODE:
         report("Removing embedded subtitle tracks...")
         command = build_strip_subtitles_command(ffmpeg, source_path, output_path)
     elif options.mode == BLUR_MODE:
         report("Blurring the selected subtitle area...")
-        command = build_blur_subtitles_command(
+        command = build_blur_masks_command(
             ffmpeg,
             source_path,
             output_path,
-            options.region,
+            masks,
             options.blur_strength,
         )
     elif options.mode == FILL_MODE:
@@ -172,11 +206,11 @@ def remove_subtitles_from_video(
             ffprobe_path=ffprobe_path,
             runner=probe_runner,
         )
-        command = build_fill_subtitles_command(
+        command = build_fill_masks_command(
             ffmpeg,
             source_path,
             output_path,
-            options.region,
+            masks,
             video_size,
         )
     else:
@@ -221,21 +255,11 @@ def remove_subtitles_from_video(
         if job_worker is not None:
             job_worker.close(force=bool(stop_event and stop_event.is_set()))
 
-    warnings: list[str] = []
-    if options.mode == FILL_MODE:
-        warnings.append(
-            "Smart fill estimates pixels from the edge of the selected area and may leave artifacts on moving backgrounds."
-        )
-    elif options.mode in AI_INPAINT_MODES:
-        warnings.append(
-            "ProPainter code and models are licensed for non-commercial use only under the NTU S-Lab License 1.0."
-        )
-        if options.mode == FAST_AI_INPAINT_MODE:
-            warnings.append(
-                "Fast AI detects subtitle glyphs frame by frame, processes a smaller subtitle band, and merges only the cleaned region into the original video."
-            )
-        if options.processing_device == "cpu":
-            warnings.append("ProPainter on CPU is supported but can be extremely slow for long videos.")
+    warnings = quality_warnings(
+        options.mode,
+        masks,
+        processing_device=options.processing_device,
+    )
 
     manifest = {
         "app": "Galaxy AI Voice & Subtitle Studio",
@@ -249,6 +273,21 @@ def remove_subtitles_from_video(
             "width": options.region_width,
             "height": options.region_height,
         },
+        "masks": [
+            {
+                "id": mask.mask_id,
+                "name": mask.name,
+                "region": {
+                    "x": mask.region[0],
+                    "y": mask.region[1],
+                    "width": mask.region[2],
+                    "height": mask.region[3],
+                },
+                "start_seconds": mask.start_seconds,
+                "end_seconds": mask.end_seconds,
+            }
+            for mask in masks
+        ],
         "blur_strength": options.blur_strength,
         "processing_device": options.processing_device,
         "ai_profile": (
@@ -302,9 +341,10 @@ def _run_ai_inpainting(
     staging_dir = project_dir / "_propainter"
     staging_dir.mkdir(parents=True, exist_ok=True)
     profile = _ai_profile_for_mode(options.mode)
+    masks = options.resolved_masks
     crop_plan = plan_inpainting_crop(
         video_size=video_size,
-        region=options.region,
+        region=mask_union_region(masks),
         profile=profile,
         maximum_processing_size=maximum_processing_size,
     )
@@ -315,6 +355,12 @@ def _run_ai_inpainting(
         f"({profile})."
     )
     if ai_mask_generator is None:
+        if len(masks) > 1 or any(
+            mask.start_seconds > 0 or mask.end_seconds is not None for mask in masks
+        ):
+            raise RuntimeError(
+                "Multiple or timed AI masks require the frame-wise mask generator."
+            )
         report("Creating the AI inpainting mask...")
         _run_ffmpeg(
             build_inpainting_mask_command(
@@ -354,6 +400,8 @@ def _run_ai_inpainting(
                 propainter_input,
                 dynamic_mask_dir,
                 crop_plan,
+                masks,
+                0.0,
                 report,
             )
         report("Running AI video inpainting...")
@@ -387,6 +435,8 @@ def _run_ai_inpainting(
                     chunk_input,
                     dynamic_mask_dir,
                     crop_plan,
+                    masks,
+                    chunk.source_start,
                     report,
                 )
             report(f"Running AI video inpainting {index}/{len(chunks)}...")
@@ -498,14 +548,41 @@ def build_blur_subtitles_command(
     region: Region,
     blur_strength: int,
 ) -> list[str]:
-    x, y, width, height = (_ratio(value) for value in region)
-    filter_graph = (
-        "[0:v:0]split=2[base][region];"
-        f"[region]crop=w=iw*{width}:h=ih*{height}:x=iw*{x}:y=ih*{y},"
-        f"boxblur=luma_radius=min({blur_strength}\\,min(w\\,h)/2-1):luma_power=2:"
-        f"chroma_radius=min({blur_strength}\\,min(cw\\,ch)/2-1):chroma_power=2[blurred];"
-        f"[base][blurred]overlay=x=main_w*{x}:y=main_h*{y}:shortest=1[video]"
+    return build_blur_masks_command(
+        ffmpeg,
+        video_path,
+        output_path,
+        (RemovalMask("default", "Subtitle area", region),),
+        blur_strength,
     )
+
+
+def build_blur_masks_command(
+    ffmpeg: str,
+    video_path: Path,
+    output_path: Path,
+    masks: tuple[RemovalMask, ...],
+    blur_strength: int,
+) -> list[str]:
+    validate_masks(masks)
+    filters: list[str] = []
+    source = "0:v:0"
+    for index, mask in enumerate(masks):
+        x, y, width, height = (_ratio(value) for value in mask.region)
+        base = f"base{index}"
+        region = f"region{index}"
+        blurred = f"blurred{index}"
+        output = "video" if index == len(masks) - 1 else f"masked{index}"
+        filters.extend((
+            f"[{source}]split=2[{base}][{region}]",
+            f"[{region}]crop=w=iw*{width}:h=ih*{height}:x=iw*{x}:y=ih*{y},"
+            f"boxblur=luma_radius=min({blur_strength}\\,min(w\\,h)/2-1):luma_power=2:"
+            f"chroma_radius=min({blur_strength}\\,min(cw\\,ch)/2-1):chroma_power=2[{blurred}]",
+            f"[{base}][{blurred}]overlay=x=main_w*{x}:y=main_h*{y}:shortest=1"
+            f"{_enable_filter(mask)}[{output}]",
+        ))
+        source = output
+    filter_graph = ";".join(filters)
     return _build_encoded_command(
         ffmpeg,
         video_path,
@@ -523,8 +600,30 @@ def build_fill_subtitles_command(
     region: Region,
     video_size: tuple[int, int],
 ) -> list[str]:
-    x, y, width, height = _pixel_region(region, video_size)
-    video_filter = f"delogo=x={x}:y={y}:w={width}:h={height}:show=0"
+    return build_fill_masks_command(
+        ffmpeg,
+        video_path,
+        output_path,
+        (RemovalMask("default", "Subtitle area", region),),
+        video_size,
+    )
+
+
+def build_fill_masks_command(
+    ffmpeg: str,
+    video_path: Path,
+    output_path: Path,
+    masks: tuple[RemovalMask, ...],
+    video_size: tuple[int, int],
+) -> list[str]:
+    validate_masks(masks)
+    filters = []
+    for mask in masks:
+        x, y, width, height = _pixel_region(mask.region, video_size)
+        filters.append(
+            f"delogo=x={x}:y={y}:w={width}:h={height}:show=0{_enable_filter(mask)}"
+        )
+    video_filter = ",".join(filters)
     return _build_encoded_command(
         ffmpeg,
         video_path,
@@ -723,10 +822,14 @@ def _build_encoded_command(
     ]
 
 
-def _validate_region(region: Region) -> None:
-    x, y, width, height = region
-    if x < 0 or y < 0 or width < 1 or height < 1 or x + width > 100 or y + height > 100:
-        raise ValueError("The selected subtitle area must fit inside the video.")
+def _enable_filter(mask: RemovalMask) -> str:
+    if mask.start_seconds <= 0 and mask.end_seconds is None:
+        return ""
+    if mask.end_seconds is None:
+        expression = f"gte(t,{mask.start_seconds:.3f})"
+    else:
+        expression = f"between(t,{mask.start_seconds:.3f},{mask.end_seconds:.3f})"
+    return f":enable='{expression}'"
 
 
 def _ai_profile_for_mode(mode: str) -> str:

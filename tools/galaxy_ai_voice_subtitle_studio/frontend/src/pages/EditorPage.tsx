@@ -21,6 +21,8 @@ import {
   mediaClip,
   placeAudioClips,
   reindexTrackCues,
+  replaceClipMedia,
+  restoreClipMedia,
 } from '../components/timeline/tracks'
 import type {
   EditorTrack,
@@ -87,6 +89,7 @@ export function EditorPage() {
   const handledCondensationTask = useRef('')
   const activeSpeechJob = useRef('')
   const speechItemDeliveries = useRef(new Map<string, Promise<void>>())
+  const removalMedia = useRef(new Map<string, EditorMedia>())
 
   const [assets, setAssets] = useState<EditorAsset[]>([])
   const [tracks, setTracks] = useState<EditorTrack[]>(createDefaultTracks)
@@ -293,7 +296,45 @@ export function EditorPage() {
 
   const importRemovalResult = async (removalResult: RemovalResult) => {
     const media = await loadEditorMedia(removalResult.video_path, 'video')
+    removalMedia.current.set(removalResult.video_path, media)
     addAsset({ ...media, id: `video:${media.source_id}` })
+  }
+
+  const replaceSelectedClip = async (removalResult: RemovalResult) => {
+    if (!selectedTrack || selectedTrack.kind !== 'video' || !selectedClip) return
+    if (selectedClip.media.path !== removalResult.source_video_path) {
+      setMessage('Clip đang chọn không còn khớp với video đã xử lý.')
+      return
+    }
+    const media = removalMedia.current.get(removalResult.video_path)
+      ?? await loadEditorMedia(removalResult.video_path, 'video')
+    removalMedia.current.set(removalResult.video_path, media)
+    const trackId = selectedTrack.id
+    const clipId = selectedClip.id
+    setTracks((current) => current.map((track) => track.id === trackId && track.kind === 'video'
+      ? {
+          ...track,
+          clips: track.clips.map((clip) => clip.id === clipId
+            ? replaceClipMedia(clip, media, removalResult.manifest_path)
+            : clip),
+        }
+      : track))
+    setPreviewError(false)
+    setMessage('Đã thay clip bằng bản sạch. Có thể khôi phục clip gốc bất cứ lúc nào.')
+  }
+
+  const restoreSelectedClip = () => {
+    if (!selectedTrack || selectedTrack.kind !== 'video' || !selectedClip?.replacement) return
+    const trackId = selectedTrack.id
+    const clipId = selectedClip.id
+    setTracks((current) => current.map((track) => track.id === trackId && track.kind === 'video'
+      ? {
+          ...track,
+          clips: track.clips.map((clip) => clip.id === clipId ? restoreClipMedia(clip) : clip),
+        }
+      : track))
+    setPreviewError(false)
+    setMessage('Đã khôi phục clip gốc.')
   }
 
   const activateAsset = (assetId: string, dropMs = playheadMs, targetTrackId?: string) => {
@@ -595,6 +636,9 @@ export function EditorPage() {
             source={removalSource}
             outputDir={outputDir}
             onCompleted={importRemovalResult}
+            onReplace={replaceSelectedClip}
+            canRestore={Boolean(selectedClip?.replacement)}
+            onRestore={restoreSelectedClip}
           />}
         </aside>
       </div>

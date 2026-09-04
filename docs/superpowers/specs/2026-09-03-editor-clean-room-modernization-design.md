@@ -157,3 +157,20 @@ replace clips only through an explicit editor action.
 6. A stale proposal cannot replace a cue whose source text changed while the AI
    request was running, and applying a proposal requires generating audio again
    for a new fit measurement.
+
+## Phase 6 Acceptance
+
+1. A cleanup job accepts up to twelve named masks, each with its own frame
+   region and optional activation range.
+2. Built-in region presets can populate the active mask without removing the
+   ability to adjust its coordinates manually.
+3. Blur, smart-fill, and AI cleanup honor every mask and activation range; AI
+   chunk processing evaluates ranges against the original video timeline.
+4. The editor shows explicit quality warnings before processing and the
+   backend-recorded warnings after completion.
+5. The editor can compare matching source and cleaned frames at the same
+   timestamp.
+6. A completed clean result enters the media bin first and replaces only the
+   explicitly selected matching clip after a separate user action.
+7. Replacing a clip retains its original media reference and cleanup manifest,
+   and the editor can restore that original clip without rerunning cleanup.

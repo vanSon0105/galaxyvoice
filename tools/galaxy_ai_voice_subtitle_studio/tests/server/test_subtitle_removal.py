@@ -49,6 +49,10 @@ class SubtitleRemovalApiTests(unittest.TestCase):
         self.assertEqual({item["code"] for item in payload["modes"]}, {
             "strip", "blur", "fill", "ai_inpaint", "fast_ai_inpaint",
         })
+        self.assertEqual(
+            {item["code"] for item in payload["region_presets"]},
+            {"bottom", "lower_third", "top"},
+        )
         self.assertFalse(payload["propainter_ready"])
 
     def test_registered_video_is_seekable_from_opaque_source_url(self) -> None:
@@ -119,6 +123,7 @@ class SubtitleRemovalApiTests(unittest.TestCase):
         captured: dict[str, object] = {}
 
         def fake_remove(options, **kwargs):
+            captured["options"] = options
             captured.update(kwargs)
             project = self.root / "clean"
             project.mkdir(exist_ok=True)
@@ -136,6 +141,21 @@ class SubtitleRemovalApiTests(unittest.TestCase):
                     "video_path": str(self.video),
                     "output_dir": str(self.root),
                     "mode": "blur",
+                    "masks": [
+                        {
+                            "id": "opening",
+                            "name": "Opening captions",
+                            "region": {"x": 5, "y": 75, "width": 90, "height": 20},
+                            "start_seconds": 0,
+                            "end_seconds": 8.5,
+                        },
+                        {
+                            "id": "top",
+                            "name": "Top captions",
+                            "region": {"x": 10, "y": 5, "width": 80, "height": 15},
+                            "start_seconds": 12,
+                        },
+                    ],
                 },
             )
             task_id = response.json()["task_id"]
@@ -144,6 +164,11 @@ class SubtitleRemovalApiTests(unittest.TestCase):
         record = task_registry.get(task_id)
         self.assertIs(captured["stop_event"], record.stop_event)
         self.assertEqual(captured["task_id"], task_id)
+        options = captured["options"]
+        self.assertEqual([mask.name for mask in options.masks], ["Opening captions", "Top captions"])
+        self.assertEqual(options.masks[0].end_seconds, 8.5)
+        self.assertEqual(record.result_payload["source_video_path"], str(self.video.resolve()))
+        self.assertEqual(len(record.result_payload["masks"]), 2)
         served = self.client.get(f"/api/files/task/{task_id}/clean_no_subtitles.mp4")
         self.assertEqual(served.status_code, 200)
         graph = self.client.get("/api/project-graph/projects/project-1").json()

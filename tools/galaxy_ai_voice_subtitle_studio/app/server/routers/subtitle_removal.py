@@ -19,6 +19,12 @@ from ...common.processes import managed_media_processes
 from ...project_graph.integrations import register_media_result
 from ...project_graph.runtime import project_graph_service
 from ...subtitle_removal.constants import REMOVAL_MODE_LABELS
+from ...subtitle_removal.plan import (
+    MAX_REMOVAL_MASKS,
+    REGION_PRESETS,
+    RemovalMask,
+    validate_masks,
+)
 from ...subtitle_removal.propainter import install_propainter_runtime, resolve_propainter_runtime
 from ...subtitle_removal.service import (
     AI_INPAINT_MODES,
@@ -62,6 +68,23 @@ class PreviewRequest(BaseModel):
     region: RegionRequest = Field(default_factory=RegionRequest)
 
 
+class MaskRequest(BaseModel):
+    id: str = Field(min_length=1, max_length=80)
+    name: str = Field(min_length=1, max_length=120)
+    region: RegionRequest
+    start_seconds: float = Field(0.0, ge=0)
+    end_seconds: float | None = Field(None, gt=0)
+
+    def as_mask(self) -> RemovalMask:
+        return RemovalMask(
+            self.id.strip(),
+            self.name.strip(),
+            self.region.as_tuple(),
+            self.start_seconds,
+            self.end_seconds,
+        )
+
+
 class RemoveRequest(BaseModel):
     galaxy_project_id: str = ""
     video_path: str
@@ -72,6 +95,7 @@ class RemoveRequest(BaseModel):
     blur_strength: int = Field(18, ge=1, le=100)
     processing_device: str = "auto"
     license_accepted: bool = False
+    masks: list[MaskRequest] = Field(default_factory=list, max_length=MAX_REMOVAL_MASKS)
 
 
 def _video_path(raw_path: str) -> Path:
@@ -105,6 +129,19 @@ def get_modes() -> dict[str, Any]:
                 "uses_ai": code in AI_INPAINT_MODES,
             }
             for code in SUBTITLE_REMOVAL_MODES
+        ],
+        "region_presets": [
+            {
+                "code": preset.code,
+                "name": preset.name,
+                "region": {
+                    "x": preset.region[0],
+                    "y": preset.region[1],
+                    "width": preset.region[2],
+                    "height": preset.region[3],
+                },
+            }
+            for preset in REGION_PRESETS
         ],
         "propainter_ready": propainter_ready,
         "runtime_path": runtime_path,
@@ -196,6 +233,9 @@ def start_removal(body: RemoveRequest, request: Request) -> dict[str, str]:
         raise HTTPException(status_code=422, detail="Chế độ xóa phụ đề không hợp lệ.")
     try:
         region = body.region.as_tuple()
+        masks = tuple(item.as_mask() for item in body.masks)
+        if masks:
+            validate_masks(masks)
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
     if not body.output_dir.strip():
@@ -217,6 +257,7 @@ def start_removal(body: RemoveRequest, request: Request) -> dict[str, str]:
         region_height=region[3],
         blur_strength=body.blur_strength,
         processing_device=body.processing_device,
+        masks=masks,
     )
     record = task_registry.create(
         "subtitle-removal",
@@ -255,7 +296,7 @@ def start_removal(body: RemoveRequest, request: Request) -> dict[str, str]:
                 ("clean_video", str(result.video_path)),
                 ("manifest", str(result.manifest_path)),
             ),
-            metadata={"mode": result.mode},
+            metadata={"mode": result.mode, "mask_count": len(options.resolved_masks)},
         )
         return {
             "project_dir": str(result.project_dir),
@@ -264,6 +305,22 @@ def start_removal(body: RemoveRequest, request: Request) -> dict[str, str]:
             "manifest_path": str(result.manifest_path),
             "mode": result.mode,
             "warnings": list(result.warnings),
+            "source_video_path": str(video_path),
+            "masks": [
+                {
+                    "id": mask.mask_id,
+                    "name": mask.name,
+                    "region": {
+                        "x": mask.region[0],
+                        "y": mask.region[1],
+                        "width": mask.region[2],
+                        "height": mask.region[3],
+                    },
+                    "start_seconds": mask.start_seconds,
+                    "end_seconds": mask.end_seconds,
+                }
+                for mask in options.resolved_masks
+            ],
         }
 
     run_task(record, run_removal, serialize)

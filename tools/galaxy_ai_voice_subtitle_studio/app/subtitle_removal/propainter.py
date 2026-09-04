@@ -57,6 +57,14 @@ class InpaintingCropPlan:
     mask_width: int
     mask_height: int
 
+
+@dataclass(frozen=True)
+class TimedMaskRegion:
+    region: Region
+    start_seconds: float = 0.0
+    end_seconds: float | None = None
+
+
 @dataclass(frozen=True)
 class ProPainterRuntime:
     repo_dir: Path
@@ -609,21 +617,70 @@ def build_dynamic_subtitle_mask_command(
     video_path: Path,
     output_dir: Path,
     plan: InpaintingCropPlan,
+    *,
+    regions: tuple[TimedMaskRegion, ...] = (),
+    time_offset: float = 0.0,
 ) -> list[str]:
     worker_path = Path(__file__).with_name("propainter_mask_worker.py")
-    return [
+    command = [
         str(runtime.python_executable),
         str(worker_path),
         "--video",
         str(video_path),
         "--output",
         str(output_dir),
-        "--roi",
-        str(plan.mask_x),
-        str(plan.mask_y),
-        str(plan.mask_width),
-        str(plan.mask_height),
     ]
+    if regions:
+        command.extend(("--time-offset", f"{max(0.0, time_offset):.3f}"))
+        for item in regions:
+            x, y, width, height = item.region
+            command.extend((
+                "--mask",
+                str(x),
+                str(y),
+                str(width),
+                str(height),
+                f"{item.start_seconds:.3f}",
+                f"{item.end_seconds:.3f}" if item.end_seconds is not None else "-1",
+            ))
+    else:
+        command.extend((
+            "--roi",
+            str(plan.mask_x),
+            str(plan.mask_y),
+            str(plan.mask_width),
+            str(plan.mask_height),
+        ))
+    return command
+
+
+def map_timed_masks_to_processing(
+    plan: InpaintingCropPlan,
+    masks: tuple[tuple[Region, float, float | None], ...],
+) -> tuple[TimedMaskRegion, ...]:
+    scale_x = plan.processing_width / plan.crop_width
+    scale_y = plan.processing_height / plan.crop_height
+    mapped: list[TimedMaskRegion] = []
+    for region, start_seconds, end_seconds in masks:
+        x, y, width, height = _pixel_region(region, (plan.video_width, plan.video_height))
+        left = max(0, round((x - plan.crop_x) * scale_x))
+        top = max(0, round((y - plan.crop_y) * scale_y))
+        right = min(
+            plan.processing_width,
+            max(left + 1, round((x + width - plan.crop_x) * scale_x)),
+        )
+        bottom = min(
+            plan.processing_height,
+            max(top + 1, round((y + height - plan.crop_y) * scale_y)),
+        )
+        mapped.append(
+            TimedMaskRegion(
+                (left, top, right - left, bottom - top),
+                start_seconds,
+                end_seconds,
+            )
+        )
+    return tuple(mapped)
 
 
 def generate_dynamic_subtitle_masks(
@@ -633,11 +690,20 @@ def generate_dynamic_subtitle_masks(
     plan: InpaintingCropPlan,
     progress: ProgressCallback,
     *,
+    regions: tuple[TimedMaskRegion, ...] = (),
+    time_offset: float = 0.0,
     stop_event: Event | None = None,
     task_id: str | None = None,
 ) -> Path:
     managed_media_processes.ensure_running()
-    command = build_dynamic_subtitle_mask_command(runtime, video_path, output_dir, plan)
+    command = build_dynamic_subtitle_mask_command(
+        runtime,
+        video_path,
+        output_dir,
+        plan,
+        regions=regions,
+        time_offset=time_offset,
+    )
     return_code, recent_output = _run_managed_process(
         command,
         cwd=runtime.repo_dir,

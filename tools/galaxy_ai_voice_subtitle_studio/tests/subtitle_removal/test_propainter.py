@@ -20,6 +20,7 @@ from app.subtitle_removal.propainter import (  # noqa: E402
     ProPainterRuntime,
     ProPainterJobWorker,
     ProPainterSession,
+    TimedMaskRegion,
     build_chunk_extract_command,
     build_chunk_trim_command,
     build_dynamic_subtitle_mask_command,
@@ -436,6 +437,33 @@ class ProPainterTests(unittest.TestCase):
                 str(plan.mask_height),
             ],
         )
+
+    def test_dynamic_mask_command_carries_multiple_regions_ranges_and_chunk_offset(self) -> None:
+        runtime = ProPainterRuntime(Path("repo"), Path("venv-python"), Path("inference.py"))
+        plan = plan_inpainting_crop(
+            video_size=(1920, 1080),
+            region=(5, 5, 90, 90),
+            profile=FAST_AI_PROFILE,
+        )
+        regions = (
+            TimedMaskRegion((10, 20, 300, 80), 0.0, 5.5),
+            TimedMaskRegion((25, 180, 280, 70), 8.0, None),
+        )
+
+        command = build_dynamic_subtitle_mask_command(
+            runtime,
+            Path("processing.mp4"),
+            Path("masks"),
+            plan,
+            regions=regions,
+            time_offset=20.0,
+        )
+
+        self.assertNotIn("--roi", command)
+        self.assertEqual(command.count("--mask"), 2)
+        self.assertEqual(command[command.index("--time-offset") + 1], "20.000")
+        first = command.index("--mask")
+        self.assertEqual(command[first + 1 : first + 7], ["10", "20", "300", "80", "0.000", "5.500"])
 
     def test_dynamic_mask_worker_is_terminated_when_progress_callback_fails(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

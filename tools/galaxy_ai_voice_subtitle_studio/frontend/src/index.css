@@ -1692,6 +1692,12 @@ body {
   cursor: move;
   touch-action: none;
   user-select: none;
+  opacity: 0.58;
+}
+
+.removal-region.active {
+  z-index: 2;
+  opacity: 1;
 }
 
 .removal-region > span {
@@ -1877,6 +1883,68 @@ body {
   grid-template-columns: repeat(4, minmax(0, 1fr));
 }
 
+.editor-removal-mask-editor {
+  display: grid;
+  gap: 8px;
+  padding-block: 8px;
+  border-block: 1px solid var(--border-soft);
+}
+
+.editor-removal-mask-list {
+  display: flex;
+  overflow-x: auto;
+  align-items: center;
+  gap: 5px;
+  padding-bottom: 2px;
+}
+
+.editor-removal-mask-list .btn {
+  flex: 0 0 auto;
+}
+
+.editor-removal-mask-list .btn.active {
+  border-color: var(--color-accent);
+  background: var(--color-accent-soft);
+  color: var(--color-accent);
+}
+
+.editor-removal-mask-identity {
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  align-items: end;
+}
+
+.editor-removal-range-fields {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.editor-removal-whole-video {
+  min-height: 28px;
+}
+
+.editor-removal-warnings {
+  display: grid;
+  gap: 4px;
+  padding: 7px 9px;
+  border-left: 2px solid var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 7%, transparent);
+  color: var(--color-fg-muted);
+  font-size: 10.5px;
+}
+
+.editor-removal-warnings strong {
+  color: var(--color-warning);
+}
+
+.editor-removal-warnings span::before {
+  content: "· ";
+  color: var(--color-warning);
+}
+
+.editor-removal-warnings.result {
+  border-left-color: var(--color-accent);
+  background: color-mix(in srgb, var(--color-accent) 7%, transparent);
+}
+
 .editor-removal-actions {
   display: flex;
   align-items: center;
@@ -1892,7 +1960,30 @@ body {
   margin: 0;
 }
 
-.editor-removal-snapshot {
+.editor-removal-comparison {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+
+.editor-removal-comparison.complete {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.editor-removal-comparison figure {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+  margin: 0;
+}
+
+.editor-removal-comparison figcaption {
+  color: var(--color-fg-muted);
+  font-size: 10px;
+  font-weight: 700;
+}
+
+.editor-removal-comparison img {
   display: block;
   width: 100%;
   border: 1px solid var(--border-soft);

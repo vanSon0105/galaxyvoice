@@ -8,6 +8,7 @@ export interface RemovalMode {
 
 export interface RemovalMeta {
   modes: RemovalMode[]
+  region_presets: RemovalRegionPreset[]
   propainter_ready: boolean
   runtime_path: string
   installer_available: boolean
@@ -29,6 +30,20 @@ export interface RemovalRegion {
   height: number
 }
 
+export interface RemovalRegionPreset {
+  code: string
+  name: string
+  region: RemovalRegion
+}
+
+export interface RemovalMask {
+  id: string
+  name: string
+  region: RemovalRegion
+  start_seconds: number
+  end_seconds: number | null
+}
+
 export interface RemovalRequest {
   galaxy_project_id: string
   video_path: string
@@ -39,6 +54,7 @@ export interface RemovalRequest {
   blur_strength: number
   processing_device: string
   license_accepted: boolean
+  masks?: RemovalMask[]
 }
 
 export interface RemovalResult {
@@ -48,6 +64,8 @@ export interface RemovalResult {
   manifest_path: string
   mode: string
   warnings: string[]
+  source_video_path: string
+  masks: RemovalMask[]
 }
 
 export const fetchRemovalMeta = (): Promise<RemovalMeta> =>

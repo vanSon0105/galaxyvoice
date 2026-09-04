@@ -15,6 +15,7 @@ sys.path.insert(0, str(ROOT))
 
 from app.common.ffmpeg import find_ffmpeg, find_ffprobe  # noqa: E402
 from app.common.processes import managed_media_processes  # noqa: E402
+from app.subtitle_removal.plan import RemovalMask  # noqa: E402
 from app.subtitle_removal.service import (  # noqa: E402
     AI_INPAINT_MODE,
     BLUR_MODE,
@@ -23,7 +24,9 @@ from app.subtitle_removal.service import (  # noqa: E402
     STRIP_MODE,
     SubtitleRemovalOptions,
     build_audio_playback_command,
+    build_blur_masks_command,
     build_blur_subtitles_command,
+    build_fill_masks_command,
     build_fill_subtitles_command,
     build_playback_command,
     build_preview_command,
@@ -35,6 +38,28 @@ from app.subtitle_removal.service import (  # noqa: E402
 
 
 class SubtitleRemovalTests(unittest.TestCase):
+    def test_multi_mask_filters_honor_each_activation_range(self) -> None:
+        masks = (
+            RemovalMask("lower", "Lower", (5, 75, 90, 20), 1.5, 8.0),
+            RemovalMask("top", "Top", (10, 5, 80, 15), 12.0, None),
+        )
+
+        blur = build_blur_masks_command(
+            "ffmpeg", Path("source.mp4"), Path("blur.mp4"), masks, 18
+        )
+        blur_graph = blur[blur.index("-filter_complex") + 1]
+        self.assertIn("between(t,1.500,8.000)", blur_graph)
+        self.assertIn("gte(t,12.000)", blur_graph)
+        self.assertEqual(blur_graph.count("boxblur="), 2)
+
+        fill = build_fill_masks_command(
+            "ffmpeg", Path("source.mp4"), Path("fill.mp4"), masks, (1920, 1080)
+        )
+        fill_graph = fill[fill.index("-vf") + 1]
+        self.assertIn("between(t,1.500,8.000)", fill_graph)
+        self.assertIn("gte(t,12.000)", fill_graph)
+        self.assertEqual(fill_graph.count("delogo="), 2)
+
     def test_missing_propainter_fails_before_preparing_video(self) -> None:
         managed_media_processes.reset()
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -207,7 +232,7 @@ class SubtitleRemovalTests(unittest.TestCase):
                     "",
                 )
 
-            def mask_generator(video, output_dir, _plan, _progress):
+            def mask_generator(video, output_dir, _plan, _masks, _offset, _progress):
                 self.assertEqual(video.name, "propainter_input.mp4")
                 output_dir.mkdir(parents=True)
                 (output_dir / "00000000.png").write_bytes(b"mask")
@@ -244,6 +269,7 @@ class SubtitleRemovalTests(unittest.TestCase):
             source.write_bytes(b"video")
             generated_from: list[tuple[str, str]] = []
             ai_masks: list[tuple[str, str]] = []
+            mask_offsets: list[float] = []
 
             def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
                 Path(command[-1]).write_bytes(b"generated")
@@ -259,8 +285,10 @@ class SubtitleRemovalTests(unittest.TestCase):
                     "",
                 )
 
-            def mask_generator(video, output_dir, _plan, _progress):
+            def mask_generator(video, output_dir, _plan, planned_masks, offset, _progress):
                 generated_from.append((video.name, output_dir.name))
+                self.assertEqual([mask.name for mask in planned_masks], ["Lower", "Top"])
+                mask_offsets.append(offset)
                 output_dir.mkdir(parents=True)
                 (output_dir / "00000000.png").write_bytes(b"mask")
                 return output_dir
@@ -278,6 +306,10 @@ class SubtitleRemovalTests(unittest.TestCase):
                     output_dir=root / "exports",
                     mode=AI_INPAINT_MODE,
                     processing_device="cpu",
+                    masks=(
+                        RemovalMask("lower", "Lower", (5, 75, 90, 20), 0, 12),
+                        RemovalMask("top", "Top", (10, 5, 80, 15), 22, 40),
+                    ),
                 ),
                 ffmpeg_path="ffmpeg",
                 ffprobe_path="ffprobe",
@@ -303,6 +335,7 @@ class SubtitleRemovalTests(unittest.TestCase):
                     ("chunk_0003.mp4", "masks_0003"),
                 ],
             )
+            self.assertEqual(mask_offsets, [0.0, 19.0, 39.0])
 
     def test_long_ai_inpainting_processes_memory_safe_overlapping_chunks(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -863,6 +896,38 @@ class SubtitleRemovalTests(unittest.TestCase):
             manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
             self.assertEqual(manifest["mode"], BLUR_MODE)
             self.assertEqual(manifest["region"], {"x": 5, "y": 75, "width": 90, "height": 18})
+
+    def test_processing_records_named_masks_and_quality_warnings(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "source.mp4"
+            source.write_bytes(b"video")
+
+            def runner(command: list[str]) -> subprocess.CompletedProcess[str]:
+                Path(command[-1]).write_bytes(b"clean video")
+                return subprocess.CompletedProcess(command, 0, "", "")
+
+            masks = (
+                RemovalMask("opening", "Opening captions", (5, 75, 90, 20), 0, 5),
+                RemovalMask("ending", "End card", (15, 10, 70, 18), 20, 25),
+            )
+            result = remove_subtitles_from_video(
+                SubtitleRemovalOptions(
+                    video_path=source,
+                    output_dir=root / "exports",
+                    mode=BLUR_MODE,
+                    masks=masks,
+                ),
+                ffmpeg_path="ffmpeg",
+                ffprobe_path="ffprobe",
+                runner=runner,
+                probe_runner=lambda command: subprocess.CompletedProcess(command, 0, "30\n", ""),
+            )
+
+            manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+            self.assertEqual([item["name"] for item in manifest["masks"]], ["Opening captions", "End card"])
+            self.assertEqual(manifest["masks"][0]["end_seconds"], 5)
+            self.assertTrue(any("blur" in warning.lower() for warning in result.warnings))
 
     def test_region_must_fit_inside_the_video(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

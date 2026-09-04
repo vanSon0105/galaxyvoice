@@ -239,7 +239,7 @@ describe('EditorPage', () => {
     expect(screen.queryByText('Phụ đề 1')).not.toBeInTheDocument()
   })
 
-  it('removes hard subtitles from the selected video and imports the result without replacing the source clip', async () => {
+  it('plans multiple removal masks and replaces then restores the selected clip explicitly', async () => {
     vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({
       editor_output_dir: 'D:/result',
       subtitle_removal_mode: 'blur',
@@ -253,6 +253,10 @@ describe('EditorPage', () => {
     vi.spyOn(voiceLibraryApi, 'fetchLibraryVoices').mockResolvedValue([])
     vi.spyOn(removalApi, 'fetchRemovalMeta').mockResolvedValue({
       modes: [{ code: 'blur', label: 'Làm mờ', uses_ai: false }],
+      region_presets: [
+        { code: 'bottom', name: 'Phụ đề dưới', region: { x: 5, y: 75, width: 90, height: 20 } },
+        { code: 'top', name: 'Phụ đề trên', region: { x: 5, y: 5, width: 90, height: 20 } },
+      ],
       propainter_ready: false,
       runtime_path: '',
       installer_available: false,
@@ -265,6 +269,11 @@ describe('EditorPage', () => {
       kind: 'video', duration_seconds: 30, width: 1920, height: 1080, fps: 30, has_audio: true,
     })
     const startRemoval = vi.spyOn(removalApi, 'startSubtitleRemoval').mockResolvedValue({ task_id: 'removal-task' })
+    vi.spyOn(removalApi, 'fetchRemovalPreview').mockResolvedValue(new Blob(['jpeg'], { type: 'image/jpeg' }))
+    Object.defineProperty(URL, 'createObjectURL', { configurable: true, value: vi.fn()
+      .mockReturnValueOnce('blob:before')
+      .mockReturnValueOnce('blob:after') })
+    Object.defineProperty(URL, 'revokeObjectURL', { configurable: true, value: vi.fn() })
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const view = render(<QueryClientProvider client={client}><EditorPage /></QueryClientProvider>)
 
@@ -280,11 +289,21 @@ describe('EditorPage', () => {
 
     await screen.findByRole('option', { name: 'Làm mờ' })
     await waitFor(() => expect(screen.getByLabelText('Chế độ')).toHaveValue('blur'))
+    fireEvent.click(screen.getByRole('button', { name: 'Thêm vùng' }))
+    expect(screen.getByText('Có các vùng xóa chồng nhau trong cùng thời gian; hiệu ứng xử lý có thể bị cộng dồn.')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Mẫu vùng'), { target: { value: 'top' } })
+    fireEvent.click(screen.getByLabelText('Toàn bộ video'))
+    fireEvent.change(screen.getByLabelText('Bắt đầu vùng'), { target: { value: '3' } })
+    fireEvent.change(screen.getByLabelText('Kết thúc vùng'), { target: { value: '12' } })
     fireEvent.click(screen.getByRole('button', { name: 'Xóa phụ đề' }))
     await waitFor(() => expect(startRemoval).toHaveBeenCalledWith(expect.objectContaining({
       video_path: 'D:/clip.mp4',
       output_dir: 'D:/result',
       mode: 'blur',
+      masks: expect.arrayContaining([
+        expect.objectContaining({ name: 'Vùng 1' }),
+        expect.objectContaining({ name: 'Vùng 2', start_seconds: 3, end_seconds: 12 }),
+      ]),
     })))
 
     taskState.tasks = [{
@@ -296,12 +315,22 @@ describe('EditorPage', () => {
         video_url: '/api/removal/result/video-clean',
         manifest_path: 'D:/result/clip-clean/manifest.json',
         mode: 'blur',
-        warnings: [],
+        source_video_path: 'D:/clip.mp4',
+        masks: [],
+        warnings: ['Làm mờ có thể làm mất chi tiết nền.'],
       },
     }]
     view.rerender(<QueryClientProvider client={client}><EditorPage /></QueryClientProvider>)
 
     expect(await screen.findByText('clip-clean.mp4')).toBeInTheDocument()
+    expect(screen.getByText('Trước xử lý')).toBeInTheDocument()
+    expect(screen.getByText('Sau xử lý')).toBeInTheDocument()
+    expect(screen.getByText('Làm mờ có thể làm mất chi tiết nền.')).toBeInTheDocument()
+    expect(document.querySelector('.editor-video-stage video')).toHaveAttribute('src', '/api/editor/source/video-1')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Thay clip đã chọn' }))
+    expect(document.querySelector('.editor-video-stage video')).toHaveAttribute('src', '/api/editor/source/video-clean')
+    fireEvent.click(screen.getByRole('button', { name: 'Khôi phục clip gốc' }))
     expect(document.querySelector('.editor-video-stage video')).toHaveAttribute('src', '/api/editor/source/video-1')
   })
 })

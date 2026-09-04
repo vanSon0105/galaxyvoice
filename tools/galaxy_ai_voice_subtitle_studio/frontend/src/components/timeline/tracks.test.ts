@@ -1,7 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import type { EditorMedia } from '../../api/editor'
-import { createDefaultTracks, createTrack, editorDuration, mediaClip, placeAudioClips } from './tracks'
+import {
+  createDefaultTracks,
+  createTrack,
+  editorDuration,
+  mediaClip,
+  placeAudioClips,
+  replaceClipMedia,
+  restoreClipMedia,
+} from './tracks'
 
 vi.stubGlobal('crypto', { randomUUID: vi.fn(() => `id-${Math.random()}`) })
 
@@ -16,6 +24,14 @@ const audio = (name: string, seconds: number): EditorMedia => ({
   height: 0,
   fps: 0,
   has_audio: true,
+})
+
+const video = (name: string, seconds: number): EditorMedia => ({
+  ...audio(name, seconds),
+  kind: 'video',
+  width: 1920,
+  height: 1080,
+  fps: 30,
 })
 
 describe('editor tracks', () => {
@@ -42,5 +58,21 @@ describe('editor tracks', () => {
     expect(audioTracks).toHaveLength(2)
     expect(audioTracks[0].clips.map((clip) => clip.media.name)).toEqual(['one.wav', 'three.wav'])
     expect(audioTracks[1].clips.map((clip) => clip.media.name)).toEqual(['two.wav'])
+  })
+
+  it('replaces a clip while retaining a reversible original-media reference', () => {
+    const original = video('source.mp4', 30)
+    const clean = video('source-clean.mp4', 12)
+    const clip = { ...mediaClip(original, 4_000), source_start_ms: 5_000, source_end_ms: 24_000 }
+
+    const replaced = replaceClipMedia(clip, clean, 'D:/clean/manifest.json')
+
+    expect(replaced.media).toBe(clean)
+    expect(replaced.replacement?.original_media).toBe(original)
+    expect(replaced.replacement?.original_source_start_ms).toBe(5_000)
+    expect(replaced.replacement?.original_source_end_ms).toBe(24_000)
+    expect(replaced.replacement?.manifest_path).toBe('D:/clean/manifest.json')
+    expect(replaced.source_end_ms).toBe(12_000)
+    expect(restoreClipMedia(replaced)).toEqual(clip)
   })
 })

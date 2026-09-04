@@ -7,6 +7,7 @@ interface PywebviewApi {
   choose_media_file?: () => Promise<string[] | string | null>
   choose_book_file?: () => Promise<string[] | string | null>
   choose_voice_bundle_file?: () => Promise<string[] | string | null>
+  choose_cookie_file?: () => Promise<string[] | string | null>
   choose_folder?: () => Promise<string[] | string | null>
   [key: string]: unknown
 }
@@ -53,6 +54,10 @@ export function pickBookFile(): Promise<string | null> {
 
 export function pickVoiceBundleFile(): Promise<string | null> {
   return call('choose_voice_bundle_file')
+}
+
+export function pickCookieFile(): Promise<string | null> {
+  return call('choose_cookie_file')
 }
 
 export function pickFolder(): Promise<string | null> {

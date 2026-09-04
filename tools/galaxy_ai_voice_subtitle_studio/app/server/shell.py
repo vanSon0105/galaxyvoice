@@ -250,6 +250,16 @@ def run_web_app(
                 ),
             )
 
+        def choose_cookie_file(self) -> tuple[str] | None:
+            return window.create_file_dialog(
+                webview.FileDialog.OPEN,
+                allow_multiple=False,
+                file_types=(
+                    "Netscape cookies (*.txt)",
+                    "All files (*.*)",
+                ),
+            )
+
         def choose_folder(self) -> tuple[str] | None:
             result = window.create_file_dialog(
                 webview.FileDialog.FOLDER,

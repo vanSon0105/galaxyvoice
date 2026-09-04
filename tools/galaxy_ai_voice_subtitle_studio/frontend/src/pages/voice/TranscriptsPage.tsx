@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 
 import {
   createTranscriptHandoff,
@@ -57,6 +57,7 @@ function cloneDocument(cues: TranscriptCue[], speakers: TranscriptSpeaker[]) {
 export function TranscriptsPage() {
   const { projectId } = useVoiceProject()
   const queryClient = useQueryClient()
+  const location = useLocation()
   const navigate = useNavigate()
   const { tasks } = useTasks()
   const [selectedId, setSelectedId] = useState('')
@@ -64,6 +65,8 @@ export function TranscriptsPage() {
   const [activeTaskId, setActiveTaskId] = useState('')
   const [composer, setComposer] = useState<'none' | 'media' | 'text'>('none')
   const [message, setMessage] = useState('')
+  const [initialMediaPath, setInitialMediaPath] = useState('')
+  const initialMediaApplied = useRef('')
   const activeTask = tasks.find((task) => task.taskId === activeTaskId)
 
   const listQuery = useQuery({
@@ -80,6 +83,14 @@ export function TranscriptsPage() {
   useEffect(() => {
     if (!selectedId && projects[0]) setSelectedId(projects[0].transcript_id)
   }, [projects, selectedId])
+
+  useEffect(() => {
+    const mediaPath = (location.state as { importMediaPath?: string } | null)?.importMediaPath?.trim() ?? ''
+    if (!mediaPath || initialMediaApplied.current === mediaPath) return
+    initialMediaApplied.current = mediaPath
+    setInitialMediaPath(mediaPath)
+    setComposer('media')
+  }, [location.state])
 
   useEffect(() => {
     if (!activeTask || isTaskActive(activeTask.status)) return
@@ -114,7 +125,7 @@ export function TranscriptsPage() {
     </section>
 
     {!projectId && <div className="library-message" role="status">Chọn hoặc tạo một Galaxy Project trước khi nhập transcript.</div>}
-    {composer === 'media' && <ImportMediaPanel projectId={projectId} onClose={() => setComposer('none')} onStarted={(taskId) => { setActiveTaskId(taskId); setComposer('none'); setMessage('Đang phiên âm trong nền...') }} />}
+    {composer === 'media' && <ImportMediaPanel initialMediaPath={initialMediaPath} projectId={projectId} onClose={() => setComposer('none')} onStarted={(taskId) => { setActiveTaskId(taskId); setComposer('none'); setMessage('Đang phiên âm trong nền...') }} />}
     {composer === 'text' && <ImportTextPanel projectId={projectId} onClose={() => setComposer('none')} onCreated={async (project) => { await refresh(); setSelectedId(project.transcript_id); setComposer('none'); setMessage('Đã nhập transcript.') }} />}
     {message && <div className="library-message" role="status">{message}<button type="button" onClick={() => setMessage('')}>Đóng</button></div>}
 
@@ -131,9 +142,9 @@ export function TranscriptsPage() {
   </div>
 }
 
-function ImportMediaPanel({ projectId, onClose, onStarted }: { projectId: string; onClose: () => void; onStarted: (taskId: string) => void }) {
-  const [mediaPath, setMediaPath] = useState('')
-  const [name, setName] = useState('')
+function ImportMediaPanel({ initialMediaPath = '', projectId, onClose, onStarted }: { initialMediaPath?: string; projectId: string; onClose: () => void; onStarted: (taskId: string) => void }) {
+  const [mediaPath, setMediaPath] = useState(initialMediaPath)
+  const [name, setName] = useState(() => mediaName(initialMediaPath))
   const [language, setLanguage] = useState('auto')
   const [modelSize, setModelSize] = useState('base')
   const [device, setDevice] = useState('auto')
@@ -151,7 +162,7 @@ function ImportMediaPanel({ projectId, onClose, onStarted }: { projectId: string
   return <section className="section-card library-composer">
     <div className="section-header compact"><div><span className="workspace-kicker">Faster Whisper</span><h2 className="section-title">Phiên âm audio / video</h2></div><button className="btn quiet" onClick={onClose}>Đóng</button></div>
     <div className="field-grid">
-      <div className="field field-wide"><label>Media nguồn</label><div className="input-action"><input value={mediaPath} onChange={(event) => setMediaPath(event.target.value)} /><button className="btn" onClick={() => void pickMediaFile().then((path) => { if (!path) return; setMediaPath(path); setName(path.replace(/\\/g, '/').split('/').pop()?.replace(/\.[^.]+$/, '') ?? '') })}>Chọn</button></div></div>
+      <div className="field field-wide"><label>Media nguồn</label><div className="input-action"><input value={mediaPath} onChange={(event) => setMediaPath(event.target.value)} /><button className="btn" onClick={() => void pickMediaFile().then((path) => { if (!path) return; setMediaPath(path); setName(mediaName(path)) })}>Chọn</button></div></div>
       <div className="field"><label>Tên bản ghi</label><input value={name} onChange={(event) => setName(event.target.value)} /></div>
       <div className="field"><label>Ngôn ngữ</label><select value={language} onChange={(event) => setLanguage(event.target.value)}><option value="auto">Tự nhận diện</option><option value="vi">Tiếng Việt</option><option value="en">English</option><option value="zh">中文</option><option value="ja">日本語</option><option value="ko">한국어</option></select></div>
       <div className="field"><label>Model Whisper</label><select value={modelSize} onChange={(event) => setModelSize(event.target.value)}>{['tiny', 'base', 'small', 'medium', 'large-v3'].map((model) => <option key={model}>{model}</option>)}</select></div>
@@ -162,6 +173,10 @@ function ImportMediaPanel({ projectId, onClose, onStarted }: { projectId: string
     {error && <div className="studio-error">{error}</div>}
     <div className="composer-actions"><button className="btn accent" disabled={submitting || !mediaPath} onClick={() => void submit()}>{submitting ? 'Đang gửi...' : 'Bắt đầu phiên âm'}</button></div>
   </section>
+}
+
+function mediaName(path: string): string {
+  return path.replace(/\\/g, '/').split('/').pop()?.replace(/\.[^.]+$/, '') ?? ''
 }
 
 function ImportTextPanel({ projectId, onClose, onCreated }: { projectId: string; onClose: () => void; onCreated: (project: TranscriptProject) => void }) {

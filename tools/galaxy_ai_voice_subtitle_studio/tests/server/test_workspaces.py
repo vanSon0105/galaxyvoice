@@ -374,6 +374,49 @@ class WorkspacesApiTests(unittest.TestCase):
         self.assertEqual(body["segments"][0]["text"], "Chào bạn")
         self.assertEqual(body["segments"][0]["end_ms"], 2000)
 
+    def test_dubbing_local_ingest_returns_native_media_path(self) -> None:
+        media = self.tmp / "source.mp4"
+        media.write_bytes(b"video")
+        response = self.client.post(
+            "/api/workspaces/dubbing/ingest/local",
+            json={"media_path": str(media), "source_language": "vi"},
+        )
+        self.assertEqual(response.status_code, 200, response.text)
+        self.assertEqual(response.json()["source_path"], str(media.resolve()))
+        self.assertEqual(response.json()["source_kind"], "video")
+
+    def test_dubbing_url_ingest_uses_task_without_persisting_cookie(self) -> None:
+        result = SimpleNamespace(
+            to_dict=lambda: {
+                "source_path": str(self.tmp / "download" / "source.mp4"),
+                "source_kind": "video",
+                "captions": [],
+            }
+        )
+        service = mock.Mock()
+        service.downloader_command = ("yt-dlp",)
+        service.ingest_url.return_value = result
+        with mock.patch.object(workspaces_router, "DubbingIngestService", return_value=service):
+            response = self.client.post(
+                "/api/workspaces/dubbing/ingest/url",
+                json={
+                    "url": "https://video.example/watch/1",
+                    "cookie_path": str(self.tmp / "private-cookies.txt"),
+                    "output_dir": str(self.tmp / "download"),
+                },
+            )
+        self.assertEqual(response.status_code, 200, response.text)
+        task_id = response.json()["task_id"]
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            record = task_registry.get(task_id)
+            if record is not None and record.status in {DONE, "failed", "cancelled"}:
+                break
+            time.sleep(0.02)
+        self.assertEqual(task_registry.get(task_id).status, DONE)
+        self.assertNotIn("cookie", str(task_registry.get(task_id).result_payload).casefold())
+        self.assertEqual(service.ingest_url.call_args.kwargs["task_id"], task_id)
+
     def test_dubbing_plan_accepts_external_translation_and_runs_qc(self) -> None:
         source = "1\n00:00:00,000 --> 00:00:01,000\nLan: Hello\n"
         translated = "1\n00:00:00,000 --> 00:00:01,000\nXin chao\n"

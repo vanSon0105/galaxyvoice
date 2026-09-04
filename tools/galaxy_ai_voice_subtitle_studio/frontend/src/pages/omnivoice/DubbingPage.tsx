@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import { useLocation, useSearchParams } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 
 import { fetchSettings, fetchSettingsMeta, saveTranslationApiKey } from '../../api/settings'
 import { fetchLibraryVoices } from '../../api/voiceLibrary'
@@ -17,6 +17,8 @@ import {
   startDubbingTranslation,
   startRender,
   type DubbingProject,
+  type DubbingCaptionArtifact,
+  type DubbingIngestResult,
   type DubbingQualityReport,
   type DubbingSegment,
   type RenderResultPayload,
@@ -27,6 +29,7 @@ import { openProjectHandoff } from '../../api/projectGraph'
 import { useVoiceProject } from '../voice/VoiceProjectContext'
 import { TaskButton } from '../../components/TaskButton'
 import { AudioPostPanel } from '../../components/audio/AudioPostPanel'
+import { DubbingIngestPanel } from '../../components/dubbing/DubbingIngestPanel'
 import { pickAudioFile, pickFolder, pickVideoFile } from '../../lib/dialogs'
 import type { TaskState } from '../../ws/useTasks'
 
@@ -37,6 +40,7 @@ const VIEWPORT_HEIGHT = 620
 export function DubbingPage() {
   const { projectId: galaxyProjectId } = useVoiceProject()
   const location = useLocation()
+  const navigate = useNavigate()
   const [searchParams] = useSearchParams()
   const queryClient = useQueryClient()
   const handoffApplied = useRef('')
@@ -370,6 +374,26 @@ export function DubbingPage() {
     markChanged()
   }
 
+  const applyIngestResult = (ingest: DubbingIngestResult) => {
+    if (ingest.source_kind === 'video') {
+      setSourceVideo(ingest.source_path)
+      setSourceAudio('')
+    } else {
+      setSourceAudio(ingest.source_path)
+      setSourceVideo('')
+    }
+    if (ingest.selected_caption?.text) setSourceSrt(ingest.selected_caption.text)
+    if (ingest.translated_caption?.text) setTranslatedSrt(ingest.translated_caption.text)
+    if (projectName === 'dubbing' && ingest.source_name) setProjectName(`dubbing-${ingest.source_name}`)
+    markChanged()
+  }
+
+  const useIngestCaption = (caption: DubbingCaptionArtifact, target: 'source' | 'translation') => {
+    if (target === 'source') setSourceSrt(caption.text)
+    else setTranslatedSrt(caption.text)
+    markChanged()
+  }
+
   const splitSegment = (index: number) => {
     const segment = segments[index]
     if (!segment || segment.end_ms - segment.start_ms < 200) return
@@ -417,12 +441,23 @@ export function DubbingPage() {
     <header className="dubbing-project-bar">
       <div className="field"><label>Project</label><input value={projectName} onChange={(event) => { setProjectName(event.target.value); markChanged() }} /></div>
       <div className="field"><label>Bản đã lưu</label><select value={projectId} onChange={(event) => void loadProject(event.target.value)}><option value="">Project mới</option>{(projectsQuery.data ?? []).map((item) => <option key={item.project_id} value={item.project_id}>{item.name} · r{item.revision}</option>)}</select></div>
-      <button className="btn accent" disabled={!dirty || !segments.length} onClick={() => void saveProject().catch(showError)}>Lưu checkpoint</button>
+      <button className="btn accent" disabled={!dirty || (!segments.length && !sourceVideo && !sourceAudio && !sourceSrt.trim())} onClick={() => void saveProject(false).catch(showError)}>Lưu checkpoint</button>
       <button className="btn" disabled={!projectId} onClick={() => { if (!projectId || !window.confirm('Xóa Dubbing project này?')) return; void deleteDubbingProject(projectId).then(() => { setProjectId(''); setRevision(0); return queryClient.invalidateQueries({ queryKey: ['dubbing-projects'] }) }).catch(showError) }}>Xóa</button>
     </header>
 
     <nav className="dubbing-stage-rail">{STAGES.map((stage, index) => <span key={stage} className={index < stageIndex ? 'done' : index === stageIndex ? 'active' : ''}><b>{index + 1}</b>{stage}</span>)}</nav>
     {message && <div className="workspace-message">{message}</div>}
+
+    <DubbingIngestPanel
+      galaxyProjectId={galaxyProjectId}
+      sourceLanguage={sourceLanguage}
+      targetLanguage={language}
+      outputDir={outputDir}
+      currentSourcePath={sourceVideo || sourceAudio}
+      onIngest={applyIngestResult}
+      onUseCaption={useIngestCaption}
+      onTranscribe={(mediaPath) => navigate('/voice/transcripts', { state: { importMediaPath: mediaPath } })}
+    />
 
     <div className="dubbing-source-grid">
       <section className="section-card dubbing-source-card">

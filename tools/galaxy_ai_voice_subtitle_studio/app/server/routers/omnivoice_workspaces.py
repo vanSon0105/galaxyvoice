@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from ...common.cache import read_json
 from ...common.errors import TaskCancelledError
+from ...common.processes import managed_media_processes
 from ...omnivoice.client import OmniVoiceWorkerClient
 from ...omnivoice.models import AUTO_MODE, DEFAULT_MODEL_ID, OmniVoiceGenerationOptions
 from ...omnivoice.profiles import list_voice_profiles
@@ -36,6 +37,11 @@ from ...omnivoice.workspaces.dubbing.model import (
     build_dubbing_segments,
     build_dubbing_quality_report,
     validate_dubbing_segments,
+)
+from ...omnivoice.workspaces.dubbing.ingest import (
+    AUDIO_EXTENSIONS,
+    VIDEO_EXTENSIONS,
+    DubbingIngestService,
 )
 from ...omnivoice.workspaces.dubbing.project import (
     DubbingProject,
@@ -635,6 +641,85 @@ class DubbingProjectRequest(BaseModel):
     options: dict[str, Any] = Field(default_factory=dict)
     quality: dict[str, Any] = Field(default_factory=dict)
     last_result: dict[str, Any] = Field(default_factory=dict)
+
+
+class DubbingLocalIngestRequest(BaseModel):
+    media_path: str
+    source_language: str = "auto"
+    target_language: str = ""
+
+
+class DubbingUrlIngestRequest(BaseModel):
+    galaxy_project_id: str = ""
+    url: str
+    output_dir: str = ""
+    pull_captions: bool = False
+    source_language: str = "auto"
+    target_language: str = ""
+    cookie_path: str = ""
+
+
+@router.get("/dubbing/ingest/meta")
+def get_dubbing_ingest_meta() -> dict[str, Any]:
+    service = DubbingIngestService()
+    return {
+        "video_extensions": sorted(VIDEO_EXTENSIONS),
+        "audio_extensions": sorted(AUDIO_EXTENSIONS),
+        "url_adapter": service.adapter_status(),
+    }
+
+
+@router.post("/dubbing/ingest/local")
+def ingest_local_dubbing_media(body: DubbingLocalIngestRequest) -> dict[str, object]:
+    try:
+        return DubbingIngestService().ingest_local(
+            body.media_path,
+            source_language=body.source_language,
+            target_language=body.target_language,
+        ).to_dict()
+    except FileNotFoundError as error:
+        raise HTTPException(status_code=404, detail=str(error)) from error
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+
+@router.post("/dubbing/ingest/url")
+def ingest_dubbing_url(body: DubbingUrlIngestRequest, request: Request) -> dict[str, str]:
+    service = DubbingIngestService()
+    if not service.downloader_command:
+        raise HTTPException(status_code=409, detail=service.adapter_status()["message"])
+    output_root = (
+        Path(body.output_dir).expanduser()
+        if body.output_dir.strip()
+        else _settings_path(request).with_name("dubbing_ingest")
+    )
+    record = task_registry.create(
+        "dubbing-ingest",
+        project_id=body.galaxy_project_id,
+        resource_keys=("network", "disk"),
+        recovery_route="/voice/dubbing",
+        recovery_hint="Media tải xong có thể được nhập lại vào Dubbing.",
+    )
+    record.on_cancel = lambda: managed_media_processes.terminate_task(record.task_id)
+
+    def report(message: str, progress: float | None = None) -> None:
+        task_registry.report(record.task_id, message, progress=progress)
+
+    def operation():
+        return service.ingest_url(
+            body.url,
+            output_root,
+            pull_captions=body.pull_captions,
+            source_language=body.source_language,
+            target_language=body.target_language,
+            cookie_path=body.cookie_path or None,
+            progress=report,
+            stop_event=record.stop_event,
+            task_id=record.task_id,
+        )
+
+    run_task(record, operation, lambda result: result.to_dict())
+    return {"task_id": record.task_id}
 
 
 @router.get("/dubbing/projects")

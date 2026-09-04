@@ -82,10 +82,10 @@ const mockProject: TranscriptProject = {
   ],
 }
 
-function renderPage() {
+function renderPage(initialState?: { importMediaPath: string }) {
   const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } })
   return render(
-    <MemoryRouter>
+    <MemoryRouter initialEntries={[initialState ? { pathname: '/voice/transcripts', state: initialState } : '/voice/transcripts']}>
       <QueryClientProvider client={queryClient}>
         <VoiceProjectContext.Provider value={{ project: null, projectId: 'project-1' }}>
           <TranscriptsPage />
@@ -145,6 +145,13 @@ describe('native Transcripts Page', () => {
         }),
       ),
     )
+  })
+
+  it('opens media transcription with the path handed off by Dubbing', async () => {
+    renderPage({ importMediaPath: 'D:/media/dubbing-source.mp4' })
+    expect(await screen.findByText('Phiên âm audio / video')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('D:/media/dubbing-source.mp4')).toBeInTheDocument()
+    expect(screen.getByDisplayValue('dubbing-source')).toBeInTheDocument()
   })
 
   it('virtualizes a transcript with 1000 cues', async () => {

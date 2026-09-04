@@ -1,7 +1,7 @@
 # Native Dubbing media and URL ingest
 
 Type: task
-Status: ready-for-agent
+Status: resolved
 Blocked by: 03, 08, 09, 12
 
 ## Question
@@ -45,3 +45,30 @@ workspace routes, managed `yt-dlp` subprocess, and a native drop event carrying
 `pywebviewFullPath`) but was deliberately removed from the worktree when the
 multi-track editor/TTS request became the active priority. Recreate it from this
 contract rather than reviving partial unreviewed code.
+
+## Answer
+
+Galaxy Dubbing now begins with a native media ingest surface. Local video/audio
+is passed as a filesystem path, validated against the supported formats, and
+paired deterministically with matching SRT sidecars. Optional URL ingest uses a
+Galaxy-owned `yt-dlp` adapter in the persistent task registry with one-item
+bounds, progress, cancellation, a disk-space guard, managed output, and
+redacted diagnostics.
+
+Caption artifacts remain in the managed download directory and the selected
+source/target tracks populate the editable Dubbing document. When no caption is
+available, Dubbing opens the existing Transcript ASR composer with the source
+path prefilled; its existing revisioned handoff returns to Dubbing. Optional
+Netscape cookies exist only in component state, the active request, and the
+downloader process, and are absent from serialized task results and project
+checkpoints. Media-only Dubbing checkpoints are now allowed so source assets can
+be reopened and registered in the Active Project graph before a transcript
+exists.
+
+## Verification
+
+- `python -m pytest -q` (780 tests, 60 subtests)
+- `npm test -- --run` (108 tests)
+- `npm run typecheck`
+- `npm run lint`
+- `npm run build`

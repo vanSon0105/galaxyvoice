@@ -8,15 +8,18 @@ import { fetchLibraryVoices } from '../../api/voiceLibrary'
 import { fetchOmniVoiceStatus } from '../../api/omnivoice'
 import {
   fetchDubbingPlan,
+  fetchDubbingIngestMeta,
   fetchDubbingProject,
   fetchDubbingProjects,
   saveDubbingProject,
+  ingestLocalDubbingMedia,
   startDubbingTranslation,
   type DubbingProject,
   type DubbingQualityReport,
   type DubbingSegment,
 } from '../../api/workspaces'
 import { DubbingPage } from './DubbingPage'
+import { pickMediaFile } from '../../lib/dialogs'
 
 vi.mock('../../api/settings', () => ({
   fetchSettings: vi.fn(),
@@ -27,7 +30,7 @@ vi.mock('../../api/voiceLibrary', () => ({ fetchLibraryVoices: vi.fn() }))
 vi.mock('../../api/omnivoice', () => ({ fetchOmniVoiceStatus: vi.fn() }))
 vi.mock('../../api/transcripts', () => ({ fetchTranscriptHandoff: vi.fn() }))
 vi.mock('../../lib/dialogs', () => ({
-  pickAudioFile: vi.fn(), pickFolder: vi.fn(), pickVideoFile: vi.fn(),
+  pickAudioFile: vi.fn(), pickCookieFile: vi.fn(), pickFolder: vi.fn(), pickMediaFile: vi.fn(), pickVideoFile: vi.fn(),
 }))
 vi.mock('../../ws/useTasks', () => ({ useTasks: () => ({ tasks: [], cancelTask: vi.fn() }) }))
 vi.mock('../../api/workspaces', async () => {
@@ -35,10 +38,12 @@ vi.mock('../../api/workspaces', async () => {
   return {
     ...actual,
     fetchDubbingPlan: vi.fn(),
+    fetchDubbingIngestMeta: vi.fn(),
     fetchDubbingProjects: vi.fn(),
     fetchDubbingProject: vi.fn(),
     fetchResumeJobs: vi.fn().mockResolvedValue([]),
     saveDubbingProject: vi.fn(),
+    ingestLocalDubbingMedia: vi.fn(),
     startDubbingTranslation: vi.fn(),
   }
 })
@@ -91,6 +96,11 @@ describe('native Dubbing workspace', () => {
     })
     vi.mocked(fetchLibraryVoices).mockResolvedValue([])
     vi.mocked(fetchDubbingProjects).mockResolvedValue([])
+    vi.mocked(fetchDubbingIngestMeta).mockResolvedValue({
+      video_extensions: ['.mp4', '.mov', '.mkv', '.webm'],
+      audio_extensions: ['.mp3', '.wav', '.flac', '.m4a'],
+      url_adapter: { available: true, name: 'yt-dlp', message: 'yt-dlp sẵn sàng.' },
+    })
   })
 
   it('plans from source and externally translated SRT, then exposes split and merge editing', async () => {
@@ -109,6 +119,25 @@ describe('native Dubbing workspace', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Tách' }))
     expect(screen.getByText('Đoạn lồng tiếng (2)')).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: 'Gộp trên' })[1]).toBeEnabled()
+  })
+
+  it('imports a native media path and applies its deterministic caption', async () => {
+    vi.mocked(pickMediaFile).mockResolvedValue('D:/media/lesson.mp4')
+    vi.mocked(ingestLocalDubbingMedia).mockResolvedValue({
+      source_path: 'D:/media/lesson.mp4', source_kind: 'video', source_name: 'lesson',
+      source_url: '', project_dir: '', warnings: [], translated_caption: null,
+      captions: [{ path: 'D:/media/lesson.vi.srt', language: 'vi', kind: 'caption', text: 'caption source' }],
+      selected_caption: { path: 'D:/media/lesson.vi.srt', language: 'vi', kind: 'caption', text: 'caption source' },
+    })
+    renderPage()
+    fireEvent.click(screen.getByRole('button', { name: 'Chọn media' }))
+
+    await waitFor(() => expect(ingestLocalDubbingMedia).toHaveBeenCalledWith({
+      media_path: 'D:/media/lesson.mp4', source_language: 'auto', target_language: 'vi',
+    }))
+    expect(screen.getByDisplayValue('caption source')).toBeInTheDocument()
+    expect(screen.getByText('lesson.mp4')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Lưu checkpoint' })).toBeEnabled()
   })
 
   it('virtualizes a long subtitle plan instead of mounting every segment row', async () => {

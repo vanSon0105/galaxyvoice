@@ -185,6 +185,31 @@ export interface DubbingProject extends DubbingProjectSummary {
   created_at: string
 }
 
+export interface DubbingCaptionArtifact {
+  path: string
+  language: string
+  kind: string
+  text: string
+}
+
+export interface DubbingIngestResult {
+  source_path: string
+  source_kind: 'video' | 'audio'
+  source_name: string
+  source_url: string
+  project_dir: string
+  captions: DubbingCaptionArtifact[]
+  selected_caption: DubbingCaptionArtifact | null
+  translated_caption: DubbingCaptionArtifact | null
+  warnings: string[]
+}
+
+export interface DubbingIngestMeta {
+  video_extensions: string[]
+  audio_extensions: string[]
+  url_adapter: { available: boolean; name: string; message: string }
+}
+
 export interface RenderResultPayload {
   project_dir: string
   wav_path: string
@@ -369,6 +394,33 @@ export const longformProjectMediaUrl = (projectId: string, kind: 'wav' | 'mp3' |
   `/api/workspaces/longform/projects/${encodeURIComponent(projectId)}/media/${kind}`
 
 // Dubbing
+export const fetchDubbingIngestMeta = () =>
+  apiJson<DubbingIngestMeta>('/api/workspaces/dubbing/ingest/meta')
+
+export const ingestLocalDubbingMedia = (body: {
+  media_path: string
+  source_language?: string
+  target_language?: string
+}) => apiJson<DubbingIngestResult>('/api/workspaces/dubbing/ingest/local', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
+export const startDubbingUrlIngest = (body: {
+  galaxy_project_id?: string
+  url: string
+  output_dir?: string
+  pull_captions?: boolean
+  source_language?: string
+  target_language?: string
+  cookie_path?: string
+}) => apiJson<{ task_id: string }>('/api/workspaces/dubbing/ingest/url', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body),
+})
+
 export const fetchDubbingPlan = (sourceSrt: string, translatedSrt = '') =>
   apiJson<{ segments: DubbingSegment[]; issues: DubbingIssue[]; quality: DubbingQualityReport }>(
     '/api/workspaces/dubbing/plan',

@@ -2991,6 +2991,136 @@ textarea.srt-editor::placeholder {
   gap: 14px;
 }
 
+.dubbing-ingest-panel {
+  display: grid;
+  gap: 12px;
+}
+
+.dubbing-ingest-panel > .section-header .section-title {
+  margin-bottom: 0;
+}
+
+.dubbing-ingest-layout {
+  display: grid;
+  grid-template-columns: minmax(320px, .75fr) minmax(460px, 1.25fr);
+  gap: 14px;
+}
+
+.dubbing-drop-zone {
+  display: grid;
+  min-height: 210px;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  padding: 22px;
+  border: 1px dashed var(--border-strong);
+  border-radius: 6px;
+  background: var(--color-bg);
+  text-align: center;
+  transition: border-color 120ms ease, background 120ms ease;
+}
+
+.dubbing-drop-zone.active {
+  border-color: var(--color-accent);
+  background: var(--color-surface-raised);
+}
+
+.dubbing-drop-zone strong {
+  color: var(--color-fg);
+  font-size: 15px;
+}
+
+.dubbing-drop-zone small {
+  color: var(--color-fg-subtle);
+  font-size: 10px;
+}
+
+.dubbing-current-source {
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--color-success);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.dubbing-upload-mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border: 1px solid var(--color-accent);
+  border-radius: 50%;
+  color: var(--color-accent);
+  font-size: 22px;
+  line-height: 1;
+}
+
+.dubbing-url-ingest {
+  display: grid;
+  align-content: start;
+  gap: 12px;
+  padding: 14px;
+  border-left: 2px solid var(--color-accent);
+  background: var(--color-surface-raised);
+}
+
+.dubbing-url-options,
+.dubbing-cookie-control,
+.dubbing-caption-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dubbing-url-options {
+  justify-content: space-between;
+  flex-wrap: wrap;
+}
+
+.dubbing-cookie-control {
+  color: var(--color-fg-subtle);
+  font-size: 11px;
+}
+
+.field-hint.danger { color: var(--color-danger); }
+
+.dubbing-caption-artifacts {
+  display: grid;
+  gap: 5px;
+  padding-top: 10px;
+  border-top: 1px solid var(--color-border);
+}
+
+.dubbing-caption-artifacts > span {
+  color: var(--color-fg-subtle);
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
+.dubbing-caption-row {
+  min-width: 0;
+  padding: 6px 8px;
+  background: var(--color-surface-raised);
+}
+
+.dubbing-caption-row strong {
+  width: 52px;
+  color: var(--color-accent);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.dubbing-caption-row small {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  color: var(--color-fg-muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .dubbing-source-card textarea {
   width: 100%;
   min-height: 210px;
@@ -3186,6 +3316,7 @@ textarea.srt-editor::placeholder {
 @media (max-width: 1180px) {
   .dubbing-project-bar { grid-template-columns: 1fr 1fr; }
   .dubbing-source-grid { grid-template-columns: 1fr; }
+  .dubbing-ingest-layout { grid-template-columns: 1fr; }
   .dubbing-segment-row { grid-template-columns: 86px minmax(260px, 1fr) minmax(170px, .7fr); }
   .dubbing-segment-controls,
   .dubbing-segment-row audio,

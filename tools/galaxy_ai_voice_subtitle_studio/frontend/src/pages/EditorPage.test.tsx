@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import * as editorApi from '../api/editor'
 import * as removalApi from '../api/removal'
 import * as settingsApi from '../api/settings'
+import * as videoOcrApi from '../api/videoOcr'
 import * as voiceLibraryApi from '../api/voiceLibrary'
 import type { SettingsMeta } from '../api/settings'
 import * as dialogs from '../lib/dialogs'
@@ -33,6 +34,69 @@ afterEach(() => {
 })
 
 describe('EditorPage', () => {
+  it('keeps raw OCR in the media bin until the reviewed cues are explicitly placed', async () => {
+    vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({ editor_output_dir: 'D:/result' })
+    vi.spyOn(settingsApi, 'fetchSettingsMeta').mockResolvedValue(SETTINGS_META)
+    vi.spyOn(voiceLibraryApi, 'fetchLibraryVoices').mockResolvedValue([])
+    vi.spyOn(editorApi, 'loadEditorMedia').mockResolvedValue({
+      source_id: 'video-ocr', url: '/api/editor/source/video-ocr', name: 'burned.mp4', path: 'D:/burned.mp4',
+      kind: 'video', duration_seconds: 30, width: 1920, height: 1080, fps: 30, has_audio: true,
+    })
+    vi.spyOn(videoOcrApi, 'fetchVideoOcrMeta').mockResolvedValue({
+      runtime_ready: true, runtime_path: 'D:/ocr/python.exe', installer_available: true,
+      modes: [{ code: 'fast', label: 'Nhanh', sample_fps: 2 }],
+    })
+    vi.spyOn(removalApi, 'fetchRemovalMeta').mockResolvedValue({
+      modes: [{ code: 'blur', label: 'Làm mờ', uses_ai: false }],
+      region_presets: [], propainter_ready: false, runtime_path: '', installer_available: false,
+    })
+    vi.spyOn(settingsApi, 'updateSettings').mockResolvedValue({})
+    const startRemoval = vi.spyOn(removalApi, 'startSubtitleRemoval').mockResolvedValue({ task_id: 'cleanup-task' })
+    const startOcr = vi.spyOn(videoOcrApi, 'startVideoOcr').mockResolvedValue({ task_id: 'ocr-task' })
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+    const view = render(<QueryClientProvider client={client}><EditorPage /></QueryClientProvider>)
+
+    fireEvent.change(await screen.findByPlaceholderText('Đường dẫn tệp'), { target: { value: 'D:/burned.mp4' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Nạp' }))
+    const asset = (await screen.findByText('burned.mp4')).closest('.editor-asset') as HTMLElement
+    fireEvent.click(within(asset).getByTitle('Đưa vào timeline'))
+    fireEvent.click(screen.getByRole('button', { name: 'OCR & xóa chữ' }))
+    const recognizeButton = await screen.findByRole('button', { name: 'Nhận dạng phụ đề' })
+    await waitFor(() => expect(recognizeButton).toBeEnabled())
+    fireEvent.click(recognizeButton)
+    await waitFor(() => expect(startOcr).toHaveBeenCalledWith(expect.objectContaining({
+      video_path: 'D:/burned.mp4', output_dir: 'D:/result', mode: 'fast',
+      region: { x: 5, y: 68, width: 90, height: 27 },
+    })))
+
+    taskState.tasks = [{
+      taskId: 'ocr-task', kind: 'editor-video-ocr', status: 'done', lines: [],
+      canPause: false, canResume: false, canCancel: false, updatedAt: Date.now(),
+      result: {
+        project_dir: 'D:/result/burned-ocr', srt_path: 'D:/result/burned-ocr/captions.srt',
+        manifest_path: 'D:/result/burned-ocr/ocr_manifest.json', source_video_path: 'D:/burned.mp4',
+        cues: [{ index: 1, start_ms: 0, end_ms: 1_000, text: 'Xin chào OCR', confidence: 0.95, boxes: [] }],
+        sampled_frames: 20, ocr_frames: 5, reused_frames: 15, cache_hit: false,
+      },
+    }]
+    view.rerender(<QueryClientProvider client={client}><EditorPage /></QueryClientProvider>)
+
+    expect(await screen.findByText('captions.srt')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'OCR 1' })).toBeInTheDocument()
+    expect(screen.getByDisplayValue('Xin chào OCR')).toBeInTheDocument()
+    expect(within(document.querySelector('.editor-timeline-panel') as HTMLElement).queryByText('Xin chào OCR')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Xóa phụ đề' }))
+    await waitFor(() => expect(startRemoval).toHaveBeenCalledWith(expect.objectContaining({
+      video_path: 'D:/burned.mp4',
+      masks: [expect.objectContaining({
+        name: 'OCR 1', region: { x: 5, y: 68, width: 90, height: 27 }, start_seconds: 0, end_seconds: 1,
+      })],
+    })))
+    fireEvent.click(screen.getByRole('button', { name: 'Đưa SRT đã duyệt vào timeline' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Phụ đề & giọng nói' }))
+    expect(screen.getByDisplayValue('Xin chào OCR')).toBeInTheDocument()
+  })
+
   it('keeps imported media in the bin until it is added to the timeline', async () => {
     vi.spyOn(settingsApi, 'fetchSettings').mockResolvedValue({ editor_output_dir: 'D:/result', editor_timeline_zoom: 8 })
     vi.spyOn(settingsApi, 'fetchSettingsMeta').mockResolvedValue(SETTINGS_META)
@@ -277,7 +341,7 @@ describe('EditorPage', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     const view = render(<QueryClientProvider client={client}><EditorPage /></QueryClientProvider>)
 
-    fireEvent.click(screen.getByRole('button', { name: 'Xóa chữ cứng' }))
+    fireEvent.click(screen.getByRole('button', { name: 'OCR & xóa chữ' }))
     expect(screen.getByText('Chọn một clip video trên timeline')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Phụ đề & giọng nói' }))
 
@@ -285,10 +349,10 @@ describe('EditorPage', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Nạp' }))
     const sourceAsset = (await screen.findByText('clip.mp4')).closest('.editor-asset') as HTMLElement
     fireEvent.click(within(sourceAsset).getByTitle('Đưa vào timeline'))
-    fireEvent.click(screen.getByRole('button', { name: 'Xóa chữ cứng' }))
+    fireEvent.click(screen.getByRole('button', { name: 'OCR & xóa chữ' }))
 
     await screen.findByRole('option', { name: 'Làm mờ' })
-    await waitFor(() => expect(screen.getByLabelText('Chế độ')).toHaveValue('blur'))
+    await waitFor(() => expect(screen.getByLabelText('Chế độ xóa')).toHaveValue('blur'))
     fireEvent.click(screen.getByRole('button', { name: 'Thêm vùng' }))
     expect(screen.getByText('Có các vùng xóa chồng nhau trong cùng thời gian; hiệu ứng xử lý có thể bị cộng dồn.')).toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('Mẫu vùng'), { target: { value: 'top' } })

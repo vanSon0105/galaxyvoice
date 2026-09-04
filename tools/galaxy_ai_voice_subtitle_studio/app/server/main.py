@@ -101,6 +101,7 @@ def create_app(
     from .routers import studio as studio_router
     from .routers import subtitle_removal as subtitle_removal_router
     from .routers import video_editor as video_editor_router
+    from .routers import video_ocr as video_ocr_router
     from .routers import tasks as tasks_router
     from .routers import transcripts as transcripts_router
     from .routers import voice as voice_router
@@ -119,6 +120,7 @@ def create_app(
     app.include_router(audio_postproduction_router.router)
     app.include_router(subtitle_removal_router.router)
     app.include_router(video_editor_router.router)
+    app.include_router(video_ocr_router.router)
     app.include_router(voice_router.router)
     app.include_router(transcripts_router.router)
     app.include_router(voice_library_router.router)

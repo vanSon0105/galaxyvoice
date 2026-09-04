@@ -1818,8 +1818,129 @@ body {
 
 .editor-inspector-tabs {
   flex: 0 0 auto;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin-bottom: 10px;
+}
+
+.editor-ocr-options { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+.editor-cleanup-ocr {
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid var(--border-soft);
+  background: color-mix(in srgb, var(--color-accent) 4%, var(--color-surface));
+}
+
+.editor-cleanup-ocr .section-header > div {
+  display: grid;
+  gap: 2px;
+}
+
+.editor-cleanup-ocr .section-header small {
+  color: var(--color-fg-subtle);
+  font-size: 9.5px;
+  font-weight: 400;
+}
+
+.editor-ocr-runtime {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px;
+  border-left: 2px solid var(--color-warning);
+  background: color-mix(in srgb, var(--color-warning) 7%, transparent);
+  color: var(--color-fg-muted);
+  font-size: 10px;
+}
+
+.editor-ocr-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.editor-ocr-stats span {
+  padding: 3px 6px;
+  border: 1px solid var(--border-soft);
+  border-radius: 3px;
+  color: var(--color-fg-muted);
+  font: 9.5px var(--font-mono);
+}
+
+.editor-ocr-review {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--border-soft);
+}
+
+.editor-ocr-review-header {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.editor-ocr-review-header > div,
+.editor-ocr-review-header label {
+  display: grid;
+  gap: 3px;
+}
+
+.editor-ocr-review-header small {
+  color: var(--color-fg-subtle);
+}
+
+.editor-ocr-review-header label {
+  min-width: 170px;
+}
+
+.editor-ocr-cue-list {
+  display: grid;
+  gap: 5px;
+  max-height: 260px;
+  overflow: auto;
+}
+
+.editor-ocr-cue {
+  display: grid;
+  grid-template-columns: 26px 72px 72px minmax(160px, 1fr) 42px;
+  gap: 5px;
+  align-items: center;
+  padding: 5px;
+  border: 1px solid var(--border-soft);
+  background: var(--color-surface-raised);
+}
+
+.editor-ocr-cue.low-confidence {
+  border-color: var(--color-warning);
+}
+
+.editor-ocr-cue-index {
+  color: var(--color-fg-subtle);
+  text-align: center;
+}
+
+.editor-ocr-cue input {
+  min-width: 0;
+}
+
+@media (max-width: 900px) {
+  .editor-ocr-review-header {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .editor-ocr-cue {
+    grid-template-columns: 26px 1fr 1fr 42px;
+  }
+
+  .editor-ocr-cue input[aria-label^='Nội dung'] {
+    grid-column: 2 / -1;
+    grid-row: 2;
+  }
 }
 
 .editor-removal-tool {

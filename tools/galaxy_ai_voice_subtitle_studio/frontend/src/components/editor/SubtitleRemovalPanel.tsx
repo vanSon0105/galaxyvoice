@@ -9,12 +9,15 @@ import {
 } from '../../api/removal'
 import type { RemovalMask, RemovalRegion, RemovalResult } from '../../api/removal'
 import type { EditorMedia } from '../../api/editor'
+import type { VideoOcrResult } from '../../api/videoOcr'
 import { fetchSettings, fetchSettingsMeta, updateSettings } from '../../api/settings'
 import { openPath } from '../../api/voice'
 import { TaskButton } from '../TaskButton'
 import type { TaskState } from '../../ws/useTasks'
+import { SubtitleOcrPanel } from './SubtitleOcrPanel'
+import { buildOcrRemovalMasks, sameMediaPath } from './ocrCleanup'
 
-const DEFAULT_REMOVAL_REGION: RemovalRegion = { x: 5, y: 75, width: 90, height: 20 }
+const DEFAULT_REMOVAL_REGION: RemovalRegion = { x: 5, y: 68, width: 90, height: 27 }
 const MAX_REMOVAL_MASKS = 12
 
 interface EditableRemovalMask extends RemovalMask {
@@ -59,6 +62,9 @@ interface SubtitleRemovalPanelProps {
   source: EditorMedia | null
   outputDir: string
   onCompleted: (result: RemovalResult) => Promise<void> | void
+  onOcrCompleted: (result: VideoOcrResult) => Promise<void> | void
+  onOcrAccepted: (result: VideoOcrResult, targetTrackId: string) => Promise<void> | void
+  subtitleTracks: Array<{ id: string; name: string }>
   onReplace: (result: RemovalResult) => Promise<void> | void
   canRestore: boolean
   onRestore: () => void
@@ -69,6 +75,9 @@ export function SubtitleRemovalPanel({
   source,
   outputDir,
   onCompleted,
+  onOcrCompleted,
+  onOcrAccepted,
+  subtitleTracks,
   onReplace,
   canRestore,
   onRestore,
@@ -242,6 +251,26 @@ export function SubtitleRemovalPanel({
     }))
   }
 
+  const applyOcrResult = (ocrResult: VideoOcrResult) => {
+    if (!source) return
+    if (!sameMediaPath(ocrResult.source_video_path, source.path)) {
+      setMessage('Kết quả OCR thuộc clip khác nên chưa được áp dụng.')
+      return
+    }
+    const generated = buildOcrRemovalMasks(ocrResult.cues, source, region, MAX_REMOVAL_MASKS)
+    if (generated.length) {
+      const editable = generated.map((mask) => ({ ...mask, whole_video: false }))
+      setMasks(editable)
+      setActiveMaskId(editable[0].id)
+      setMessage(`Đã tạo ${editable.length} vùng xóa theo nội dung và thời gian OCR.`)
+    } else {
+      setMessage('OCR không tìm thấy phụ đề cháy trong vùng đã chọn.')
+    }
+    void Promise.resolve(onOcrCompleted(ocrResult)).catch((cause) => {
+      setMessage(cause instanceof Error ? cause.message : String(cause))
+    })
+  }
+
   const createSnapshot = async () => {
     if (!source) return
     setMessage('Đang tạo ảnh xem trước...')
@@ -376,8 +405,25 @@ export function SubtitleRemovalPanel({
         <span>{source.width}×{source.height}</span>
       </div>
 
+      <div className="editor-cleanup-ocr">
+        <div className="section-header compact">
+          <div><strong>Tự dò phụ đề cháy</strong><small>Quét vùng đang chọn và tạo mask trực tiếp trên clip.</small></div>
+        </div>
+        <SubtitleOcrPanel
+          galaxyProjectId={galaxyProjectId}
+          source={source}
+          outputDir={outputDir}
+          region={region}
+          onRegionChange={(next) => updateActiveMask((mask) => ({ ...mask, region: next }))}
+          onCompleted={applyOcrResult}
+          onAccept={onOcrAccepted}
+          subtitleTracks={subtitleTracks}
+          embedded
+        />
+      </div>
+
       <div className="field">
-        <label htmlFor="editor-removal-mode">Chế độ</label>
+        <label htmlFor="editor-removal-mode">Chế độ xóa</label>
         <select id="editor-removal-mode" value={mode} onChange={(event) => setMode(event.target.value)}>
           {(metaQuery.data?.modes ?? []).map((item) => <option key={item.code} value={item.code}>{item.label}</option>)}
         </select>

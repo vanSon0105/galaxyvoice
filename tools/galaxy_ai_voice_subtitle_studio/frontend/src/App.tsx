@@ -23,7 +23,6 @@ const VoiceStudioPage = page(() => import('./pages/omnivoice/VoiceStudioPage'), 
 const WorkspacesPage = page(() => import('./pages/omnivoice/WorkspacesPage'), 'WorkspacesPage')
 const EditorPage = page(() => import('./pages/EditorPage'), 'EditorPage')
 const SeparationPage = page(() => import('./pages/SeparationPage'), 'SeparationPage')
-const RemovalPage = page(() => import('./pages/RemovalPage'), 'RemovalPage')
 const SettingsPage = page(() => import('./pages/SettingsPage'), 'SettingsPage')
 const ParityPage = page(() => import('./pages/ParityPage'), 'ParityPage')
 const VoiceLibraryPage = page(() => import('./pages/voice/VoiceLibraryPage'), 'VoiceLibraryPage')
@@ -58,7 +57,7 @@ export function AppRoutes() {
         <Route path="/omnivoice/voicestudio" element={<LegacyVoiceRedirect to="/voice/reference" />} />
         <Route path="/editor" element={<EditorPage />} />
         <Route path="/separation" element={<SeparationPage />} />
-        <Route path="/removal" element={<RemovalPage />} />
+        <Route path="/removal" element={<Navigate to="/editor" replace />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="/settings/parity" element={<ParityPage />} />
         <Route path="*" element={<Navigate to={DEFAULT_ROUTE} replace />} />

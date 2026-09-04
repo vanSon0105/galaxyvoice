@@ -72,13 +72,42 @@ replace clips only through an explicit editor action.
 - Allow a clean result to replace a selected clip while retaining a reversible
   project reference to the original media.
 
-### Phase 7: Parity and retirement
+### Phase 7: Burned-subtitle OCR and retirement
 
-- Validate editor/removal workflows against fixed fixtures and manual visual
-  checks.
-- Hide the standalone `Xoa phu de` navigation entry only after parity passes.
-- Retain its route and backend for one compatibility cycle before considering
-  deletion.
+#### Phase 7A: Fast local OCR
+
+- Add editor-native burned-subtitle recognition for the selected video clip.
+- Run RapidOCR in an isolated local runtime; do not add OCR dependencies to the
+  desktop shell process.
+- Limit work to a user-selected region and use a two-pass selective pipeline:
+  group visually stable probes first, OCR representative frames, vote across
+  each temporal run, then rescue weak runs before cue assembly.
+- Cache completed results by source fingerprint and OCR settings.
+- Write both editable SRT and a Galaxy-owned manifest containing cue timing,
+  confidence, and recognized text bounds.
+- Add completed SRT to the editor media bin without placing it on the timeline.
+
+#### Phase 7B: OCR review and timeline handoff
+
+- Provide an OCR review surface for low-confidence text and timing boundaries.
+- Let the user explicitly place accepted SRT on a selected subtitle lane.
+- Preserve the original OCR manifest so edits remain distinguishable from raw
+  recognition output.
+
+#### Phase 7C: OCR-guided cleanup
+
+- Convert OCR text bounds and cue timing into a bounded set of editable dynamic
+  cleanup masks in the same editor inspector.
+- Reuse the Phase 6 non-destructive replacement and restore workflow.
+- Keep manual masks available for missed text and non-text overlays.
+
+#### Phase 7D: Parity and retirement
+
+- Validate editor OCR/removal workflows against fixed fixtures and manual
+  visual checks.
+- Delete the standalone `Xoa phu de` frontend page and navigation entry; keep a
+  compatibility redirect from `/removal` to `/editor`.
+- Retain the backend removal engine because the integrated editor uses it.
 
 ## Boundaries
 
@@ -174,3 +203,35 @@ replace clips only through an explicit editor action.
    explicitly selected matching clip after a separate user action.
 7. Replacing a clip retains its original media reference and cleanup manifest,
    and the editor can restore that original clip without rerunning cleanup.
+
+## Phase 7A Acceptance
+
+1. OCR always uses the selected timeline video clip and a region fully bounded
+   by that video's frame.
+2. Fast mode samples at 2 fps and accurate mode at 4 fps; neither decodes an
+   image for OCR more often than its configured sample rate.
+3. Visually stable sampled frames reuse the prior OCR observation and report
+   sampled, inferred, and reused frame counts.
+4. Repeated or near-identical observations become one cue, while blank frames,
+   changed text, and large time gaps close the active cue.
+5. The result includes editable SRT plus a manifest with cue confidence and
+   source-frame text bounds.
+6. Running the same source fingerprint, mode, language, and region again uses
+   Galaxy's local cache.
+7. A completed SRT enters the editor media bin and is not placed on a subtitle
+   lane until the user explicitly asks for it.
+
+## Phase 7C Acceptance
+
+1. OCR and hard-subtitle cleanup share one editor inspector and always operate
+   on the selected timeline video clip.
+2. OCR bounds are padded, converted from pixels to frame percentages, and
+   combined with cue timing to create no more than twelve editable masks.
+3. Long OCR results are partitioned into ordered time batches rather than
+   dropping cues beyond the mask limit.
+4. Manual mask editing remains available after OCR planning.
+5. Recognition still preserves editable SRT in the media bin, while cleanup
+   remains non-destructive until the user explicitly replaces the selected
+   clip.
+6. The standalone removal page and navigation item no longer exist, and old
+   `/removal` links redirect to the editor.

@@ -23,7 +23,6 @@ export const NAV_ITEMS: NavItem[] = [
   { id: 'video-subtitles', label: 'Phụ đề video', route: '/dubbing' },
   { id: 'editor', label: 'Dựng video', route: '/editor' },
   { id: 'separation', label: 'Tách âm thanh', route: '/separation' },
-  { id: 'removal', label: 'Xóa phụ đề', route: '/removal' },
   { id: 'settings', label: 'Cài đặt', route: '/settings' },
 ]
 

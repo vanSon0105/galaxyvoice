@@ -8,6 +8,7 @@ import { openPath } from '../api/voice'
 import { fetchLibraryVoices, libraryVoiceRequest } from '../api/voiceLibrary'
 import type { LibraryVoice } from '../api/voiceLibrary'
 import type { RemovalResult } from '../api/removal'
+import type { VideoOcrResult } from '../api/videoOcr'
 import { SubtitleRemovalPanel } from '../components/editor/SubtitleRemovalPanel'
 import { Timeline } from '../components/timeline/Timeline'
 import { clamp, formatClock, parseClock } from '../components/timeline/geometry'
@@ -298,6 +299,36 @@ export function EditorPage() {
     const media = await loadEditorMedia(removalResult.video_path, 'video')
     removalMedia.current.set(removalResult.video_path, media)
     addAsset({ ...media, id: `video:${media.source_id}` })
+  }
+
+  const importOcrResult = (ocrResult: VideoOcrResult) => {
+    const name = ocrResult.srt_path.replace(/\\/g, '/').split('/').pop() || 'captions.srt'
+    addAsset({
+      id: `subtitle:${crypto.randomUUID()}`,
+      kind: 'subtitle',
+      name,
+      path: ocrResult.srt_path,
+      cues: ocrResult.cues.map(({ index, start_ms, end_ms, text }) => ({ index, start_ms, end_ms, text })),
+    })
+  }
+
+  const placeReviewedOcr = (ocrResult: VideoOcrResult, targetTrackId: string) => {
+    const importedCues = ocrResult.cues
+      .filter((cue) => cue.text.trim() && cue.end_ms > cue.start_ms)
+      .map(({ index, start_ms, end_ms, text }) => cueWithId({ index, start_ms, end_ms, text: text.trim() }))
+    if (!importedCues.length) {
+      setMessage('Kết quả OCR đã duyệt không còn câu hợp lệ để đưa vào timeline.')
+      return
+    }
+    if (!tracks.some((track) => track.id === targetTrackId && track.kind === 'subtitle')) {
+      setMessage('Line phụ đề đích không còn tồn tại.')
+      return
+    }
+    setTracks((current) => current.map((track) => track.id === targetTrackId && track.kind === 'subtitle'
+      ? { ...track, cues: reindexTrackCues([...track.cues, ...importedCues]) }
+      : track))
+    setSelection({ trackId: targetTrackId, itemId: importedCues[0].id })
+    setMessage(`Đã đưa ${importedCues.length} câu OCR đã duyệt vào timeline; manifest gốc vẫn được giữ riêng.`)
   }
 
   const replaceSelectedClip = async (removalResult: RemovalResult) => {
@@ -596,7 +627,7 @@ export function EditorPage() {
         <aside className="section-card editor-inspector">
           <div className="seg-control editor-inspector-tabs" aria-label="Công cụ dựng video">
             <button className={`seg-item${inspectorMode === 'subtitles' ? ' active' : ''}`} onClick={() => setInspectorMode('subtitles')}>Phụ đề & giọng nói</button>
-            <button className={`seg-item${inspectorMode === 'removal' ? ' active' : ''}`} onClick={() => setInspectorMode('removal')}>Xóa chữ cứng</button>
+            <button className={`seg-item${inspectorMode === 'removal' ? ' active' : ''}`} onClick={() => setInspectorMode('removal')}>OCR & xóa chữ</button>
           </div>
           {inspectorMode === 'subtitles' ? <>
             <div className="section-header compact"><h2 className="section-title">Phụ đề & giọng nói</h2><span className="field-hint">{activeSubtitleTrack?.name ?? 'Chưa có track'}</span></div>
@@ -636,6 +667,9 @@ export function EditorPage() {
             source={removalSource}
             outputDir={outputDir}
             onCompleted={importRemovalResult}
+            onOcrCompleted={importOcrResult}
+            onOcrAccepted={placeReviewedOcr}
+            subtitleTracks={tracks.filter((track) => track.kind === 'subtitle').map((track) => ({ id: track.id, name: track.name }))}
             onReplace={replaceSelectedClip}
             canRestore={Boolean(selectedClip?.replacement)}
             onRestore={restoreSelectedClip}

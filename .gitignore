@@ -7,6 +7,8 @@ agents/
 /UVR_v*_setup.exe
 /innounp.exe
 /ezmaxsub/
+/ezmaxsub_reconstructed_source/
+/ezmaxsub_deep_reconstructed_full/
 
 # Generated app output
 result/

@@ -8,11 +8,11 @@ describe('taskRecoveryRoute', () => {
     const task = {
       taskId: 'render-1', kind: 'workspace-render', status: 'interrupted', lines: [],
       canPause: false, canResume: false, canCancel: false, updatedAt: 1,
-      recoveryRoute: '/voice/longform?tab=render', projectId: 'project 1', workflowId: 'book-1',
+      recoveryRoute: '/voice/batch?tab=render', projectId: 'project 1', workflowId: 'batch-1',
     } satisfies TaskState
 
     expect(taskRecoveryRoute(task)).toBe(
-      '/voice/longform?tab=render&project_id=project+1&workflow_id=book-1',
+      '/voice/batch?tab=render&project_id=project+1&workflow_id=batch-1',
     )
   })
 })

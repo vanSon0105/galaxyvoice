@@ -135,7 +135,7 @@ describe('EditorPage', () => {
       selection: { source: 'profile', profile_id: 'son-profile', reference_audio: '', reference_text: '', instruction: '', system_engine: '', system_voice: '' },
       tags: [], notes: '', favorite: false, consent: { confirmed: true, basis: '', statement: '', recorded_at: '', provenance: '' },
       stable_sample: true, created_at: '', updated_at: '', capabilities: [], preview_available: false, preview_url: '', usage_count: 0,
-      editable: true, identity_editable: true, deletable: true, compatibility: { studio: true, batch: true, editor: true, longform: true, dubbing: true },
+      editable: true, identity_editable: true, deletable: true, compatibility: { studio: true, batch: true, editor: true },
     }])
     const startSpeech = vi.spyOn(editorApi, 'startEditorSpeech').mockResolvedValue({ job_id: 'editor-job-1', task_id: 'task-1' })
     const startCondensation = vi.spyOn(editorApi, 'startEditorCondensation').mockResolvedValue({ task_id: 'condense-1' })
@@ -220,7 +220,7 @@ describe('EditorPage', () => {
       selection: { source: 'system', profile_id: '', reference_audio: '', reference_text: '', instruction: '', system_engine: 'sapi', system_voice: 'Microsoft David Desktop' },
       tags: [], notes: '', favorite: false, consent: { confirmed: false, basis: '', statement: '', recorded_at: '', provenance: '' },
       stable_sample: false, created_at: '', updated_at: '', capabilities: ['sapi.tts'], preview_available: false, preview_url: '', usage_count: 0,
-      editable: true, identity_editable: false, deletable: false, compatibility: { studio: false, batch: false, editor: true, longform: false, dubbing: false },
+      editable: true, identity_editable: false, deletable: false, compatibility: { studio: false, batch: false, editor: true },
     }])
     const startSpeech = vi.spyOn(editorApi, 'startEditorSpeech').mockResolvedValue({ job_id: 'editor-job-1', task_id: 'task-1' })
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })

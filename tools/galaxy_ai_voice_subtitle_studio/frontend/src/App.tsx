@@ -15,12 +15,9 @@ const page = <T extends object, K extends keyof T>(
 
 const DubPage = page(() => import('./pages/dubbing/DubPage'), 'DubPage')
 const BatchPage = page(() => import('./pages/voice/BatchPage'), 'BatchPage')
-const DubbingPage = page(() => import('./pages/omnivoice/DubbingPage'), 'DubbingPage')
 const GalleryPage = page(() => import('./pages/omnivoice/GalleryPage'), 'GalleryPage')
 const StudioPage = page(() => import('./pages/voice/StudioPage'), 'StudioPage')
-const TranscriptsPage = page(() => import('./pages/voice/TranscriptsPage'), 'TranscriptsPage')
 const VoiceStudioPage = page(() => import('./pages/omnivoice/VoiceStudioPage'), 'VoiceStudioPage')
-const WorkspacesPage = page(() => import('./pages/omnivoice/WorkspacesPage'), 'WorkspacesPage')
 const EditorPage = page(() => import('./pages/EditorPage'), 'EditorPage')
 const SeparationPage = page(() => import('./pages/SeparationPage'), 'SeparationPage')
 const SettingsPage = page(() => import('./pages/SettingsPage'), 'SettingsPage')
@@ -42,18 +39,12 @@ export function AppRoutes() {
           <Route path="batch" element={<BatchPage />} />
           <Route path="library" element={<VoiceLibraryPage />} />
           <Route path="library/gallery" element={<GalleryPage />} />
-          <Route path="transcripts" element={<TranscriptsPage />} />
-          <Route path="longform" element={<WorkspacesPage />} />
-          <Route path="dubbing" element={<DubbingPage />} />
           <Route path="reference" element={<VoiceStudioPage />} />
         </Route>
         <Route path="/omnivoice" element={<LegacyVoiceRedirect to="/voice" />} />
         <Route path="/omnivoice/batch" element={<LegacyVoiceRedirect to="/voice/batch" />} />
         <Route path="/omnivoice/profiles" element={<LegacyVoiceRedirect to="/voice/library" />} />
         <Route path="/omnivoice/gallery" element={<LegacyVoiceRedirect to="/voice/library/gallery" />} />
-        <Route path="/omnivoice/transcripts" element={<LegacyVoiceRedirect to="/voice/transcripts" />} />
-        <Route path="/omnivoice/workspaces" element={<LegacyVoiceRedirect to="/voice/longform" />} />
-        <Route path="/omnivoice/dubbing" element={<LegacyVoiceRedirect to="/voice/dubbing" />} />
         <Route path="/omnivoice/voicestudio" element={<LegacyVoiceRedirect to="/voice/reference" />} />
         <Route path="/editor" element={<EditorPage />} />
         <Route path="/separation" element={<SeparationPage />} />

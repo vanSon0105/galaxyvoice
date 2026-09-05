@@ -102,8 +102,6 @@ def _voice_dict(record: VoiceProfileRecord, request: Request) -> dict[str, Any]:
                     and bool(record.selection.system_engine)
                     and bool(record.selection.system_voice)
                 ),
-                "longform": record.selection.source == "profile",
-                "dubbing": record.selection.source == "profile",
             },
         }
     )

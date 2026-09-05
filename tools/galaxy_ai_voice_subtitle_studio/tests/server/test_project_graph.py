@@ -91,8 +91,8 @@ class ProjectGraphApiTests(unittest.TestCase):
         response = self.client.get("/api/project-graph/workspaces")
         self.assertEqual(response.status_code, 200)
         catalog = {item["id"]: item for item in response.json()}
-        self.assertEqual(catalog["transcripts"]["route"], "/voice/transcripts")
-        self.assertIn("dubbing", catalog["transcripts"]["targets"])
+        self.assertEqual(catalog["studio"]["route"], "/voice")
+        self.assertIn("editor", catalog["studio"]["targets"])
         self.assertIn("subtitle_removal", catalog["editor"]["targets"])
 
 

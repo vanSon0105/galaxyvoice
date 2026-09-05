@@ -40,7 +40,7 @@ class DefaultPreflightTests(unittest.TestCase):
 
     def test_diarization_auto_falls_back_to_cpu(self) -> None:
         with mock.patch("app.runtime.defaults.importlib.util.find_spec", return_value=object()), mock.patch(
-            "app.transcripts.service.available_diarization_devices", return_value=("cpu",)
+            "app.runtime.defaults._available_diarization_devices", return_value=("cpu",)
         ), mock.patch.dict(os.environ, {"GALAXY_HF_TOKEN": "hf_test"}, clear=False):
             result = _diarization_preflight(
                 PreflightRequest("diarization.pyannote", device="auto")

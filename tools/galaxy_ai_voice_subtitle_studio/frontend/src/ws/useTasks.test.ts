@@ -25,7 +25,7 @@ describe('tasksReducer', () => {
       type: 'snapshot',
       tasks: [{
         task_id: 'old', kind: 'workspace-render', status: 'interrupted',
-        logs: ['render 40%'], progress: 0.4, recovery_route: '/voice/longform',
+        logs: ['render 40%'], progress: 0.4, recovery_route: '/voice/batch',
         project_id: 'galaxy-1', workflow_id: 'book-1',
         recovery_hint: 'Tiếp tục từ checkpoint', updated_at: 12,
       }],
@@ -33,7 +33,7 @@ describe('tasksReducer', () => {
 
     expect(state.old.lines).toEqual(['render 40%'])
     expect(state.old.progress).toBe(0.4)
-    expect(state.old.recoveryRoute).toBe('/voice/longform')
+    expect(state.old.recoveryRoute).toBe('/voice/batch')
     expect(state.old.projectId).toBe('galaxy-1')
     expect(state.old.workflowId).toBe('book-1')
   })

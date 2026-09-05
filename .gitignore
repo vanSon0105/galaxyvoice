@@ -9,6 +9,7 @@ agents/
 /ezmaxsub/
 /ezmaxsub_reconstructed_source/
 /ezmaxsub_deep_reconstructed_full/
+/OpenCut/
 
 # Generated app output
 result/

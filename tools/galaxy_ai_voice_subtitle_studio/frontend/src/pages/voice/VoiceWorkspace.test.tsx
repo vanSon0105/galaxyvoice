@@ -49,11 +49,11 @@ describe('VoiceWorkspace', () => {
     vi.mocked(saveProject).mockReset()
   })
 
-  it('shows the six stable surfaces and selects the newest local project', async () => {
+  it('shows the remaining Voice surfaces and selects the newest local project', async () => {
     renderWorkspace()
 
     expect(screen.getByRole('navigation', { name: 'Khu vực Voice' })).toBeInTheDocument()
-    expect(screen.getAllByRole('link')).toHaveLength(6)
+    expect(screen.getAllByRole('link')).toHaveLength(3)
     expect(await screen.findByRole('option', { name: 'Kênh review' })).toBeInTheDocument()
 
     await waitFor(() => {

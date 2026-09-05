@@ -20,24 +20,24 @@ const graph = {
   project_id: 'project-1',
   updated_at: '2026-08-28T00:00:00Z',
   nodes: [{
-    node_id: 'transcripts:transcript-1',
+    node_id: 'studio:take-1',
     project_id: 'project-1',
-    workspace: 'transcripts',
-    owner_id: 'transcript-1',
-    label: 'Phỏng vấn',
-    route: '/voice/transcripts',
+    workspace: 'studio',
+    owner_id: 'take-1',
+    label: 'Bản đọc',
+    route: '/voice',
     revision: 2,
     assets: [{ asset_id: 'doc-1', role: 'transcript_document', ownership: 'managed', path_hint: '', fingerprint: '', derived_from: [], metadata: {} }],
     metadata: {},
     created_at: '2026-08-28T00:00:00Z',
     updated_at: '2026-08-28T00:00:00Z',
   }, {
-    node_id: 'dubbing:dub-1',
+    node_id: 'editor:edit-1',
     project_id: 'project-1',
-    workspace: 'dubbing',
-    owner_id: 'dub-1',
-    label: 'Bản lồng tiếng',
-    route: '/voice/dubbing',
+    workspace: 'editor',
+    owner_id: 'edit-1',
+    label: 'Bản dựng',
+    route: '/editor',
     revision: 1,
     assets: [{ asset_id: 'dub-output', role: 'dubbed_audio', ownership: 'generated', path_hint: '', fingerprint: '', derived_from: ['doc-1'], metadata: {} }],
     metadata: {},
@@ -47,17 +47,17 @@ const graph = {
   handoffs: [{
     handoff_id: 'handoff-1',
     project_id: 'project-1',
-    source_node_id: 'transcripts:transcript-1',
-    source_workspace: 'transcripts',
+    source_node_id: 'studio:take-1',
+    source_workspace: 'studio',
     source_revision: 2,
-    source_route: '/voice/transcripts',
-    target_workspace: 'dubbing',
-    target_route: '/voice/dubbing',
+    source_route: '/voice',
+    target_workspace: 'editor',
+    target_route: '/editor',
     target_node_id: '',
     status: 'opened',
     input_asset_ids: ['doc-1'],
     output_asset_ids: [],
-    payload: { transcript_id: 'transcript-1' },
+    payload: { take_id: 'take-1' },
     created_at: '2026-08-28T00:00:00Z',
     opened_at: '2026-08-28T00:01:00Z',
     returned_at: '',
@@ -68,8 +68,8 @@ describe('ProjectGraphPanel', () => {
   beforeEach(() => {
     vi.mocked(api.fetchProjectGraph).mockResolvedValue(graph)
     vi.mocked(api.fetchProjectWorkspaces).mockResolvedValue([
-      { id: 'transcripts', label: 'Transcripts', route: '/voice/transcripts', targets: ['dubbing'] },
-      { id: 'dubbing', label: 'Dubbing', route: '/voice/dubbing', targets: ['editor'] },
+      { id: 'studio', label: 'Studio', route: '/voice', targets: ['editor'] },
+      { id: 'editor', label: 'Dựng video', route: '/editor', targets: ['separation'] },
     ])
     vi.mocked(api.upsertProjectNode).mockResolvedValue(graph.nodes[0])
     vi.mocked(api.returnProjectHandoff).mockResolvedValue({ ...graph.handoffs[0], status: 'returned' })
@@ -79,23 +79,23 @@ describe('ProjectGraphPanel', () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
     render(
       <QueryClientProvider client={client}>
-        <MemoryRouter initialEntries={['/voice/dubbing']}>
+        <MemoryRouter initialEntries={['/editor']}>
           <ProjectGraphPanel projectId="project-1" />
         </MemoryRouter>
       </QueryClientProvider>,
     )
 
     fireEvent.click(screen.getByRole('button', { name: /Luồng dự án/i }))
-    expect(await screen.findByText('Phỏng vấn')).toBeInTheDocument()
+    expect(await screen.findByText('Bản đọc')).toBeInTheDocument()
     expect(screen.getByText('1 asset · revision 2')).toBeInTheDocument()
     expect(screen.getByLabelText('Quyền sở hữu asset')).toHaveTextContent(
       '1 managed0 linked1 generated',
     )
-    expect(screen.getByText('Transcripts → Dubbing')).toBeInTheDocument()
+    expect(screen.getByText('Studio → Dựng video')).toBeInTheDocument()
 
     fireEvent.click(screen.getByRole('button', { name: 'Hoàn tất & quay lại' }))
     await waitFor(() => expect(api.returnProjectHandoff).toHaveBeenCalledWith('handoff-1', {
-      target_node_id: 'dubbing:dub-1',
+      target_node_id: 'editor:edit-1',
       output_asset_ids: ['dub-output'],
     }))
   })

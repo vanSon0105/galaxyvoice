@@ -19,7 +19,6 @@ from app.omnivoice.workspaces.longform import (
     parse_story_script,
     plan_dubbing_cues,
 )
-from app.omnivoice.workspaces.longform_service import preview_plan
 from app.omnivoice.models import AUTO_MODE, OmniVoiceGenerationOptions
 from app.omnivoice.workspaces.renderer import (
     _convert_to_mp3,
@@ -28,15 +27,6 @@ from app.omnivoice.workspaces.renderer import (
     find_resumable_workspace_jobs,
     render_longform_plan,
 )
-from app.omnivoice.workspaces.dubbing.model import DubbingFitPolicy, DubbingSegment
-from app.omnivoice.workspaces.dubbing.service import (
-    MIX_DUCK,
-    MIX_SOURCE,
-    _audio_mix_command,
-    _video_mux_command,
-    render_dubbing_project,
-)
-from app.omnivoice.workspaces.transcripts import TranscriptStore
 from app.voice.srt import SubtitleCue, parse_srt
 
 
@@ -63,16 +53,6 @@ class _WorkspaceClient:
             target.setframerate(24_000)
             target.writeframes(b"\x01\x00" * round(24_000 * duration))
         return {"output_path": str(output)}
-
-
-class _LongAudioWorkspaceClient(_WorkspaceClient):
-    def request(
-        self,
-        command: str,
-        payload: dict[str, object],
-        **kwargs: object,
-    ) -> dict[str, object]:
-        return super().request(command, {**payload, "duration": 1.8}, **kwargs)
 
 
 class LongformWorkspaceTests(unittest.TestCase):
@@ -117,8 +97,7 @@ class LongformWorkspaceTests(unittest.TestCase):
             ),
             chapters=(),
         )
-        selected = preview_plan(plan, 0)
-        self.assertEqual(len(selected.spans), 4)
+        self.assertEqual(len(plan.spans), 4)
 
         with tempfile.TemporaryDirectory() as temp_dir:
             result = render_longform_plan(
@@ -128,7 +107,7 @@ class LongformWorkspaceTests(unittest.TestCase):
                     output_dir=Path(temp_dir),
                     project_name="inline",
                 ),
-                selected,
+                plan,
                 _WorkspaceClient(),
                 gap_ms=500,
                 export_mp3=False,
@@ -284,76 +263,6 @@ class LongformWorkspaceTests(unittest.TestCase):
             self.assertIsNotNone(result.stems_dir)
             self.assertEqual(len(list(result.stems_dir.glob("*.wav"))), 2)
 
-    def test_smart_dubbing_fit_writes_repeatable_second_pass_quality_report(self) -> None:
-        segments = (
-            DubbingSegment(
-                "segment-1",
-                500,
-                1_500,
-                "Hello",
-                "Xin chào",
-                "Lan",
-            ),
-        )
-        with tempfile.TemporaryDirectory() as temp_dir, mock.patch(
-            "app.omnivoice.workspaces.renderer.find_ffmpeg",
-            return_value=None,
-        ):
-            result = render_dubbing_project(
-                OmniVoiceGenerationOptions(
-                    mode=AUTO_MODE,
-                    text="unused",
-                    output_dir=Path(temp_dir),
-                    project_name="smart-dub",
-                ),
-                segments,
-                _LongAudioWorkspaceClient(),
-                fit_policy=DubbingFitPolicy(max_tempo=1.25, tolerance_ms=120),
-                export_mp3=False,
-                export_stems=True,
-            )
-
-            with wave.open(str(result.wav_path), "rb") as rendered:
-                duration_ms = round(rendered.getnframes() * 1000 / rendered.getframerate())
-            report = json.loads(result.quality_report_path.read_text(encoding="utf-8"))
-
-        self.assertEqual(duration_ms, 1_500)
-        self.assertEqual(result.fit_measurements[0].raw_duration_ms, 1_800)
-        self.assertEqual(result.fit_measurements[0].clipped_ms, 800)
-        self.assertEqual(report["error_count"], 1)
-        self.assertEqual(report["measurements"][0]["segment_id"], "segment-1")
-
-    def test_dubbing_duck_uses_voice_as_sidechain_instead_of_static_volume(self) -> None:
-        common = {
-            "ffmpeg": "ffmpeg",
-            "source": Path("source.wav"),
-            "dub": Path("dub.wav"),
-            "output": Path("mixed.wav"),
-            "source_volume": 0.5,
-            "dub_volume": 1.0,
-        }
-        duck = _audio_mix_command(mode=MIX_DUCK, **common)
-        regular_mix = _audio_mix_command(mode=MIX_SOURCE, **common)
-
-        self.assertIn("sidechaincompress", duck[duck.index("-filter_complex") + 1])
-        self.assertIn("asplit=2", duck[duck.index("-filter_complex") + 1])
-        self.assertNotIn("sidechaincompress", regular_mix[regular_mix.index("-filter_complex") + 1])
-
-    def test_dubbing_mux_preserves_source_video_tail_after_last_subtitle(self) -> None:
-        command = _video_mux_command(
-            "ffmpeg",
-            Path("source.mp4"),
-            Path("dub.wav"),
-            Path("subtitles.srt"),
-            Path("output.mp4"),
-            dub_volume=1.0,
-            video_duration=42.5,
-        )
-
-        self.assertIn("atrim=duration=42.500", command[command.index("-filter_complex") + 1])
-        self.assertNotIn("-shortest", command)
-        self.assertEqual(command[command.index("-t") + 1], "42.500")
-
     def test_failed_longform_job_resumes_without_regenerating_completed_spans(self) -> None:
         plan = parse_story_script("Lan: Câu một.\nMinh: Câu hai.")
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -386,26 +295,6 @@ class LongformWorkspaceTests(unittest.TestCase):
             self.assertEqual(resumed_client.request_count, 1)
             self.assertTrue(result.wav_path.is_file())
             self.assertEqual(find_resumable_workspace_jobs(Path(temp_dir)), ())
-
-
-class TranscriptWorkspaceTests(unittest.TestCase):
-    def test_store_persists_searches_and_deletes_transcripts(self) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            path = Path(temp_dir) / "transcripts.json"
-            store = TranscriptStore(path)
-            first = store.add(
-                text="Xin chào thế giới",
-                language="vi",
-                source_path="video.mp4",
-                source_srt="1\n00:00:00,000 --> 00:00:01,000\nXin chào\n",
-            )
-            store.add(text="Hello world", language="en", source_path="audio.wav")
-
-            reloaded = TranscriptStore(path)
-            self.assertEqual(len(reloaded.list()), 2)
-            self.assertEqual([entry.language for entry in reloaded.search("xin chào")], ["vi"])
-            reloaded.delete(first.entry_id)
-            self.assertEqual(len(TranscriptStore(path).list()), 1)
 
 
 class VoiceGalleryWorkspaceTests(unittest.TestCase):

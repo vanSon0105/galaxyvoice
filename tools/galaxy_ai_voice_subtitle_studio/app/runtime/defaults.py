@@ -118,9 +118,7 @@ def _diarization_preflight(request: PreflightRequest) -> PreflightResult:
         ),
         "",
     )
-    from ..transcripts.service import available_diarization_devices
-
-    available_devices = set(available_diarization_devices())
+    available_devices = set(_available_diarization_devices())
     resolved_device = (
         "cuda" if request.device == "auto" and "cuda" in available_devices
         else "cpu" if request.device == "auto"
@@ -139,6 +137,18 @@ def _diarization_preflight(request: PreflightRequest) -> PreflightResult:
         ),
         resolved_device=resolved_device,
     )
+
+
+def _available_diarization_devices() -> tuple[str, ...]:
+    devices = ["cpu"]
+    try:
+        import torch
+
+        if torch.cuda.is_available():
+            devices.insert(0, "cuda")
+    except Exception:
+        pass
+    return tuple(devices)
 
 
 def _translation_preflight(provider_code: str, request: PreflightRequest) -> PreflightResult:

@@ -21,9 +21,9 @@ class ProjectGraphServiceTests(unittest.TestCase):
         source = self.service.upsert_node(
             NodeRequest(
                 project_id="project-1",
-                workspace="transcripts",
-                owner_id="transcript-1",
-                label="Phỏng vấn gốc",
+                workspace="studio",
+                owner_id="take-1",
+                label="Bản đọc gốc",
                 revision=4,
                 assets=(
                     AssetReference(
@@ -41,15 +41,15 @@ class ProjectGraphServiceTests(unittest.TestCase):
             HandoffRequest(
                 project_id="project-1",
                 source_node_id=source.node_id,
-                target_workspace="dubbing",
+                target_workspace="editor",
                 input_asset_ids=("asset-srt",),
-                payload={"api_key": "must-not-leak", "transcript_id": "transcript-1"},
+                payload={"api_key": "must-not-leak", "take_id": "take-1"},
             )
         )
 
         self.assertEqual(handoff.status, "pending")
-        self.assertEqual(handoff.source_route, "/voice/transcripts")
-        self.assertEqual(handoff.target_route, "/voice/dubbing")
+        self.assertEqual(handoff.source_route, "/voice")
+        self.assertEqual(handoff.target_route, "/editor")
         self.assertEqual(handoff.source_revision, 4)
         self.assertEqual(handoff.input_asset_ids, ("asset-srt",))
         self.assertNotIn("api_key", handoff.payload)
@@ -59,9 +59,9 @@ class ProjectGraphServiceTests(unittest.TestCase):
             handoff.handoff_id,
             target_node=NodeRequest(
                 project_id="project-1",
-                workspace="dubbing",
-                owner_id="dub-1",
-                label="Bản lồng tiếng",
+                workspace="editor",
+                owner_id="edit-1",
+                label="Bản dựng",
                 revision=2,
                 assets=(
                     AssetReference(
@@ -79,7 +79,7 @@ class ProjectGraphServiceTests(unittest.TestCase):
         self.assertEqual(opened.status, "opened")
         self.assertEqual(returned.status, "returned")
         self.assertEqual(returned.output_asset_ids, ("asset-dub",))
-        self.assertEqual(returned.target_node_id, "dubbing:dub-1")
+        self.assertEqual(returned.target_node_id, "editor:edit-1")
         self.assertEqual(len(self.service.get_graph("project-1").nodes), 2)
 
     def test_rejects_cross_project_and_unsupported_handoffs(self) -> None:
@@ -172,24 +172,24 @@ class ProjectGraphServiceTests(unittest.TestCase):
         source = self.service.upsert_node(
             NodeRequest(
                 project_id="project-1",
-                workspace="transcripts",
-                owner_id="transcript-1",
-                label="Transcript",
+                workspace="studio",
+                owner_id="take-1",
+                label="Studio take",
             )
         )
         handoff = self.service.create_handoff(
             HandoffRequest(
                 project_id="project-1",
                 source_node_id=source.node_id,
-                target_workspace="dubbing",
+                target_workspace="editor",
             )
         )
         target = self.service.upsert_node(
             NodeRequest(
                 project_id="project-1",
-                workspace="dubbing",
-                owner_id="dubbing-1",
-                label="Dub",
+                workspace="editor",
+                owner_id="editor-1",
+                label="Editor",
                 assets=(
                     AssetReference(
                         asset_id="dub-output",

@@ -21,7 +21,7 @@ const voice: LibraryVoice = {
   consent: { confirmed: true, basis: 'owner', statement: 'Đã xác nhận', recorded_at: '2026-01-01', provenance: '' },
   stable_sample: true, created_at: '2026-01-01', updated_at: '2026-01-02', capabilities: ['omnivoice.profile'],
   preview_available: false, preview_url: '/preview', usage_count: 1, editable: true, identity_editable: true, deletable: true,
-  compatibility: { studio: true, batch: true, editor: true, longform: true, dubbing: true },
+  compatibility: { studio: true, batch: true, editor: true },
 }
 
 function renderPage() {

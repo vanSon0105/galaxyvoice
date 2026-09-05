@@ -149,10 +149,6 @@ def export_audio(body: ExportRequest) -> dict[str, str]:
         resource_keys=("cpu",),
         recovery_route={
             "batch": "/voice/batch",
-            "dubbing": "/voice/dubbing",
-            "longform": "/voice/longform",
-            "stories": "/voice/longform",
-            "audiobook": "/voice/longform",
         }.get(body.workspace.casefold(), "/voice"),
     )
     record.on_cancel = lambda: managed_media_processes.terminate_task(record.task_id)

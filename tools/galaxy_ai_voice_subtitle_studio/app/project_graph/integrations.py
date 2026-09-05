@@ -1,126 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Mapping
 
-from .models import AssetReference, HandoffRequest, NodeRequest, ProjectGraphNode
+from .models import AssetReference, NodeRequest, ProjectGraphNode
 from .service import ProjectGraphService
-
-
-def register_transcript_handoff(
-    service: ProjectGraphService,
-    project: Any,
-    payload: Mapping[str, Any],
-) -> None:
-    document_asset_id = f"transcript-document:{project.transcript_id}"
-    assets = [
-        AssetReference(
-            asset_id=document_asset_id,
-            role="transcript_document",
-            ownership="managed",
-            metadata={"cue_count": len(project.cues)},
-        )
-    ]
-    if project.source_path:
-        assets.append(
-            AssetReference(
-                asset_id=f"transcript-source:{project.transcript_id}",
-                role="source_media",
-                path_hint=project.source_path,
-                ownership="linked",
-            )
-        )
-    node = service.upsert_node(
-        NodeRequest(
-            project_id=project.project_id,
-            workspace="transcripts",
-            owner_id=project.transcript_id,
-            label=project.name,
-            revision=int(payload.get("source_revision") or project.revision),
-            assets=tuple(assets),
-            metadata={"language": payload.get("language", "")},
-        )
-    )
-    service.create_handoff(
-        HandoffRequest(
-            project_id=project.project_id,
-            source_node_id=node.node_id,
-            target_workspace=str(payload.get("target") or ""),
-            input_asset_ids=(document_asset_id,),
-            payload={
-                "kind": "transcript_handoff",
-                "transcript_id": project.transcript_id,
-            },
-            handoff_id=str(payload.get("handoff_id") or ""),
-        )
-    )
-
-
-def register_longform_project(service: ProjectGraphService, project: Any) -> ProjectGraphNode | None:
-    parent_id = str(project.galaxy_project_id or "").strip()
-    if not parent_id:
-        return None
-    document_asset_id = f"longform-document:{project.project_id}"
-    assets = [
-        AssetReference(
-            asset_id=document_asset_id,
-            role="longform_document",
-            ownership="managed",
-            metadata={"kind": project.kind, "stage": project.stage},
-        )
-    ]
-    assets.extend(_result_assets("longform", project.project_id, project.last_result))
-    return service.upsert_node(
-        NodeRequest(
-            project_id=parent_id,
-            workspace="longform",
-            owner_id=project.project_id,
-            label=project.name,
-            revision=project.revision,
-            assets=tuple(assets),
-            metadata={"kind": project.kind, "stage": project.stage},
-        )
-    )
-
-
-def register_dubbing_project(service: ProjectGraphService, project: Any) -> ProjectGraphNode | None:
-    parent_id = str(project.galaxy_project_id or "").strip()
-    if not parent_id:
-        return None
-    document_asset_id = f"dubbing-document:{project.project_id}"
-    assets = [
-        AssetReference(
-            asset_id=document_asset_id,
-            role="dubbing_document",
-            ownership="managed",
-            metadata={"stage": project.stage, "segment_count": len(project.segments)},
-        )
-    ]
-    for role, path_hint in (
-        ("source_video", project.source_video),
-        ("source_audio", project.source_audio),
-    ):
-        if path_hint:
-            assets.append(
-                AssetReference(
-                    asset_id=f"dubbing-{role}:{project.project_id}",
-                    role=role,
-                    path_hint=path_hint,
-                    ownership="linked",
-                )
-            )
-    assets.extend(_result_assets("dubbing", project.project_id, project.last_result))
-    return service.upsert_node(
-        NodeRequest(
-            project_id=parent_id,
-            workspace="dubbing",
-            owner_id=project.project_id,
-            label=project.name,
-            revision=project.revision,
-            assets=tuple(assets),
-            metadata={"stage": project.stage, "language": project.language},
-        )
-    )
 
 
 def register_studio_take(service: ProjectGraphService, view: Any) -> ProjectGraphNode | None:
@@ -266,34 +149,6 @@ def register_media_result(
             metadata=metadata or {},
         )
     )
-
-
-def _result_assets(prefix: str, owner_id: str, result: Mapping[str, Any]) -> list[AssetReference]:
-    assets: list[AssetReference] = []
-    fields = {
-        "wav_path": "voice_audio",
-        "mp3_path": "voice_audio",
-        "m4b_path": "audiobook",
-        "mixed_audio_path": "mixed_audio",
-        "video_path": "dubbed_video",
-        "srt_path": "subtitle",
-    }
-    document_asset_id = f"{prefix}-document:{owner_id}"
-    for field, role in fields.items():
-        raw_path = str(result.get(field) or "").strip()
-        if not raw_path:
-            continue
-        suffix = Path(raw_path).suffix.casefold().lstrip(".") or field.removesuffix("_path")
-        assets.append(
-            AssetReference(
-                asset_id=f"{prefix}-output:{owner_id}:{suffix}:{field}",
-                role=role,
-                path_hint=raw_path,
-                ownership="generated",
-                derived_from=(document_asset_id,),
-            )
-        )
-    return assets
 
 
 def _generated_assets(

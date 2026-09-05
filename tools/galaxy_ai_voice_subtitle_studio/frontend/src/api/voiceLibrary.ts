@@ -40,7 +40,7 @@ export interface LibraryVoice {
   editable: boolean
   identity_editable: boolean
   deletable: boolean
-  compatibility: Record<'studio' | 'batch' | 'editor' | 'longform' | 'dubbing', boolean>
+  compatibility: Record<'studio' | 'batch' | 'editor', boolean>
 }
 
 export const fetchLibraryVoices = (params: {

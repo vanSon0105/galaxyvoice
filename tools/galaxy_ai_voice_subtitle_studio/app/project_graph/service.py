@@ -19,15 +19,12 @@ from .repository import ProjectGraphRepository
 
 
 _WORKSPACES = (
-    WorkspaceSpec("studio", "Studio", "/voice", ("batch", "editor", "separation", "transcripts", "longform", "dubbing")),
-    WorkspaceSpec("batch", "Batch", "/voice/batch", ("studio", "editor", "separation", "longform")),
-    WorkspaceSpec("library", "Thư viện giọng", "/voice/library", ("studio", "batch", "longform", "dubbing")),
-    WorkspaceSpec("transcripts", "Transcripts", "/voice/transcripts", ("dubbing", "longform", "editor")),
-    WorkspaceSpec("longform", "Truyện & Sách nói", "/voice/longform", ("studio", "batch", "editor", "separation", "transcripts", "dubbing")),
-    WorkspaceSpec("dubbing", "Dubbing", "/voice/dubbing", ("editor", "separation", "transcripts", "longform", "subtitle_removal")),
-    WorkspaceSpec("editor", "Dựng video", "/editor", ("transcripts", "dubbing", "separation", "subtitle_removal")),
-    WorkspaceSpec("separation", "Tách âm thanh", "/separation", ("editor", "dubbing", "transcripts")),
-    WorkspaceSpec("subtitle_removal", "Xóa phụ đề", "/removal", ("editor", "transcripts", "dubbing")),
+    WorkspaceSpec("studio", "Studio", "/voice", ("batch", "editor", "separation")),
+    WorkspaceSpec("batch", "Batch", "/voice/batch", ("studio", "editor", "separation")),
+    WorkspaceSpec("library", "Thư viện giọng", "/voice/library", ("studio", "batch")),
+    WorkspaceSpec("editor", "Dựng video", "/editor", ("separation", "subtitle_removal")),
+    WorkspaceSpec("separation", "Tách âm thanh", "/separation", ("editor",)),
+    WorkspaceSpec("subtitle_removal", "Xóa phụ đề", "/removal", ("editor",)),
 )
 _WORKSPACE_BY_ID = {item.workspace_id: item for item in _WORKSPACES}
 _SECRET_MARKERS = ("api_key", "apikey", "token", "secret", "authorization")
@@ -44,8 +41,19 @@ class ProjectGraphService:
     def get_graph(self, project_id: str) -> ProjectGraph:
         normalized = _required(project_id, "Project ID")
         nodes, handoffs = self.repository.load()
-        selected_nodes = tuple(item for item in nodes if item.project_id == normalized)
-        selected_handoffs = tuple(item for item in handoffs if item.project_id == normalized)
+        selected_nodes = tuple(
+            item
+            for item in nodes
+            if item.project_id == normalized and item.workspace in _WORKSPACE_BY_ID
+        )
+        selected_node_ids = {item.node_id for item in selected_nodes}
+        selected_handoffs = tuple(
+            item
+            for item in handoffs
+            if item.project_id == normalized
+            and item.source_node_id in selected_node_ids
+            and item.target_workspace in _WORKSPACE_BY_ID
+        )
         timestamps = [item.updated_at for item in selected_nodes]
         timestamps.extend(item.returned_at or item.opened_at or item.created_at for item in selected_handoffs)
         return ProjectGraph(

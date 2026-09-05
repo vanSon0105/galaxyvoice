@@ -26,14 +26,11 @@ describe('nav', () => {
     expect(NAV_ITEMS.some((item) => item.id === 'omnivoice')).toBe(false)
   })
 
-  it('defines the six stable native Voice surfaces', () => {
+  it('defines the remaining native Voice surfaces', () => {
     expect(VOICE_NAV_ITEMS.map((item) => item.id)).toEqual([
       'studio',
       'batch',
       'library',
-      'transcripts',
-      'longform',
-      'dubbing',
     ])
     expect(VOICE_NAV_ITEMS.every((item) => item.route.startsWith('/voice'))).toBe(true)
   })
